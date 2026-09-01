@@ -261,6 +261,7 @@ Planned normalized signal families:
 - `chat.command`, `chat.message`;
 - `pal.captured`, `pal.defeated`, `pal.spawned`, `pal.fished`;
 - `npc.defeated`, `npc.talked`, `npc.traded`;
+- `character.damaged`, `character.finalHit`, `character.defeated`;
 - `item.gathered`, `item.pickedUp`, `item.crafted`, `item.granted`;
 - `build.completed`, `base.created`, `base.removed`, `work.completed`;
 - `zone.entered`, `zone.exited`, `zone.held`, `checkpoint.reached`;
@@ -285,6 +286,16 @@ Filters use typed equality, membership, range, ownership, and spatial predicates
 - server FPS remains above a policy threshold.
 
 No regular expression is applied to unbounded game text in a hot path. Chat matching uses normalized bounded tokens or anchored short patterns.
+
+Combat signals retain two identities when available: the immediate damage source and its owning player. A definition must select one credit rule:
+
+- `sourceActor` — player and Pal score separately;
+- `ownerPlayer` — an owned Pal rolls up to its owner, while unresolved actors do not score;
+- `playerCombined` — direct player and validated owned-Pal contributions share one player total;
+- `team` or `guild` — aggregate only after source/owner normalization;
+- `finalHitSource` or `finalHitOwner` — score only the qualifying last attacker.
+
+Damage objectives must also name the accepted field (`actualDamage` initially), target scope, overkill policy, healing/reset policy, unknown-source policy, and deduplication key. “Most damage” uses the `best` operator over accumulated per-target contribution; it is not a native Palworld leaderboard. Definitions cannot read arbitrary native maps or call an unverified top-damage function.
 
 ## Objective operators
 

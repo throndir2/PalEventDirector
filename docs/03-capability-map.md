@@ -48,7 +48,9 @@ Every enabled capability still passes the acceptance gate in [the vanilla-client
 | Signal | Evidence | Likely source | Main question before release |
 |---|---|---|---|
 | Player chat | Confirmed | `BroadcastChatMessage` / `EnterChat_Receive` flow | Reliable sender/category mapping and safe suppression semantics. |
-| Player death/kill | Confirmed | damage/death functions and kill-log data | Attribution across Pals, environment, PvP, disconnect, and overkill. |
+| Character final hit/defeat | Confirmed API surface | Global server damage/death notifications, outgoing defeat delegates, and kill-log data | Resolve direct player versus owned Pal; validate down/death, status, environment, suicide, and duplicate semantics. |
+| Per-target damage contribution | Probable | Global `FPalDamageResult` notifications expose attacker, defender, and `ActualDamage`; each character also has a transient native `DamageMap` | Build a director-owned ledger from one accepted-damage feed; determine native map meaning/reset behavior before relying on it. |
+| Most damage dealt | Experimental derived result | No reflected native MVP/top-damage result; compute from the validated contribution ledger at target resolution | Define shield, overkill, healing/reset, DoT, owner-transfer, and tie policy explicitly. |
 | Pal capture | Confirmed | capture success path and player record deltas | Exact player, species, level, rarity, passive data, and duplicate firing. |
 | Existing item grant | Confirmed | `UPalPlayerInventoryData.AddItem_ServerInternal` | Full inventory behavior, stack limits, invalid IDs, notification, offline delivery. |
 | Item pickup/resource gathering | Probable | item/container/network operation hooks and record triggers | Distinguish gathering, pickup, transfer, crafting output, and admin grants. |
@@ -121,6 +123,22 @@ Record polling can supplement a missing event hook by comparing monotonic counte
 
 `UPalCharacterManager` exposes initialization, creation, network spawn, despawn, and handle lookup. Current server command mods prove existing Pal spawning is achievable. The adapter must use fully initialized parameters, network-aware spawn parameters, game-thread execution, and owned-handle cleanup.
 
+### Combat attribution
+
+Palworld exposes a global server-oriented character event source through `UPalEventNotify_Character`. Its damage notification carries `FPalDamageResult`, including attacker actor, defender actor, calculated `Damage`, post-processing `ActualDamage`, weapon and element metadata, hit body part, and `bCannotKill`. Its death notification carries `FPalDeadInfo`, including the victim, `LastAttacker`, `LastDamage`, and `EPalDeadType`. Player and Pal actors also expose outgoing `OnInflictDamageDelegate` and `OnDefeatCharacterDelegate` signals.
+
+These surfaces support three useful levels of event scoring:
+
+1. **Final hit:** credit the normalized owner of `FPalDeadInfo.LastAttacker` when the death type and target lifecycle qualify.
+2. **Direct versus Pal kill:** retain the attacking actor's identity, then optionally roll an owned Pal up to `OwnerPlayerUId`. Definitions can count `playerDirect`, `ownedPal`, or `playerCombined` separately.
+3. **Most damage:** sum one validated accepted-damage field per target and normalized source, then select the highest total when that target resolves. This is director-derived rather than a reflected native winner result.
+
+Every character parameter component contains a transient, non-replicated `TMap<FPalInstanceID, int32> DamageMap`. Its shape suggests native per-attacker bookkeeping, but generated source does not reveal whether values mean HP damage, shield damage, threat, reward contribution, or another quantity, nor when entries reset. Treat it as an observational cross-check until live tests establish semantics; do not make it the production source of truth merely because it is named `DamageMap`.
+
+Actor ownership can be normalized through `GetIndividualIDByActor()`, `FPalInstanceID.PlayerUId`, and the individual save parameter's `OwnerPlayerUId`; active player Pals also expose trainer state. Weapon, projectile, skill-effect, base-worker, ridden-Pal, NPC-companion, transferred-Pal, and status-damage paths require separate proof because the immediate attacker actor may not itself be the player or Pal character.
+
+Native kill logs already identify attacker/killed character IDs and player UIDs, but carry no damage amount and are presentation-oriented. Native player records count selected boss/predator progression, not arbitrary per-player kill totals or combat contribution. Raid, tower, arena, invasion, and oil-rig subsystems expose participants or outcomes but no reflected top-damage table.
+
 ### Invasions and incidents
 
 `UPalInvaderManager` exposes random, selected-base, and all-base march starts plus declaration/start/arrival/wave/end delegates. Player-controller and cheat-manager APIs also accept an `InvaderGropuName`; current installed data uses 240 numeric row keys grouped under 76 descriptive `GroupName` values, strongly establishing the latter as the intended selector. The exact server API can skip invasion declaration, which is the candidate forced-assault path when the native Negotiator should not permit cancellation.
@@ -169,3 +187,6 @@ The roadmap must answer these before advanced templates ship:
 14. Crash recovery while a modifier, spawn wave, teleport round, or pending reward is active.
 15. Pre-spawn bounty-member substitution, token drops on kill/capture/butcher, wave completion, and independence from fixed overworld bounty state.
 16. Per-base Work-Pal-to-grade behavior and final invasion levels across controlled worker-level distributions, including empty slots and workers changed during declaration.
+17. Global accepted-damage and death notification ordering, deduplication, `Damage` versus `ActualDamage`, and final-hit semantics across players, owned Pals, status effects, environment, and player down/death.
+18. Owner normalization for direct players, active/ridden/base-worker Pals, weapons, projectiles, explosions, partner skills, transferred Pals, and NPC companions.
+19. Native `DamageMap` contents and lifecycle compared with a director-owned per-hit ledger; no most-damage scoring may depend on it before this spike passes.

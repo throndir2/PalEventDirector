@@ -212,6 +212,14 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 - Capture by normal sphere, critical capture, failure, recapture-like paths if any.
 - Wild, field boss, dungeon, raid, director-owned, and unrelated targets.
 - One logical action creates one normalized event.
+- Compare global incoming damage/death notifications with player/Pal outgoing inflict/defeat delegates and prove which single feed is canonical; never count both.
+- Record callback order for nonlethal and lethal hits: accepted damage, outgoing inflict, dead/down, outgoing defeat, complete player death, loot, and despawn.
+- Establish `FPalDamageResult.Damage` versus `ActualDamage` for shield absorption, overkill, zero/blocked damage, immortality, phase locks, redirected body parts, and `bCannotKill`.
+- Validate final-hit attribution from `FPalDeadInfo.LastAttacker` for every `EPalDeadType`, including attack, self-destruction, temperature, falling, poison, burn, drowning, tower battle, ground, and suicide. Never reuse a stale attacker for an environmental death.
+- Test direct players, active Pals, ridden Pals, partner skills, base workers, weapons, projectiles, explosions, transferred Pals, NPC companions, and owner disconnect/transfer.
+- Verify whether player down and completed death emit distinct callbacks and choose one declared scoring boundary.
+- Reconcile native `DamageMap` against the director ledger for HP, shield, overkill, DoT, healing, target reset, capture, unload, death, and respawn; document its reset and ownership semantics before any use.
+- For most-damage objectives, test ties, minimum contribution, disconnected contributors, target healing/reset, multiple phases/forms, and bounded memory under sustained combat.
 
 ### Item/crafting/gathering
 

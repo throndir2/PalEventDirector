@@ -222,6 +222,19 @@ Objectives consume normalized events or bounded state samples. Built-in operator
 
 Scoring is deterministic. Definitions specify attribution, eligibility, ties, late joins, disconnect behavior, and whether an event record can score more than once.
 
+Combat records preserve both the immediate source and an optional credited owner. A Pal's damage is never silently rewritten as direct player damage. The normalized record can therefore expose:
+
+- `sourceKind`: `player`, `ownedPal`, `unownedPal`, `humanNpc`, `environment`, or `unknown`;
+- source actor/character/instance identity where stable;
+- `ownerPlayerUid` only when a validated ownership path resolves it;
+- target instance identity;
+- accepted damage and available attack metadata;
+- death type and final-hit flag on resolution.
+
+Per-target contribution ledgers are director-owned transient state keyed by stable target identity. They aggregate one canonical accepted-damage feed, not both incoming and outgoing delegates. A durable event checkpoint stores only bounded objective totals and any live target ledgers needed for restart policy; it does not journal every world hit indefinitely. Target death, capture, despawn, unload, healing/reset, phase transition, timeout, and event cleanup have explicit ledger finalization or discard rules.
+
+Definitions choose credit independently for each objective: immediate actor, owning player, player-plus-owned-Pals, team/guild aggregate, or no owner roll-up. “Most damage” is a reduction over this ledger, not a claim that Palworld natively publishes an MVP. Ties, minimum contribution, disconnected winners, overkill clamping, and unresolved source behavior are required policy fields for competitive damage objectives.
+
 ### Layer 7: participation
 
 Participation modes:

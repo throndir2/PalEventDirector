@@ -175,6 +175,32 @@ Consequences for the event design:
 - `workerDerived` can implement a transparent project formula from a target-base worker snapshot, but must not be marketed as matching Palworld until the native formula is measured.
 - Official wording does not establish whether Palworld uses maximum, mean, median, a top-N statistic, work suitability, party power, or another score. That remains a live observational spike.
 
+### Combat attribution findings
+
+Current Modding Kit declarations and the installed dedicated-server executable establish these native surfaces:
+
+- `UPalEventNotify_Character.OnNotifyEventDamagedInServer(FPalDamageResult)` is a global server-oriented damage notification.
+- `FPalDamageResult` exposes `Attacker`, `Defender`, `Damage`, `ActualDamage`, element, weapon, body part, hit location, shield behavior, base power, and `bCannotKill`.
+- `UPalEventNotify_Character.OnNotifyEventDeadInServer(FPalDeadInfo)` exposes the victim, `LastAttacker`, `LastDamage`, and `EPalDeadType`.
+- Player characters and Pal monsters implement the outgoing inflict/defeat interface and expose `OnInflictDamageDelegate` and `OnDefeatCharacterDelegate`.
+- `FPalDyingEndInfo` retains `LastAttackerInstanceID` for completion of the special player dying/downed lifecycle.
+- `FPalKillLogDisplayData` contains attacker and killed character IDs, unique-NPC IDs, and player UIDs, but no damage amount.
+- Every `UPalCharacterParameterComponent` has a transient, non-replicated `TMap<FPalInstanceID, int32> DamageMap`.
+- Ownership candidates include `GetIndividualIDByActor()`, `FPalInstanceID.PlayerUId`, `FPalIndividualCharacterSaveParameter.OwnerPlayerUId`, and active-Pal trainer state.
+- Native player records include selected tower, raid, normal-boss, aggregate-boss, and predator defeat counters. They are progression records, not arbitrary kill or damage ledgers.
+- Reflected raid, tower, arena, invasion, and oil-rig systems expose participants/outcomes but no combat MVP or top-damage result.
+
+Read-only string inspection of the current installed server executable confirmed the reflected names `DamageMap`, `OnProcessedActualDamageDelegate`, `OnNotifyEventDamagedInServer`, `OnNotifyEventDeadInServer`, `OnInflictDamage`, `OnDefeatCharacter`, and their player/Pal delegates. Searches found no corresponding `MostDamage`, `DamageScore`, combat-contribution winner, or MVP symbol. Absence of a reflected/string name is not proof that no private native calculation exists, but no supported API for retrieving such a winner is currently evident.
+
+Consequences:
+
+- Final-hit counting is strongly supported by native event shapes, subject to runtime lifecycle and edge-case validation.
+- Direct player kills and owned-Pal kills can be kept separate or rolled up to the owning player after ownership normalization.
+- Per-player or per-Pal damage can be accumulated from one accepted-damage notification using `ActualDamage`, once its precise HP/shield/overkill behavior is measured.
+- “Most damage dealt” should be computed by Pal Event Director from its own bounded per-target ledger. It is not currently a native scoreboard result.
+- Native `DamageMap` is promising as a reconciliation source but its value semantics, contributor identity, and reset points are unknown because generated implementation bodies are stubs.
+- Hate/threat state is not a substitute for damage: it can change for non-damage reasons and exposes target-selection behavior rather than a contribution total.
+
 ## PalSchema sources
 
 - [PalSchema features](https://okaetsu.github.io/PalSchema/docs/features)
@@ -292,14 +318,18 @@ PalForge reports that invoking `RequestSpawnMapObject_Server` from bare Lua abor
 15. Do bounty invasion copies drop `BountyProof_1` correctly on death, capture, and later butchering, and does capture complete the native wave?
 16. Are original overworld bounty spawner state, map markers, respawn, and first-clear Ancient Technology Points unaffected?
 17. Which statistic converts the target base's assigned Work-Pal levels into native invasion grade, and when is that workforce snapshot taken?
-18. What actor/handle identity survives unload/restart well enough for spawn reconciliation?
-19. Which existing Pal/NPC IDs and level ranges are safe to spawn and capturable?
-20. Can sign text be updated through the normal filtering path without impersonating a player request?
-21. Which world settings can change live, replicate correctly, and revert without stale client UI or active-task inconsistency?
-22. Can normal dungeon/boss/raid/oil-rig/arena completions be attributed without invoking private server-internal functions?
-23. How does the official loader preserve writable config/state across package updates?
-24. What performance cost do the required hooks and record/position reconciliation have on a mature world?
-25. What package disable/removal sequence leaves the world clean when an event was interrupted?
+18. Which global damage/death callback is emitted exactly once per accepted hit/defeat, and what is its ordering relative to outgoing delegates and player down/death?
+19. Does `ActualDamage` mean HP-only, shield-plus-HP, post-mitigation requested damage, or clamped health loss under every combat edge case?
+20. How reliably can weapons, projectiles, partner skills, explosions, DoT, ridden Pals, and base workers be normalized to immediate Pal and owning player?
+21. What exactly does native `DamageMap` accumulate, whose instance IDs are keys, and when is it reset or discarded?
+22. What actor/handle identity survives unload/restart well enough for spawn reconciliation?
+23. Which existing Pal/NPC IDs and level ranges are safe to spawn and capturable?
+24. Can sign text be updated through the normal filtering path without impersonating a player request?
+25. Which world settings can change live, replicate correctly, and revert without stale client UI or active-task inconsistency?
+26. Can normal dungeon/boss/raid/oil-rig/arena completions be attributed without invoking private server-internal functions?
+27. How does the official loader preserve writable config/state across package updates?
+28. What performance cost do the required hooks and record/position reconciliation have on a mature world?
+29. What package disable/removal sequence leaves the world clean when an event was interrupted?
 
 ## Research workflow for each Palworld update
 

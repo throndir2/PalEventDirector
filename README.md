@@ -26,7 +26,7 @@ The planned system includes:
 
 - Wall-clock, game-time, recurring, manual, voted, and adaptive scheduling.
 - Event state machines with announcements, registration, active play, resolution, rewards, and cleanup.
-- Objectives based on joins, chat, captures, kills, gathering, crafting, building, fishing, travel, dungeons, bosses, raids, arenas, oil rigs, zones, and elapsed time where corresponding hooks prove reliable.
+- Objectives based on joins, chat, captures, final hits, direct-versus-owned-Pal kills, damage contribution, gathering, crafting, building, fishing, travel, dungeons, bosses, raids, arenas, oil rigs, zones, and elapsed time where corresponding hooks prove reliable.
 - Existing-item, experience, technology-point, status, and recognition rewards.
 - Controlled spawning of existing Pals and NPCs, built-in incidents, invasions, meteorites, supply drops, and instance systems where safe adapters are validated.
 - Mandatory scheduled invasions that can target every registered base without an Event Director consent layer, including experimental all-base bounty-target sieges with native per-base or explicitly configured level policies.
