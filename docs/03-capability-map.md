@@ -50,7 +50,7 @@ Every enabled capability still passes the acceptance gate in [the vanilla-client
 | Player chat | Confirmed | `BroadcastChatMessage` / `EnterChat_Receive` flow | Reliable sender/category mapping and safe suppression semantics. |
 | Character final hit/defeat | Confirmed API surface | Global server damage/death notifications, outgoing defeat delegates, and kill-log data | Resolve direct player versus owned Pal; validate down/death, status, environment, suicide, and duplicate semantics. |
 | Per-target damage contribution | Probable | Global `FPalDamageResult` notifications expose attacker, defender, and `ActualDamage`; each character also has a transient native `DamageMap` | Build a director-owned ledger from one accepted-damage feed; determine native map meaning/reset behavior before relying on it. |
-| Most damage dealt | Experimental derived result | No reflected native MVP/top-damage result; compute from the validated contribution ledger at target resolution | Define shield, overkill, healing/reset, DoT, owner-transfer, and tie policy explicitly. |
+| Contribution leaderboard | Experimental derived result | No reflected native MVP/top-damage result; compute target-budgeted effective damage from the validated ledger | Define health budget, shield, overkill, healing/reset, DoT, base assignment, owner-transfer, and tie policy explicitly. |
 | Pal capture | Confirmed | capture success path and player record deltas | Exact player, species, level, rarity, passive data, and duplicate firing. |
 | Existing item grant | Confirmed | `UPalPlayerInventoryData.AddItem_ServerInternal` | Full inventory behavior, stack limits, invalid IDs, notification, offline delivery. |
 | Item pickup/resource gathering | Probable | item/container/network operation hooks and record triggers | Distinguish gathering, pickup, transfer, crafting output, and admin grants. |
@@ -131,7 +131,7 @@ These surfaces support three useful levels of event scoring:
 
 1. **Final hit:** credit the normalized owner of `FPalDeadInfo.LastAttacker` when the death type and target lifecycle qualify.
 2. **Direct versus Pal kill:** retain the attacking actor's identity, then optionally roll an owned Pal up to `OwnerPlayerUId`. Definitions can count `playerDirect`, `ownedPal`, or `playerCombined` separately.
-3. **Most damage:** sum one validated accepted-damage field per target and normalized source, then select the highest total when that target resolves. This is director-derived rather than a reflected native winner result.
+3. **Contribution leaderboard:** convert one validated accepted-damage field per target and normalized source into bounded target value, then rank totals at event resolution. This is director-derived rather than a reflected native winner result.
 
 Every character parameter component contains a transient, non-replicated `TMap<FPalInstanceID, int32> DamageMap`. Its shape suggests native per-attacker bookkeeping, but generated source does not reveal whether values mean HP damage, shield damage, threat, reward contribution, or another quantity, nor when entries reset. Treat it as an observational cross-check until live tests establish semantics; do not make it the production source of truth merely because it is named `DamageMap`.
 

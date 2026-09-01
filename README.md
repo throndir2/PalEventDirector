@@ -4,6 +4,8 @@ Pal Event Director is a planned event platform for a Palworld dedicated server. 
 
 > **Project state:** design and capability-research phase. This repository does not yet contain a runnable mod.
 
+> **Flagship focus:** Siege League—native mandatory invasions, player-plus-active-Pal contribution standings, participation rewards, and first/second/third podium rewards. The broader event catalog remains planned.
+
 ## Non-negotiable contract
 
 The server may change authoritative game state only through behavior and content already understood by a vanilla client. An event may use existing Pals, NPCs, items, incidents, locations, effects, messages, and replicated properties. It may not require a custom client class, asset, data identity, script, widget, or network protocol.

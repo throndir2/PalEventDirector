@@ -284,13 +284,15 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 **Fallback:** if meteor initiation is unavailable, announce a natural safari at a configured landmark and omit the impact race.
 
-### 2. Siege Saturday
+### 2. Siege League: Siege Saturday
 
 **Fantasy:** The island declares every base a target for a native invasion league.
 
 **Phases:** global warning → base snapshot → simultaneous native invasion starts → native waves → recovery interval → standings.
 
-**Scoring:** survival, waves completed, completion time, optional no-player-death bonus. Base wealth or destruction amount is not used because it could incentivize unsafe builds or griefing.
+**Scoring:** each player is assigned to one snapshotted home base. The individual podium uses target-budgeted effective damage there from the player plus their validated active owned Pal. Final hits are shown separately and break an otherwise equal contribution score; they do not drive the leaderboard. The initial ranked profile does not use capturable invaders. Base/guild standings still use survival, waves completed, completion time, and an optional no-player-death bonus. Base wealth or destruction amount is not used because it could incentivize unsafe builds or griefing.
+
+**Rewards:** every player meeting a bounded contribution threshold receives a personal participation reward. Successful bases receive a separate defender-completion reward. First, second, and third receive additional exactly-once podium grants with deliberately modest gaps. Native invasion rewards and bounty drops remain separate. An optional “Executioner” announcement can recognize the most final hits without attaching the largest economic reward to kill stealing.
 
 **Safety:** no consent or online-owner filter; every registered base is attempted. Technical failures such as an unavailable base model, blocked start point, or native cooldown are recorded. Per-base wave size is reduced before any base is omitted, and no cleanup operation touches unknown invaders.
 

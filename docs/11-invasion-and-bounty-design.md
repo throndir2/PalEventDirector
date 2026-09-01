@@ -299,6 +299,76 @@ A future definition should express policy explicitly:
 
 Health protection should reduce the per-base profile size before it excludes bases. For example, every base can receive one bounty leader rather than only some bases receiving sixteen attackers. An emergency server-health stop remains necessary, but it is a failure response rather than a consent or eligibility rule.
 
+## Leaderboard and reward decision
+
+### Primary ranking
+
+Use **damage contribution**, not final hits, for the first/second/third individual podium. A final-hit leaderboard is easy to explain and has a strong native signal, but it rewards waiting for the last attack, makes burst timing more valuable than sustained defense, and turns allies into kill-stealing competitors. It also has no natural answer when an invader is captured instead of killed.
+
+The production metric should be target-budgeted effective damage rather than unrestricted raw damage. At spawn, the adapter records one immutable scoreable-health budget $H_t$ from the validated maximum-HP source. The initial profile excludes shields; if a target unexpectedly has a shield, regeneration, a second health bar, or a maximum-HP mismatch, it is unranked and the event degrades to completion-only rewards.
+
+Accepted hit records are deduplicated and consumed in canonical server callback order. For each target, let $e_{p,t}$ be eligible direct or active-Pal damage credited to player $p$, and $u_t$ be all ineligible or unresolved accepted damage. Each hit consumes only the target's remaining budget, so:
+
+$$
+\sum_p e_{p,t} + u_t \le H_t
+$$
+
+For each event-owned invader $t$:
+
+$$
+C_{p,t} = V_t \times \frac{e_{p,t}}{H_t}
+$$
+
+and the player's event score is:
+
+$$
+S_p = \sum_t C_{p,t}
+$$
+
+where:
+
+- $V_t$ is the bounded point value assigned to that target profile;
+- $H_t$ is the target's immutable scoreable-health budget for one validated unshielded life;
+- $e_{p,t}$ is accepted, deduplicated, non-overkill damage caused by player $p$ directly or by that player's validated active owned Pal, after shared-budget consumption.
+
+Scores use signed 64-bit fixed-point micro-points: each configured $V_t$ is stored as an integer number of $10^{-6}$ points, each $C_{p,t}$ is calculated with integer multiplication/division, and fractional micro-points round down once per target after its ledger closes. Profile validation rejects any actor/base/wave bound that could overflow the event sum. Targets and accepted hits reduce in recorded server sequence order.
+
+Damage from structures, base workers, other NPCs, the environment, or an unresolved source contributes to $u_t$: it consumes the same target health budget but does not become an individual's score. This prevents a one-damage tag from claiming all target points after a turret or unrelated actor does the work. Those sources can still count toward base/guild completion. Any unexplained ledger/HP divergence beyond a validated tolerance makes that target unranked rather than inventing points.
+
+The first ranked profile uses only invasion actors proven noncapturable in this context, avoiding capture-based denial of scoring opportunity. Later capturable profiles must be explicitly unranked or use a separately validated capture-normalization rule. A captured target never fabricates a final hit or allocates its undamaged point budget. Overkill, unrelated targets, friendly fire, and post-resolution callbacks never score.
+
+### Player and Pal credit
+
+The individual podium combines direct player damage with damage from that player's validated active or ridden Pal. `activeAtHit`/`riddenAtHit` and ownership are snapshotted at each accepted hit and applied identically to damage and final-hit credit. Delayed projectiles and status damage use their validated source snapshot; unresolved delayed effects are ineligible rather than guessed. Immediate source identity is retained, allowing separate displayed totals for player damage, Pal damage, and each individual Pal even though the podium rolls them up.
+
+Initially, base-worker Pals and automated defenses contribute to the base/guild outcome rather than an individual podium. Crediting an offline worker's historical owner or a shared structure to one person would be arbitrary and exploitable. That policy can expand only after participation and ownership semantics are proven.
+
+### Final hits and ties
+
+Final hits remain useful, but as a secondary statistic:
+
+- show `Final Hits` beside contribution score;
+- use final hits as a deterministic tie-breaker only after exact fixed-point contribution scores tie;
+- if score and final hits remain equal, compare distinct targets on which the player consumed at least 5% of $H_t$, then order tied player UIDs lexicographically and apply an occurrence-seeded Fisher–Yates draw whose seed and resulting order are journaled before reward obligations;
+- optionally announce an `Executioner` side distinction;
+- do not attach the largest item grant to that distinction.
+
+This keeps the satisfying finishing-blow statistic without making kill stealing the dominant strategy. Captures are displayed separately and never masquerade as final hits.
+
+### Reward bands
+
+Use two independent reward layers:
+
+1. **Personal participation:** every assigned player above the configured minimum contribution receives a useful fixed reward even if that base later times out or a health abort ends the event; pure technical-start failure yields no combat participation reward.
+2. **Successful-base completion:** eligible defenders of a base that completes its invasion receive a separate fixed reward, including qualifying capture-only defenders in a later capturable profile.
+3. **Podium:** first, second, and third by contribution score receive additional exactly-once grants. The value gaps should be meaningful but modest so players still benefit from cooperation.
+
+Native invasion completion rewards, per-actor bounty drops, personal participation grants, successful-base grants, and podium grants are five distinct economic channels. Preview computes a conservative bound from the actual mixed member profile, wave and base caps, maximum configured eligible players, all grant quantities, capture/butchering possibilities, and active drop multipliers. An unknown native reward or multiplier blocks ranked-reward activation. A failed or technically ineligible base cannot create phantom leaderboard points, while a successful defense can still issue completion rewards even if no individual reaches the podium globally.
+
+### Cross-base fairness
+
+All-base incidents can select different levels and stock member counts. Each player is locked at event start to one eligible home base from their snapshotted guild/base context; only score from that base enters the global individual podium. A player without one unambiguous home base can receive base completion rewards but is unranked. The target values and total target-value budget are identical across successfully started ranked bases; if the native result cannot satisfy that invariant, the affected base is completion-only. This prevents traveling between raids or having access to more raw HP from deciding the leaderboard. Base/guild standings remain a separate table based on completion, survival, and time rather than individual damage.
+
 ## Suggested bounty profiles
 
 ### Bounty Patrol
@@ -307,6 +377,7 @@ Health protection should reduce the per-base profile size before it excludes bas
 - One or two ordinary faction escorts.
 - One wave.
 - Intended as a frequent token-farming event.
+- Completion-only until its capture policy is proven fair for ranked play.
 
 ### Most Wanted
 
@@ -373,6 +444,13 @@ before any game modifiers affecting drops or butchering. Event preview should di
 14. With two same-guild bases whose assigned Work Pals have deliberately different levels, prove native grade and final levels are evaluated independently per base.
 15. Run the controlled workforce matrix and classify the native aggregation formula only if the observations distinguish it conclusively.
 16. Verify `native`, `fixed`, and positive/negative bounded `relative` policies from selected member through initialized actor level, including every wave and restart boundary.
+17. Compare identical scripted damage splits and final-hit orderings; prove that changing only the finishing attacker does not change the primary contribution ranking.
+18. Test direct player, active Pal, ridden Pal, base-worker Pal, automated defense, environmental damage, unresolved damage, overkill, capture, and duplicate callbacks against the target health budget.
+19. Simulate ties and verify exact contribution, final-hit tie-break, deterministic final fallback, and first/second/third reward settlement.
+20. Compare low- and high-grade bases with different native actor counts and prove the configured per-base target-value budget prevents raw-HP opportunity from deciding the global leaderboard.
+21. Attempt cross-base travel and damage, ambiguous/no-home-base participation, guild switching, and staggered raid starts; verify each player can consume only their snapshotted base's score budget.
+22. Vary capture timing and capturer identity; prove the first ranked profile is noncapturable and later capture policies cannot deny or fabricate ranked points.
+23. Inject shields, regeneration, maximum-HP mismatch, duplicate/out-of-order callbacks, and ledger/HP divergence; verify the target becomes unranked rather than exceeding its immutable budget.
 
 ## Current conclusion
 
@@ -383,5 +461,6 @@ before any game modifiers affecting drops or butchering. Event preview should di
 - **Farm Successful Bounty Tokens:** high-confidence probable because the current 34 drop rows key 100% token drops directly to the `BOSS_*` character IDs.
 - **Specify exact bounty level:** probable-to-high confidence by setting the final pre-spawn member `Level`; clean-client and boundary tests are still required.
 - **Align independently to each base:** native policy should preserve Palworld 1.0's target-base Work-Pal scaling; it is indirect grade/row scaling, not proven exact equality to any worker statistic.
+- **Rank the individual podium:** target-budgeted player-plus-active-Pal damage is preferred; final hits are a displayed secondary statistic and tie-breaker rather than the primary score.
 - **Preserve original bounty-world progression:** not expected; event copies should be independent of fixed bounty spawners.
 - **Vanilla-client safety:** promising with Route A, but not confirmed until the clean-client spike passes.

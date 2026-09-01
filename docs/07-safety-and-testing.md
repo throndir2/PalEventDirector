@@ -220,6 +220,11 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 - Verify whether player down and completed death emit distinct callbacks and choose one declared scoring boundary.
 - Reconcile native `DamageMap` against the director ledger for HP, shield, overkill, DoT, healing, target reset, capture, unload, death, and respawn; document its reset and ownership semantics before any use.
 - For most-damage objectives, test ties, minimum contribution, disconnected contributors, target healing/reset, multiple phases/forms, and bounded memory under sustained combat.
+- For Siege League, validate immutable maximum-HP budgets, canonical hit ordering, fixed-point scoring, and the invariant that eligible plus uncredited consumed damage never exceeds a target budget.
+- Inject shields, regeneration, phase changes, HP mismatch, duplicate/out-of-order events, and unexplained ledger divergence; each affected target must become unranked rather than mint excess points.
+- Attempt cross-base score farming, guild switching, no/ambiguous home-base identity, and delayed hits after travel; only the player's snapshotted home-base ledger may affect the podium.
+- Prove the initial ranked profile is noncapturable. For every later capture policy, vary capture timing and identity to ensure capture cannot deny opponents' ranked opportunity or fabricate remaining target value.
+- Fault-inject personal participation, successful-base completion, and podium grants independently; native rewards and actor drops must remain separate and each director reward key must settle exactly once.
 
 ### Item/crafting/gathering
 

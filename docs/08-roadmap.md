@@ -6,6 +6,23 @@ Build the entire platform as a sequence of independently useful, evidence-gated 
 
 No calendar date is promised. Each phase exits only when its acceptance criteria pass on the current Palworld revision.
 
+## Flagship fast path
+
+The roadmap remains a full-platform plan, but implementation should drive toward **Siege League** as the first complete gameplay vertical slice. Follow the safety dependencies from Phases 0–2, implement the combat-attribution subset of Phase 3, complete the exactly-once reward core in Phase 4, and then advance the native-invasion subset of Phase 7. Unrelated observation families, zones, independent character spawning, modifiers, and instance control can continue afterward or in parallel without blocking the first siege.
+
+The initial slice contains:
+
+1. public warnings and standings plus private score queries;
+2. player, guild, and home-base identity snapshots plus active-owned-Pal attribution;
+3. accepted-damage, final-hit, capture, and invasion-lifecycle observation;
+4. one bounded, noncapturable stock-composition ranked base siege before all-base scale;
+5. one bounty-member substitution profile after stock siege proof, initially completion-only unless capture normalization and the full reward economy pass;
+6. participation and first/second/third reward obligations through the durable ledger;
+7. a one-home-base target-budgeted contribution leaderboard, separate base/guild outcomes, and final hits recorded as a secondary statistic and tie-breaker;
+8. restart, vanilla-client, native-drop, cleanup, and server-health validation.
+
+This path does not weaken any phase gate. It narrows which capabilities are built first.
+
 ## Parallel workstreams
 
 1. **Core runtime** — lifecycle, state, scheduler, event machine, jobs, claims, recovery.
@@ -97,8 +114,8 @@ No calendar date is promised. Each phase exits only when its acceptance criteria
 
 Add adapters one signal family at a time:
 
-1. capture attribution;
-2. death/kill attribution;
+1. accepted-damage, death/final-hit, and player/owned-Pal attribution;
+2. capture attribution;
 3. player records and monotonic counter reconciliation;
 4. item gathering/pickup classification;
 5. craft/build/work completion;
@@ -139,6 +156,7 @@ Add adapters one signal family at a time:
 - Raffle Night.
 - Personal Daily Commission.
 - Newcomer, returner, mentor, and catch-up contracts.
+- Simulated Siege League participation and three-place podium settlement before a live invasion adapter exists.
 
 ### Exit criteria
 
@@ -214,6 +232,7 @@ Add adapters one signal family at a time:
 - Meteor Safari.
 - Mandatory Base Siege, All-Base Alarm, and Base Defense League.
 - Bounty Siege, Most Wanted March, and Kingpin Siege.
+- Siege League with individual contribution standings, final-hit side statistics, base/guild outcomes, and exactly-once participation/podium rewards.
 - Night of Falling Stars at low initial scale.
 - Meteor-to-Siege compound event after independent soak.
 
@@ -223,6 +242,9 @@ Add adapters one signal family at a time:
 - Every registered base receives an attempted outcome in all-base mode; native technical failures are classified and reported.
 - Exact group-name scope and declaration/Negotiator bypass are proven rather than inferred from reflected names.
 - Bounty death/capture/butcher drops, wave completion, vanilla clients, and overworld-bounty independence are proven.
+- Target-budgeted damage standings reconcile against native combat events; final-hit and capture resolution cannot duplicate target scoring.
+- Direct-player and active-owned-Pal contributions roll up correctly while preserving separate source telemetry.
+- Personal participation, per-successful-base completion, first, second, and third rewards settle exactly once without replacing native invasion rewards or bounty drops.
 - Concurrency locks and server-health stops work.
 - Restart and world-partition cases converge.
 

@@ -291,11 +291,12 @@ Combat signals retain two identities when available: the immediate damage source
 
 - `sourceActor` — player and Pal score separately;
 - `ownerPlayer` — an owned Pal rolls up to its owner, while unresolved actors do not score;
-- `playerCombined` — direct player and validated owned-Pal contributions share one player total;
+- `playerCombined` — direct player and all validated owned-Pal contributions share one player total;
+- `playerAndActivePal` — direct player and only a validated active/ridden Pal at hit time share one player total;
 - `team` or `guild` — aggregate only after source/owner normalization;
 - `finalHitSource` or `finalHitOwner` — score only the qualifying last attacker.
 
-Damage objectives must also name the accepted field (`actualDamage` initially), target scope, overkill policy, healing/reset policy, unknown-source policy, and deduplication key. “Most damage” uses the `best` operator over accumulated per-target contribution; it is not a native Palworld leaderboard. Definitions cannot read arbitrary native maps or call an unverified top-damage function.
+Damage objectives must also name the accepted field (`actualDamage` initially), target scope, immutable target point and scoreable-health budgets, shield policy, overkill policy, healing/reset policy, source eligibility, unknown-source budget policy, contributor-assignment policy, and deduplication key. The initial ranked invasion policy locks each player to one snapshotted home base and ignores their damage at other event bases. A contribution podium ranks the aggregate output of `targetBudgetedDamage`; it is not a native Palworld leaderboard. Definitions cannot read arbitrary native maps or call an unverified top-damage function.
 
 ## Objective operators
 
@@ -303,6 +304,7 @@ Damage objectives must also name the accepted field (`actualDamage` initially), 
 |---|---|
 | `count` | Count valid deduplicated signals. |
 | `sum` | Sum a bounded numeric signal field. |
+| `targetBudgetedDamage` | Consume one immutable target health budget in canonical hit order and convert eligible accepted damage into a bounded share of the target's configured point value. |
 | `distinct` | Count unique allowlisted IDs. |
 | `best` | Highest/lowest valid single value. |
 | `firstTo` | First subject reaching a threshold. |
@@ -369,6 +371,7 @@ Reward selectors:
 
 - all eligible participants;
 - contributors above a threshold;
+- eligible defenders of each successfully completed base incident;
 - placement/rank band;
 - winning team or guild;
 - personal milestone;
@@ -377,6 +380,8 @@ Reward selectors:
 - server-wide completion award.
 
 Reward types are adapter-backed and allowlisted. Definitions cannot issue arbitrary console commands. Global operator policy caps reward value, frequency, and per-player accumulation regardless of template values.
+
+Each reward has a stable definition ID. A per-base reward also names the base-incident success state and defender eligibility rule. Its durable obligation key includes occurrence, reward-definition ID, recipient UID, base/incident identity where applicable, rank/tier, and grant index so personal participation, base completion, native-independent podium, and repeated-base obligations cannot collide.
 
 ## Resource claims and overlap
 

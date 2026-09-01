@@ -10,6 +10,14 @@ Vanilla dedicated servers provide world settings and basic administration but li
 
 Pal Event Director fills that gap by orchestrating existing Palworld systems from the authoritative server.
 
+## Flagship direction
+
+The first complete player-facing experience is an invasion-and-reward loop: announce a mandatory siege, attack the relevant bases through Palworld's native invasion system, measure defensible combat contribution, publish standings, and deliver participation plus podium rewards exactly once.
+
+This focus does not discard the broader event catalog. Scheduling, messaging, identity, scoring, rewards, persistence, and safety remain generic platform capabilities, and other event families remain planned. Invasions are the product-driving vertical slice because they combine Palworld's strongest native spectacle with repeatable competition and rewards while requiring no client files.
+
+The initial individual podium ranks target-budgeted effective damage from a player and their validated active owned Pal at one snapshotted home base. Final hits remain visible as a secondary statistic and deterministic tie-breaker, not the primary score. This avoids making kill stealing or traveling through several bases the optimal strategy. Personal participation rewards and successful-base completion rewards remain separate so a three-place leaderboard does not turn a cooperative defense into winner-take-all play.
+
 ## Product goals
 
 1. **Zero-friction participation** — unmodified Steam, Xbox, PlayStation, and Mac clients can connect normally, subject only to Palworld's own cross-play support.

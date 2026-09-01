@@ -225,6 +225,7 @@ Scoring is deterministic. Definitions specify attribution, eligibility, ties, la
 Combat records preserve both the immediate source and an optional credited owner. A Pal's damage is never silently rewritten as direct player damage. The normalized record can therefore expose:
 
 - `sourceKind`: `player`, `ownedPal`, `unownedPal`, `humanNpc`, `environment`, or `unknown`;
+- `sourceActivity`: direct player, active/ridden Pal, base worker, automated structure, or other, snapshotted at hit time;
 - source actor/character/instance identity where stable;
 - `ownerPlayerUid` only when a validated ownership path resolves it;
 - target instance identity;
@@ -233,7 +234,7 @@ Combat records preserve both the immediate source and an optional credited owner
 
 Per-target contribution ledgers are director-owned transient state keyed by stable target identity. They aggregate one canonical accepted-damage feed, not both incoming and outgoing delegates. A durable event checkpoint stores only bounded objective totals and any live target ledgers needed for restart policy; it does not journal every world hit indefinitely. Target death, capture, despawn, unload, healing/reset, phase transition, timeout, and event cleanup have explicit ledger finalization or discard rules.
 
-Definitions choose credit independently for each objective: immediate actor, owning player, player-plus-owned-Pals, team/guild aggregate, or no owner roll-up. “Most damage” is a reduction over this ledger, not a claim that Palworld natively publishes an MVP. Ties, minimum contribution, disconnected winners, overkill clamping, and unresolved source behavior are required policy fields for competitive damage objectives.
+Definitions choose credit independently for each objective: immediate actor, owning player, player-plus-all-owned-Pals, player-plus-active/ridden-Pal, team/guild aggregate, or no owner roll-up. A contribution leaderboard is a bounded reduction over this ledger, not a claim that Palworld natively publishes an MVP. Ties, minimum contribution, contributor-to-base assignment, disconnected winners, overkill clamping, and unresolved source behavior are required policy fields for competitive damage objectives.
 
 ### Layer 7: participation
 
@@ -338,7 +339,7 @@ Rules:
 Reward delivery follows an outbox pattern:
 
 1. Resolve winners and calculate a canonical reward list.
-2. Persist a reward obligation with a unique key derived from occurrence, player, tier, and reward index.
+2. Persist a reward obligation with a unique key derived from occurrence, reward-definition ID, recipient player, optional base/incident identity, rank/tier, and reward index.
 3. Check eligibility, allowlist, quantity cap, and prior delivery.
 4. Queue a game-thread grant.
 5. Verify the result where the game API permits.

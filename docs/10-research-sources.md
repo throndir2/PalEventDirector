@@ -197,7 +197,7 @@ Consequences:
 - Final-hit counting is strongly supported by native event shapes, subject to runtime lifecycle and edge-case validation.
 - Direct player kills and owned-Pal kills can be kept separate or rolled up to the owning player after ownership normalization.
 - Per-player or per-Pal damage can be accumulated from one accepted-damage notification using `ActualDamage`, once its precise HP/shield/overkill behavior is measured.
-- “Most damage dealt” should be computed by Pal Event Director from its own bounded per-target ledger. It is not currently a native scoreboard result.
+- A contribution leaderboard should be computed by Pal Event Director from its own bounded per-target ledger. Siege League uses target-budgeted effective damage rather than unrestricted raw “most damage”; neither is currently a native scoreboard result.
 - Native `DamageMap` is promising as a reconciliation source but its value semantics, contributor identity, and reset points are unknown because generated implementation bodies are stubs.
 - Hate/threat state is not a substitute for damage: it can change for non-damage reasons and exposes target-selection behavior rather than a contribution total.
 
