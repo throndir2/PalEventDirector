@@ -296,7 +296,7 @@ Combat signals retain two identities when available: the immediate damage source
 - `team` or `guild` — aggregate only after source/owner normalization;
 - `finalHitSource` or `finalHitOwner` — score only the qualifying last attacker.
 
-Damage objectives must also name the accepted field (`actualDamage` initially), target scope, immutable target point and scoreable-health budgets, shield policy, overkill policy, healing/reset policy, source eligibility, unknown-source budget policy, contributor-assignment policy, and deduplication key. The initial ranked invasion policy locks each player to one snapshotted home base and ignores their damage at other event bases. A contribution podium ranks the aggregate output of `targetBudgetedDamage`; it is not a native Palworld leaderboard. Definitions cannot read arbitrary native maps or call an unverified top-damage function.
+Damage objectives must also name the accepted field (`actualDamage` initially), target scope, immutable target point and scoreable-health budgets, shield policy, overkill policy, healing/reset policy, source eligibility, unknown-source budget policy, contributor-assignment policy, and deduplication key. The initial ranked invasion policy deliberately aggregates a player's contribution across every event base they reach. A contribution podium ranks the aggregate output of `targetBudgetedDamage`; it is not a native Palworld leaderboard. Definitions cannot read arbitrary native maps or call an unverified top-damage function.
 
 ## Objective operators
 

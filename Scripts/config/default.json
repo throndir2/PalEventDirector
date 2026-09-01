@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "mode": "laboratory",
+  "compatibility": {
+    "requiredAdapter": "palworld-1.0.3-lab",
+    "allowedServerBuildIds": [
+      "24575149"
+    ],
+    "allowedUe4ssVersions": []
+  },
+  "runtime": {
+    "pollIntervalMs": 1000,
+    "checkpointIntervalSeconds": 5,
+    "logLevel": "info"
+  },
+  "capabilities": {
+    "observeCombat": false,
+    "observeInvasions": false,
+    "chatCommands": false,
+    "startAllInvasions": false,
+    "grantItems": false
+  },
+  "diagnostics": {
+    "traceHooks": false,
+    "observationProbe": false
+  },
+  "limits": {
+    "maxBases": 64,
+    "maxTargets": 512,
+    "maxPlayers": 128,
+    "maxDamageRecords": 100000,
+    "maxAnnouncementLength": 500
+  },
+  "siegeLeague": {
+    "name": "Siege League",
+    "allowCrossBaseRoaming": true,
+    "targetPoints": 1000,
+    "minimumParticipationPoints": 100,
+    "leaderboardSize": 10,
+    "startDiscoverySeconds": 60,
+    "settleDelaySeconds": 15,
+    "maxRuntimeSeconds": 1800,
+    "creditDirectPlayer": true,
+    "creditActivePal": true,
+    "creditBaseWorkers": false
+  },
+  "rewards": {
+    "allowedItemIds": [
+      "BountyProof_1"
+    ],
+    "participation": {
+      "enabled": true,
+      "itemId": "BountyProof_1",
+      "count": 1
+    },
+    "baseCompletion": {
+      "enabled": true,
+      "itemId": "BountyProof_1",
+      "count": 1,
+      "maxPerPlayer": 8
+    },
+    "podium": [
+      {
+        "rank": 1,
+        "itemId": "BountyProof_1",
+        "count": 5
+      },
+      {
+        "rank": 2,
+        "itemId": "BountyProof_1",
+        "count": 3
+      },
+      {
+        "rank": 3,
+        "itemId": "BountyProof_1",
+        "count": 2
+      }
+    ]
+  },
+  "operatorUids": []
+}

@@ -14,11 +14,11 @@ This document plans packaging and operation for a self-hosted Windows Palworld d
 
 ## Official package shape
 
-A future release package will keep `Info.json` at its root and declare:
+The alpha release package keeps `Info.json` at its root and declares:
 
 - stable alphanumeric `PackageName`;
 - incremented `Version`;
-- tested `MinRevision`;
+- `MinRevision=0` only for the unpublished laboratory build; a published release must record the tested five-digit revision;
 - the exact UE4SS package identity as a dependency;
 - a Lua install rule with `IsServer: true`;
 - no client install rule unless the product contract is intentionally changed, which is currently prohibited.
@@ -78,7 +78,7 @@ Configuration loading is fail-closed. Invalid optional sections use documented s
 
 ## Deployment pipeline
 
-A future release/deployment pipeline should enforce:
+The current source pipeline implements deterministic simulation, package validation, and reproducible archive generation. A release/deployment pipeline must additionally enforce:
 
 1. Inventory all repository and server-package changes.
 2. Verify source provenance and dependency/runtime hashes.

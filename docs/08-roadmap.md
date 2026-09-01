@@ -13,12 +13,12 @@ The roadmap remains a full-platform plan, but implementation should drive toward
 The initial slice contains:
 
 1. public warnings and standings plus private score queries;
-2. player, guild, and home-base identity snapshots plus active-owned-Pal attribution;
+2. player/guild identity, event-base/group correlation, and active-owned-Pal attribution;
 3. accepted-damage, final-hit, capture, and invasion-lifecycle observation;
 4. one bounded, noncapturable stock-composition ranked base siege before all-base scale;
 5. one bounty-member substitution profile after stock siege proof, initially completion-only unless capture normalization and the full reward economy pass;
 6. participation and first/second/third reward obligations through the durable ledger;
-7. a one-home-base target-budgeted contribution leaderboard, separate base/guild outcomes, and final hits recorded as a secondary statistic and tie-breaker;
+7. a cross-base target-budgeted contribution leaderboard with `Bases Defended`, separate base/guild outcomes, and final hits recorded as a secondary statistic and tie-breaker;
 8. restart, vanilla-client, native-drop, cleanup, and server-health validation.
 
 This path does not weaken any phase gate. It narrows which capabilities are built first.

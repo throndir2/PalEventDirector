@@ -16,7 +16,7 @@ The first complete player-facing experience is an invasion-and-reward loop: anno
 
 This focus does not discard the broader event catalog. Scheduling, messaging, identity, scoring, rewards, persistence, and safety remain generic platform capabilities, and other event families remain planned. Invasions are the product-driving vertical slice because they combine Palworld's strongest native spectacle with repeatable competition and rewards while requiring no client files.
 
-The initial individual podium ranks target-budgeted effective damage from a player and their validated active owned Pal at one snapshotted home base. Final hits remain visible as a secondary statistic and deterministic tie-breaker, not the primary score. This avoids making kill stealing or traveling through several bases the optimal strategy. Personal participation rewards and successful-base completion rewards remain separate so a three-place leaderboard does not turn a cooperative defense into winner-take-all play.
+The initial individual podium ranks target-budgeted effective damage from a player and their validated active owned Pal across every event base they can reach. Cross-base movement is intentional: the fantasy is “protect everything,” and `Bases Defended` is part of the standings. Final hits remain visible as a secondary statistic and deterministic tie-breaker, not the primary score. Personal participation rewards and successful-base completion rewards remain separate so a three-place leaderboard does not turn a cooperative defense into winner-take-all play.
 
 ## Product goals
 

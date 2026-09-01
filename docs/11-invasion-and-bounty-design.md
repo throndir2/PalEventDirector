@@ -365,9 +365,11 @@ Use two independent reward layers:
 
 Native invasion completion rewards, per-actor bounty drops, personal participation grants, successful-base grants, and podium grants are five distinct economic channels. Preview computes a conservative bound from the actual mixed member profile, wave and base caps, maximum configured eligible players, all grant quantities, capture/butchering possibilities, and active drop multipliers. An unknown native reward or multiplier blocks ranked-reward activation. A failed or technically ineligible base cannot create phantom leaderboard points, while a successful defense can still issue completion rewards even if no individual reaches the podium globally.
 
-### Cross-base fairness
+### Cross-base scramble
 
-All-base incidents can select different levels and stock member counts. Each player is locked at event start to one eligible home base from their snapshotted guild/base context; only score from that base enters the global individual podium. A player without one unambiguous home base can receive base completion rewards but is unranked. The target values and total target-value budget are identical across successfully started ranked bases; if the native result cannot satisfy that invariant, the affected base is completion-only. This prevents traveling between raids or having access to more raw HP from deciding the leaderboard. Base/guild standings remain a separate table based on completion, survival, and time rather than individual damage.
+The intended fantasy is “protect everything.” Players may move through every active event base, and eligible contribution from all of those bases enters the global individual podium. `Bases Defended` is displayed alongside score so cross-base response is visible rather than treated as an exploit.
+
+All-base incidents can select different levels and stock member counts. Configured point value is therefore target-budgeted rather than raw-HP scoring: fully contributing to one ordinary target has the same bounded value across bases even when native HP differs. A player can earn more by reaching more genuine threats; that is intentional. The director caps bases, targets, runtime, and total reward channels, and rejects targets whose health/identity cannot be validated. Base/guild standings remain a separate table based on completion, survival, and time rather than individual damage.
 
 ## Suggested bounty profiles
 
@@ -448,7 +450,7 @@ before any game modifiers affecting drops or butchering. Event preview should di
 18. Test direct player, active Pal, ridden Pal, base-worker Pal, automated defense, environmental damage, unresolved damage, overkill, capture, and duplicate callbacks against the target health budget.
 19. Simulate ties and verify exact contribution, final-hit tie-break, deterministic final fallback, and first/second/third reward settlement.
 20. Compare low- and high-grade bases with different native actor counts and prove the configured per-base target-value budget prevents raw-HP opportunity from deciding the global leaderboard.
-21. Attempt cross-base travel and damage, ambiguous/no-home-base participation, guild switching, and staggered raid starts; verify each player can consume only their snapshotted base's score budget.
+21. Move players through several event bases during staggered starts; verify all owned event groups score once, unrelated/natural incidents never score, and per-target/base/runtime ceilings bound the intended roaming advantage.
 22. Vary capture timing and capturer identity; prove the first ranked profile is noncapturable and later capture policies cannot deny or fabricate ranked points.
 23. Inject shields, regeneration, maximum-HP mismatch, duplicate/out-of-order callbacks, and ledger/HP divergence; verify the target becomes unranked rather than exceeding its immutable budget.
 

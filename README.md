@@ -1,10 +1,26 @@
 # Pal Event Director
 
-Pal Event Director is a planned event platform for a Palworld dedicated server. It will run on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
+Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
-> **Project state:** design and capability-research phase. This repository does not yet contain a runnable mod.
+> **Project state:** runnable `0.1.0-alpha.1` laboratory build. It boots, validates persistent configuration, maintains a checksummed journal/snapshot, tracks cross-base Siege League contribution/final hits through current reflected candidates, creates exactly-once reward obligations, and exposes operator controls. All gameplay observation, invasion starts, and live item delivery are disabled by default until the disposable-world gates pass.
+
+`Info.json` intentionally leaves `MinRevision` at `0` for this unpublished laboratory package because the installed executable does not expose the official five-digit title revision in file metadata. Record that revision in-game and set it before any published release.
 
 > **Flagship focus:** Siege League—native mandatory invasions, player-plus-active-Pal contribution standings, participation rewards, and first/second/third podium rewards. The broader event catalog remains planned.
+
+## Alpha quick start
+
+Prerequisite: one Palworld-compatible `UE4SS` package managed by Pocketpair's official loader. Do not install a second runtime.
+
+1. Run `npm install`, `npm run check`, and `npm run build` in this repository.
+2. Extract the generated archive from `dist/` into one folder under the server's `Mods/Workshop/`; `Info.json` must be directly inside that folder.
+3. Set `bGlobalEnableMod=true`, then add `ActiveModList=UE4SS` and `ActiveModList=PalEventDirector` under `[PalModSettings]` while preserving the server's existing mod entries.
+4. Restart only a disposable laboratory server/world first.
+5. The first boot creates persistent `Pal/Saved/PalEventDirector/config.json` with all adapter/mutation switches off.
+6. Enable `diagnostics.observationProbe` and one observation capability at a time, restart, and complete the checklist in [the alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md). Use `traceHooks` only for short focused troubleshooting.
+7. Enable `startAllInvasions` only after both observation adapters pass. Live `grantItems` is intentionally rejected in this build; rewards remain durable pending obligations until the next persistence gate is implemented.
+
+Operator console commands are `ped status`, `ped start`, `ped leaderboard`, `ped resolve`, `ped abort`, `ped reset`, and `ped rewards`. Player chat commands remain disabled by default; when validated and enabled, players can use `!event`, `!score`, and `!leaderboard`.
 
 ## Non-negotiable contract
 
@@ -52,6 +68,7 @@ Read these in order:
 9. [Operations](docs/09-operations.md) — packaging, configuration, deployment, rollback, and event administration.
 10. [Research sources](docs/10-research-sources.md) — source hierarchy, findings, and unresolved questions.
 11. [Mandatory invasions and bounty sieges](docs/11-invasion-and-bounty-design.md) — all-base targeting, exact invasion groups, bounty-token farming, and required proof.
+12. [Alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md) — implemented scope, fail-closed switches, installation, and staged live validation.
 
 ## Feasibility language
 

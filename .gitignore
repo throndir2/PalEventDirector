@@ -1,0 +1,9 @@
+node_modules/
+dist/
+coverage/
+*.log
+*.tmp
+*.bak
+Scripts/runtime/
+.DS_Store
+Thumbs.db

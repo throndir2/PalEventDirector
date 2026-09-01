@@ -222,7 +222,7 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 - For most-damage objectives, test ties, minimum contribution, disconnected contributors, target healing/reset, multiple phases/forms, and bounded memory under sustained combat.
 - For Siege League, validate immutable maximum-HP budgets, canonical hit ordering, fixed-point scoring, and the invariant that eligible plus uncredited consumed damage never exceeds a target budget.
 - Inject shields, regeneration, phase changes, HP mismatch, duplicate/out-of-order events, and unexplained ledger divergence; each affected target must become unranked rather than mint excess points.
-- Attempt cross-base score farming, guild switching, no/ambiguous home-base identity, and delayed hits after travel; only the player's snapshotted home-base ledger may affect the podium.
+- Move one player through several simultaneous base incidents and verify every owned event group contributes exactly once, unrelated/natural incidents contribute nothing, and base/target/runtime ceilings bound the intentional cross-base advantage.
 - Prove the initial ranked profile is noncapturable. For every later capture policy, vary capture timing and identity to ensure capture cannot deny opponents' ranked opportunity or fabricate remaining target value.
 - Fault-inject personal participation, successful-base completion, and podium grants independently; native rewards and actor drops must remain separate and each director reward key must settle exactly once.
 

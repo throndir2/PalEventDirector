@@ -1,0 +1,25 @@
+{
+  "ModName": "Pal Event Director",
+  "PackageName": "PalEventDirector",
+  "Version": "0.1.0-alpha.1",
+  "DebugMode": false,
+  "MinRevision": 0,
+  "Author": "throndir2",
+  "Dependencies": [
+    "UE4SS"
+  ],
+  "Tags": [
+    "UE4SS",
+    "Gameplay",
+    "Utilities"
+  ],
+  "InstallRule": [
+    {
+      "Type": "Lua",
+      "IsServer": true,
+      "Targets": [
+        "./Scripts"
+      ]
+    }
+  ]
+}
