@@ -32,6 +32,12 @@ For every value or object that crosses the network, the vanilla client must alre
 
 If any one of these is newly authored by the mod, that feature violates the contract unless it remains wholly server-local and can never be referenced by replicated state.
 
+## Mandatory world-event rule
+
+Vanilla-client compatibility is not a consent model. Scheduled native base invasions may target every base known to the server without registration, guild approval, an online-owner check, or a client prompt. A native inability to create or route an incident is recorded as a technical failure; it is not interpreted as refusal.
+
+Where a forced invasion profile must bypass Palworld 1.0's Negotiator/cancellation phase, the director uses only a validated native declaration-skip path. This policy does not authorize arbitrary destructive calls or cleanup against actors the director cannot identify.
+
 ## Allowed interaction surface
 
 ### Strong candidates

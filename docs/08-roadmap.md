@@ -203,21 +203,26 @@ Add adapters one signal family at a time:
 ### Adapters
 
 - Meteor/supply start, state, and completion.
-- Invader eligibility, declaration, selected-base start, waves, end, and timeout.
+- Invader declaration, selected-base start, all-base start, exact stock-group selection, waves, end, and timeout.
+- Forced-assault mode using the validated declaration-skip path; no Event Director consent gate.
+- Pre-spawn native member substitution for allowlisted existing bounty `BOSS_*` character IDs.
 - Allowlisted general incident request/stop only where ownership is provable.
 
 ### Templates
 
 - Meteor Chase and Supply Drop Scramble.
 - Meteor Safari.
-- Opt-in Base Siege and Base Defense League.
+- Mandatory Base Siege, All-Base Alarm, and Base Defense League.
+- Bounty Siege, Most Wanted March, and Kingpin Siege.
 - Night of Falling Stars at low initial scale.
 - Meteor-to-Siege compound event after independent soak.
 
 ### Exit criteria
 
 - No event can stop or clean a naturally occurring incident by mistake.
-- Offline/nonconsenting bases cannot be targeted.
+- Every registered base receives an attempted outcome in all-base mode; native technical failures are classified and reported.
+- Exact group-name scope and declaration/Negotiator bypass are proven rather than inferred from reflected names.
+- Bounty death/capture/butcher drops, wave completion, vanilla clients, and overworld-bounty independence are proven.
 - Concurrency locks and server-health stops work.
 - Restart and world-partition cases converge.
 
@@ -358,7 +363,7 @@ Observation precedes control for every subsystem.
 | 3 | Login, commissions, raffles, rewards | Reward ledger |
 | 4 | Routes, races, scavenger hunts, social zone games | Position/zone service |
 | 5 | Outbreaks and bounded combat waves | Spawn ownership |
-| 6 | Meteor and opt-in invasion events | Native incident adapters |
+| 6 | Meteor, mandatory all-base, and bounty invasion events | Native incident adapters |
 | 7 | Bonus weekends and time narratives | Modifier leases |
 | 8 | Dungeon/oil-rig/raid/arena competitions | Instance integrations |
 | 9 | Festivals, campaigns, adaptive director | Mature composition/history |

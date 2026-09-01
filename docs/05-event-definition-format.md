@@ -31,7 +31,7 @@ The proposed authoring format is JSONC. Comments are useful for private server c
 | `parameters` | Typed values selected when an occurrence is scheduled. |
 | `schedule` | Optional recurrence or game-time trigger. |
 | `eligibility` | Player, guild, progression, online-count, and cooldown rules. |
-| `participation` | Automatic, opt-in, guild, team, draft, zone, or solo-attempt behavior. |
+| `participation` | Forced world event, automatic, opt-in, guild, team, draft, zone, or solo-attempt behavior. |
 | `resources` | Shared-system claims and spawn/message budgets. |
 | `phases` | Announcement, registration, warm-up, active, grace, resolution, reward, cleanup. |
 | `objectives` | Normalized signals/state samples and scoring rules. |
@@ -201,7 +201,7 @@ This is a design example, not a currently runnable configuration.
 Supported parameter types are intentionally finite:
 
 - `boolean`, `integer`, `number`, `string`, `duration`;
-- `palId`, `npcId`, `itemId`, `incidentId`, `modifierId`;
+- `palId`, `npcId`, `itemId`, `incidentId`, `invasionProfileId`, `modifierId`;
 - `zoneId`, `signId`, `spawnProfileId`, `rewardTableId`;
 - bounded arrays and weighted choices of those types.
 
@@ -318,7 +318,7 @@ Action timing can be:
 - operator confirmation;
 - health degradation/recovery.
 
-Action categories include messaging, sign text, reward obligation, spawn wave, despawn owned actors, incident/invasion start, time/modifier lease, teleport, heal/revive, score adjustment, phase transition, sidecar notification, and save request.
+Action categories include messaging, sign text, reward obligation, spawn wave, despawn owned actors, incident/invasion start, exact stock invasion-group start, all-base invasion start, pre-spawn invasion-member substitution, time/modifier lease, teleport, heal/revive, score adjustment, phase transition, sidecar notification, and save request.
 
 An action declares whether it is mandatory, retryable, idempotent, compensatable, and allowed to fall back.
 
@@ -345,6 +345,7 @@ Definitions statically declare shared resources. The validator rejects missing c
 - `setting:ExpRate` for an XP lease;
 - `incident.supply` for meteor/supply events;
 - `invasion` and `base:<id>` for base defense;
+- `invasion:allBases` for one mandatory server-wide siege occurrence;
 - `spawn.global` plus a zone for waves;
 - `player:<uid>:movement` acquired dynamically for an opt-in race reset;
 - `sign:<id>` for an event board.

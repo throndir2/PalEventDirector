@@ -29,6 +29,7 @@ The planned system includes:
 - Objectives based on joins, chat, captures, kills, gathering, crafting, building, fishing, travel, dungeons, bosses, raids, arenas, oil rigs, zones, and elapsed time where corresponding hooks prove reliable.
 - Existing-item, experience, technology-point, status, and recognition rewards.
 - Controlled spawning of existing Pals and NPCs, built-in incidents, invasions, meteorites, supply drops, and instance systems where safe adapters are validated.
+- Mandatory scheduled invasions that can target every registered base without an Event Director consent layer, including experimental all-base bounty-target sieges.
 - Per-player, team, guild, cooperative, competitive, server-wide, and season-long scoring.
 - Crash-safe state, exactly-once reward delivery, modifier leases, spawn cleanup, audit logs, and per-capability kill switches.
 - Vanilla UX through announcements, private system chat, public chat, commands, and staff-placed signboards.
@@ -48,6 +49,7 @@ Read these in order:
 8. [Roadmap](docs/08-roadmap.md) — the staged path from capability laboratory to complete platform.
 9. [Operations](docs/09-operations.md) — packaging, configuration, deployment, rollback, and event administration.
 10. [Research sources](docs/10-research-sources.md) — source hierarchy, findings, and unresolved questions.
+11. [Mandatory invasions and bounty sieges](docs/11-invasion-and-bounty-design.md) — all-base targeting, exact invasion groups, bounty-token farming, and required proof.
 
 ## Feasibility language
 
@@ -95,4 +97,4 @@ Typical commands will be ordinary chat messages such as `!event`, `!join`, `!sco
 
 ## Source date
 
-The initial design research reflects Palworld and community documentation available on **2026-08-30**, including Palworld Server Guide 1.0.3, the current Palworld Modding Kit headers, UE4SS 4.0 documentation, PalSchema 0.6.0 documentation, and current server-mod examples. Refer to [research sources](docs/10-research-sources.md) before implementing against a later game revision.
+The initial design research reflects Palworld and community documentation available through **2026-08-31**, including Palworld Server Guide 1.0.3, Palworld Modding Kit commit `e6632458`, UE4SS 4.0 documentation, PalSchema 0.6.0 documentation, the installed current server tables, and current server-mod examples. Refer to [research sources](docs/10-research-sources.md) before implementing against a later game revision.

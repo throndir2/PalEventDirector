@@ -105,6 +105,8 @@ The adapter pack converts unstable Palworld surfaces into stable project interfa
 - `world.set_time(hour)`
 - `incidents.start(kind, target)`
 - `invasions.start(base_id, profile)`
+- `invasions.start_all(profile, declaration_mode)`
+- `invasions.start_named(group_name, target_mode, declaration_mode)`
 - `signs.set_text(sign_id, text)`
 
 Each adapter declares:
@@ -224,6 +226,7 @@ Scoring is deterministic. Definitions specify attribution, eligibility, ties, la
 
 Participation modes:
 
+- forced world event affecting every technically targetable base or player;
 - automatic for all eligible online players;
 - explicit `!join`/`!leave`;
 - guild enrollment;
@@ -235,6 +238,8 @@ Participation modes:
 - server-wide cooperative participation.
 
 Player UID is the stable identity. Display name is a presentation field. Guild membership is snapshotted or evaluated according to the template's declared policy so mid-event guild switching cannot create ambiguous scores.
+
+Participation mode is separate from invasion targeting. A mandatory base siege does not enroll a base or ask its guild for permission; it creates a score subject when the native manager reports that base's incident. Technical inability to create an incident is recorded as a base outcome.
 
 ### Layer 8: action executor and game-thread queue
 

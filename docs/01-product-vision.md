@@ -40,6 +40,10 @@ Pal Event Director fills that gap by orchestrating existing Palworld systems fro
 
 The creative opportunity is not inventing assets. It is recombining Palworld's existing systems: a meteor starts a race, its impact begins a capture hunt, captured targets advance a guild objective, and completion opens a boss wave with vanilla rewards.
 
+### World events do not imply consent
+
+Scheduled base invasions are world rules, like Palworld's ordinary raids. Pal Event Director does not add a registration or consent gate before attacking a base. An all-base event attempts every base known to the native invasion manager; native pathfinding, loading, cooldown, or state failures are technical outcomes rather than player choices. Consent remains available where an event directly takes control of an individual player, but it is not a prerequisite for server-wide invasion events.
+
 ### Capabilities, not one-off scripts
 
 An event is composed from versioned adapters such as `announce`, `observe_capture`, `spawn_character`, `start_invasion`, `grant_item`, or `watch_zone`. Each adapter owns validation, authority checks, rate limits, logging, and cleanup.

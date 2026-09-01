@@ -89,7 +89,9 @@ Record polling can supplement a missing event hook by comparing monotonic counte
 | Spawn shiny/rare existing Pal | Confirmed | Strong | High | Use normal initialized character parameters; cap rarity and cleanup. |
 | Despawn event character | Probable | Strong | High | Only director-owned handles; never despawn captured or unrelated actors. |
 | Trigger meteor/supply incident | Confirmed community evidence | Strong | High | Native supply/incident path, distance/cooldown limits, completion reconciliation. |
-| Start invader march | Probable | Strong | High | `UPalInvaderManager` public start methods; eligible opt-in bases, concurrency lock. |
+| Start invader march | Probable | Strong | High | `UPalInvaderManager` supports random, one-base, and all-base starts; base attacks are mandatory events, with no project consent gate. |
+| Select a stock invasion group | Probable/high confidence | Strong | High | `Debug_InvaderMarch(FName InvaderGropuName, bool)` accepts the descriptive group name and can skip declaration; confirm target scope live. |
+| Substitute bounty invasion members | Probable | Strong if pre-spawn | Very high | Post-hook native `SelectInvaders()` and replace output members with allowlisted existing `BOSS_*` IDs before native spawn. |
 | Request built-in incident | Probable | Strong | High | Allowlisted incident IDs and complete context; force-stop only director-owned instance. |
 | Start/enter tower boss | Experimental | Conditional | High | Native manager lifecycle, preconditions, instance limit, safe exit. |
 | Orchestrate raid boss | Experimental | Conditional | Very high | Do not bypass altar/item/guild invariants until complete native flow is understood. |
@@ -120,7 +122,11 @@ Record polling can supplement a missing event hook by comparing monotonic counte
 
 ### Invasions and incidents
 
-`UPalInvaderManager` exposes random, selected-base, and all-base march starts plus declaration/start/arrival/wave/end delegates. `UPalIncidentSystem` can request and stop allowlisted native incidents. Both require concurrency and ownership guards.
+`UPalInvaderManager` exposes random, selected-base, and all-base march starts plus declaration/start/arrival/wave/end delegates. Player-controller and cheat-manager APIs also accept an `InvaderGropuName`; current installed data uses 240 numeric row keys grouped under 76 descriptive `GroupName` values, strongly establishing the latter as the intended selector. The exact server API can skip invasion declaration, which is the candidate forced-assault path when the native Negotiator should not permit cancellation.
+
+Current `DT_PalInvader` rows define five character/companion slots, levels, counts, biome, invasion grade, weight, waves, intervals, experience, and wave offsets. Stock data contains no `BOSS_*` members. Current `DT_PalDropItem` contains 34 bounty-character rows that grant `BountyProof_1` at 100%, so replacing native selected members with existing bounty IDs before spawn is a strong candidate for token-farming sieges. See [the dedicated invasion design](11-invasion-and-bounty-design.md).
+
+`UPalIncidentSystem` can request and stop allowlisted native incidents. Invasion and incident adapters require concurrency, lifecycle, and ownership guards, but base targeting does not require player consent.
 
 ### Supply events
 
@@ -149,10 +155,11 @@ The roadmap must answer these before advanced templates ship:
 5. Capture and kill attribution, including Pal and environmental sources.
 6. Network-aware spawn/despawn with captured, dead, unloaded, and timed-out actors.
 7. Meteor/supply start and completion path.
-8. Invasion eligibility, declaration, concurrency, and cleanup.
+8. All-base invasion scope, exact `GroupName` selection, declaration bypass, concurrency, and cleanup.
 9. Position/zone tracking cost at maximum expected players.
 10. Record-delta reconciliation for crafting, dungeon, oil-rig, fishing, and discovery goals.
 11. Safe sign update and restore behavior.
 12. Per-setting modifier compatibility, one property at a time.
 13. Instance-system observation before any forced entry/start/reset.
 14. Crash recovery while a modifier, spawn wave, teleport round, or pending reward is active.
+15. Pre-spawn bounty-member substitution, token drops on kill/capture/butcher, wave completion, and independence from fixed overworld bounty state.

@@ -2,7 +2,7 @@
 
 ## Research date and scope
 
-Initial research was performed on **2026-08-30**. Palworld modding changes quickly; all implementation work must re-check primary sources and runtime dumps for the target revision.
+Initial research was performed on **2026-08-30** and extended with local current-game data inspection on **2026-08-31**. Palworld modding changes quickly; all implementation work must re-check primary sources and runtime dumps for the target revision.
 
 Source priority:
 
@@ -120,6 +120,36 @@ The design reviewed current PMK headers for:
 
 These headers establish candidates only. Private intended call context, Blueprint-implementable behavior, networking ownership, and dedicated-server lifecycle must be observed.
 
+### Mandatory invasion and bounty findings
+
+The dedicated design is in [mandatory invasions and bounty sieges](11-invasion-and-bounty-design.md).
+
+Current reflected APIs establish:
+
+- `UPalInvaderManager.StartInvaderMarchRandom()`;
+- `UPalInvaderManager.StartInvaderMarchForBaseCamp(FGuid)`;
+- `UPalInvaderManager.StartInvaderMarchAll()`;
+- `APalPlayerController.Debug_InvaderMarch(FName InvaderGropuName, bool bSkipInvaderDeclaration)`;
+- `APalPlayerController.Debug_InvaderMarchForNearCamp(FName InvaderGropuName, bool bSkipInvaderDeclaration)`;
+- `UPalInvaderIncidentBase.SelectInvaders(...)` and its output array of `FPalInvaderSpawnCharacterParameter`;
+- reliable native invasion lifecycle delivery through `UPalNetworkInvaderComponent` and the complete selected row in `FPalIncidentBroadcastParameter`.
+
+The event policy is now explicit: base invasions are mandatory world events. No project registration, consent, or online-owner filter is required. Native inability to create an incident remains a technical failure.
+
+The local Modding Kit clone was clean at commit `e6632458b97af0083eb81715775651b08104ef6a`.
+
+The installed `Pal-WindowsServer.pak` inspected on 2026-08-31 had SHA-256 `BFFAB47CBD3B3C6D14D616376D4E0B060B2429A5EB4C2022820D4F38D36A0770` and an internal pak index with 158,456 entries. Read-only inspection used verified `repak` 0.2.3 and UAssetGUI/UAssetAPI 1.1.0. Extracted assets and decoded raw tables were kept outside the repository.
+
+Installed-table findings:
+
+- `DT_PalInvader` has 240 numeric-keyed rows and 76 descriptive group names.
+- No stock invasion row contains a `BOSS_*` member.
+- Stock rows use up to five character archetype slots, currently up to 16 attackers per row and five waves.
+- `DT_PalInvaderReward` has exactly one matching row for each of the 76 stock group names.
+- `DT_PalDropItem` has 34 `BOSS_*` special-enemy rows with `BountyProof_1` at 100%, yielding one to five tokens.
+- Those bounty drop rows use level `0`, supporting a character-ID-wide drop rule rather than one fixed event level.
+- Invasion members do not carry `UniqueNPCID`; fixed-spawner bounty state and one-time progression should not be assumed to transfer.
+
 ## PalSchema sources
 
 - [PalSchema features](https://okaetsu.github.io/PalSchema/docs/features)
@@ -169,12 +199,17 @@ These sources demonstrate concepts but do not replace this project's validation.
 - [PalForge](https://github.com/KBVE/palworld/tree/main/mods/PalForge) demonstrates server-authored text on staff-placed vanilla signboards and documents a negative build-spawn result.
 - [Palworld Server Toolkit](https://github.com/fol2/palworld-server-toolkit) demonstrates a Windows server, UE4SS Lua, file IPC, external dashboard, item grants, and Pal spawn administration.
 - [Guild Feed Box Sync](https://github.com/Stians92/palworld-guild-feed-box-sync) provides a careful server-oriented design using existing containers and native replication, while explicitly identifying uncompleted multiplayer validation.
+- [Tower Boss Base Raid](https://www.nexusmods.com/palworld/mods/3176) demonstrates adding exact tower-boss compositions to `DT_PalInvader` through PalSchema, but does not establish vanilla-client server-only behavior.
+- [Endless Siege](https://www.nexusmods.com/palworld/mods/3947) demonstrates native-style tower-duo and predator base assaults, member/count changes, chained stages, and many lifecycle failure cases. Dedicated-server support was still beta in its published description.
+- [Raid & Trade Revival](https://steamcommunity.com/sharedfiles/filedetails/?id=3789305121) demonstrates hundreds of data-driven native raid compositions, including Alphas, corrupted Pals, legendaries, and tower bosses. It recommends matching client data for consistent names and therefore is composition evidence, not vanilla-client proof.
 
 ### Closed or claim-only evidence
 
 - [Better Server-Side Commands](https://www.nexusmods.com/palworld/mods/3669) claims Windows server-only cross-play operation with no client mod and demonstrates meteor triggers, boss resets, existing Pal/item/XP/point grants, teleports, healing, announcements, and persistent state.
 
 Its page prohibits reuse without permission. This project treats it only as feasibility evidence and does not copy or derive from its code.
+
+RaidWave's cached page described calls to `StartInvaderMarchRandom`, `StartInvaderMarchAll`, and native incident creation plus runtime invasion-row weight changes. The mod is currently hidden as unsupported/affected by unresolved issues, so it is only a research lead and not positive compatibility evidence.
 
 ### Important negative evidence
 
@@ -190,12 +225,15 @@ PalForge reports that invoking `RequestSpawnMapObject_Server` from bare Lua abor
 - Existing item/XP grants, existing Pal spawning, time changes, teleportation, and chat commands have current server-mod examples.
 - Meteor triggering has current server-mod evidence.
 - Server-side persistent project state and file IPC are practical.
+- Palworld has a direct all-base invasion method and exact named-group server/debug methods.
+- Current bounty token drops are directly keyed to existing `BOSS_*` character IDs, making bounty invasion members technically credible.
 
 ### Probable but requiring focused proof
 
 - Complete capture/kill/gather/craft/build/fishing attribution.
 - Safe private system chat on all client platforms.
-- Native invasion start/finish and selected-base control.
+- Native invasion start/finish, selected-base/all-base scope, exact group selection, and declaration bypass.
+- Pre-spawn bounty-member substitution and normal token drops without client files.
 - Signboard write/restore across filtering and concurrent edits.
 - Dungeon/raid/oil-rig/arena result attribution.
 - Network spawn ownership through restart/world partition.
@@ -206,6 +244,7 @@ PalForge reports that invoking `RequestSpawnMapObject_Server` from bare Lua abor
 - Directed raid/arena lifecycle.
 - AI escort and controlled multi-wave encounters.
 - Multiple simultaneous supply/invasion systems.
+- Mandatory all-base bounty sieges at a mature world's maximum base count.
 - Input restriction, force freeze, PvP minigames, and movement-affecting rules.
 - Randomizer weekends on a persistent main world.
 
@@ -222,15 +261,19 @@ PalForge reports that invoking `RequestSpawnMapObject_Server` from bare Lua abor
 9. What result does the item grant API return for full/partial inventory, and how can delivery be verified?
 10. Which non-debug APIs safely grant XP and technology/status/relic points on dedicated servers?
 11. What native path starts a meteor/supply event, and how is ownership distinguished from a natural event?
-12. Do invader-manager public start methods create complete declaration, navigation, reward, and cleanup behavior from a server mod?
-13. What actor/handle identity survives unload/restart well enough for spawn reconciliation?
-14. Which existing Pal/NPC IDs and level ranges are safe to spawn and capturable?
-15. Can sign text be updated through the normal filtering path without impersonating a player request?
-16. Which world settings can change live, replicate correctly, and revert without stale client UI or active-task inconsistency?
-17. Can normal dungeon/boss/raid/oil-rig/arena completions be attributed without invoking private server-internal functions?
-18. How does the official loader preserve writable config/state across package updates?
-19. What performance cost do the required hooks and record/position reconciliation have on a mature world?
-20. What package disable/removal sequence leaves the world clean when an event was interrupted?
+12. Does `StartInvaderMarchAll()` attempt every registered base observer, and which native technical states cause exclusion or failure?
+13. Does `Debug_InvaderMarch(GroupName, true)` target every base, and does declaration skip also bypass the Negotiator?
+14. Can a `SelectInvaders()` post-hook safely replace each output member before native character initialization without a custom DataTable row?
+15. Do bounty invasion copies drop `BountyProof_1` correctly on death, capture, and later butchering, and does capture complete the native wave?
+16. Are original overworld bounty spawner state, map markers, respawn, and first-clear Ancient Technology Points unaffected?
+17. What actor/handle identity survives unload/restart well enough for spawn reconciliation?
+18. Which existing Pal/NPC IDs and level ranges are safe to spawn and capturable?
+19. Can sign text be updated through the normal filtering path without impersonating a player request?
+20. Which world settings can change live, replicate correctly, and revert without stale client UI or active-task inconsistency?
+21. Can normal dungeon/boss/raid/oil-rig/arena completions be attributed without invoking private server-internal functions?
+22. How does the official loader preserve writable config/state across package updates?
+23. What performance cost do the required hooks and record/position reconciliation have on a mature world?
+24. What package disable/removal sequence leaves the world clean when an event was interrupted?
 
 ## Research workflow for each Palworld update
 

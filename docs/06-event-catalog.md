@@ -87,9 +87,9 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 | ID | Event | Player loop | Needed primitives | Tier |
 |---|---|---|---|---|
-| CBT-01 | Opt-in Base Siege | A consenting guild/base receives one native invasion; survive waves for rewards. | base/guild, invasion start/end | Probable |
-| CBT-02 | Siege Roulette | Eligible guilds opt in; a seeded draw chooses the target and profile. | registration, invasion, seed | Probable |
-| CBT-03 | All-Base Alarm | Start native marches for all eligible online bases with strict concurrency/load caps. | invasion-all, health, cleanup | Experimental |
+| CBT-01 | Base Siege | A scheduled or selected base receives one mandatory native invasion; survive waves for rewards. | base/guild, invasion start/end | Probable |
+| CBT-02 | Siege Roulette | A seeded draw chooses a base and invasion profile; no owner registration or consent is required. | base selection, invasion, seed | Probable |
+| CBT-03 | All-Base Alarm | Start one mandatory native invasion occurrence against every registered base at the same logical boundary. | invasion-all, health, cleanup | Experimental |
 | CBT-04 | Horde Night | Spawn bounded waves of existing hostile Pals/NPCs in a neutral configured zone. | network spawn, AI, zones, cleanup | Experimental |
 | CBT-05 | Boss Roulette | Draw an existing field boss and announce its normal location or spawn an approved encounter. | boss metadata, optional spawn | Probable |
 | CBT-06 | Boss Rush | Sequential existing bosses, next wave only after owned prior wave resolves. | spawn, defeat attribution, cleanup | Experimental |
@@ -117,6 +117,11 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 | CBT-28 | Twin Threat | Two complementary existing boss species spawn together under one encounter budget. | spawn, AI, defeat, cleanup | Experimental |
 | CBT-29 | Last Stand | Success requires surviving a bounded wave timer, not killing every actor; survivors are cleaned safely. | waves, survival, cleanup | Experimental |
 | CBT-30 | Base Defense League | Guilds earn points from normal or director-started invasion outcomes across a season. | invasion results, guild season | Probable |
+| CBT-31 | Bounty Siege | Replace native selected invasion members with grade-appropriate existing `BOSS_*` bounty targets that retain normal token drops. | invasion selection hook, bounty IDs, drops | Experimental |
+| CBT-32 | Most Wanted March | Every base receives escalating waves of 1-, 2-, 3-, and 4-token bounty targets. | all-base invasion, bounty profiles | Experimental |
+| CBT-33 | Kingpin Siege | Ram (`BOSS_DarkTrader`) leads a mandatory assault on every base for a high-yield five-token event. | all-base invasion, exact bounty member | Experimental |
+| CBT-34 | Fugitive Coalition | Up to five distinct bounty archetypes and their existing companion Pals form each native invasion wave. | bounty IDs, `Otomo`, native waves | Experimental |
+| CBT-35 | Bounty Jackpot | A deliberately economy-altering all-base raid uses only high-token bounty targets and previews maximum token creation. | bounty profiles, economy preview | Experimental |
 
 ## Exploration, travel, races, and treasure events
 
@@ -246,7 +251,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 | SEA-06 | Capture Frenzy | Bounded capture-rate lease plus species objectives. | capture modifier, capture | Experimental/client UI review |
 | SEA-07 | Breeder's Moon | Night schedule plus breeding/incubation objectives and carefully tested modifiers. | time, breeding, modifiers | Experimental |
 | SEA-08 | Randomizer Weekend | Use Palworld's native randomizer settings only through a planned restart and dedicated test world/campaign. | config profile, restart, randomizer | Experimental/high save impact |
-| SEA-09 | Invasion Marathon | Native opt-in base invasions occur in rounds with recovery breaks. | invasion lifecycle, health | Experimental |
+| SEA-09 | Invasion Marathon | Mandatory native base invasions occur in scheduled rounds with recovery breaks. | invasion lifecycle, health | Experimental |
 | SEA-10 | World Boss Hour | Spawn one approved existing champion with global notices and strict expiry. | network spawn, cleanup | Experimental |
 | SEA-11 | Chaos Wheel | Players vote; director draws one of several prevalidated, nonconflicting micro-modifiers/events. | vote, deterministic selection, leases | Probable |
 | SEA-12 | Festival Week | Seven themed daily templates feed one cooperative finale. | campaign, multiple adapters | Probable |
@@ -256,7 +261,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 | SEA-16 | Population Pulse | Flash events appear only when online count crosses thresholds and cooldowns allow. | roster, scheduler | Confirmed foundation |
 | SEA-17 | Boss of the Hour | Rotate a normal target or controlled existing spawn every hour. | scheduler, boss metadata/spawn | Probable/experimental by mode |
 | SEA-18 | Eclipse Narrative | Announcements and fixed-night lease create an “eclipse”; no custom sky assets are claimed. | clock lease, messaging | Experimental |
-| SEA-19 | Meteor-to-Siege Chain | Meteor completion opens a capture stage, then an opt-in base invasion finale. | meteor, capture, invasion | Experimental compound |
+| SEA-19 | Meteor-to-Siege Chain | Meteor completion opens a capture stage, then a mandatory base-invasion finale. | meteor, capture, invasion | Experimental compound |
 | SEA-20 | Server Versus Director | Adaptive waves scale only inside tested bounds based on completion speed and health. | spawn, scoring, health | Experimental |
 | SEA-21 | Mercy Season | Season scoring rewards captures, nonlethal objectives, and community goals over kills. | capture/objectives/campaign | Probable |
 | SEA-22 | Expedition Season | Region routes, dungeons, fishing, oil rigs, and bosses award passport points. | broad observation set | Probable after adapters |
@@ -281,13 +286,15 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 ### 2. Siege Saturday
 
-**Fantasy:** Guilds volunteer their bases for a native invasion league.
+**Fantasy:** The island declares every base a target for a native invasion league.
 
-**Phases:** guild registration → eligibility check → seeded target/order → invasion declarations → native waves → recovery interval → standings.
+**Phases:** global warning → base snapshot → simultaneous native invasion starts → native waves → recovery interval → standings.
 
 **Scoring:** survival, waves completed, completion time, optional no-player-death bonus. Base wealth or destruction amount is not used because it could incentivize unsafe builds or griefing.
 
-**Safety:** explicit guild consent, one active target initially, minimum online defenders, no offline base targeting, native invasion manager, health threshold, no forced cleanup of unknown invaders.
+**Safety:** no consent or online-owner filter; every registered base is attempted. Technical failures such as an unavailable base model, blocked start point, or native cooldown are recorded. Per-base wave size is reduced before any base is omitted, and no cleanup operation touches unknown invaders.
+
+**Bounty variant:** before native member spawning, replace selected members with existing bounty `BOSS_*` character IDs. Their current drop rows grant Successful Bounty Tokens at 100%. See [the mandatory invasion and bounty design](11-invasion-and-bounty-design.md).
 
 ### 3. Palpagos Grand Tour
 
@@ -329,7 +336,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 **Fantasy:** A server-wide narrative campaign after a fictional disaster.
 
-**Stages:** gather raw materials → craft tools/food/spheres → establish approved structures → defend a volunteer base → celebration hunt.
+**Stages:** gather raw materials → craft tools/food/spheres → establish approved structures → defend a designated base → celebration hunt.
 
 **Implementation:** all progress is virtual director state derived from normal actions. Resources are not removed automatically in the first version. This prevents inventory-loss bugs while preserving the cooperative story.
 
@@ -337,9 +344,9 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 **Fantasy:** The island reacts to the current population without becoming unfair or unpredictable.
 
-**Inputs:** online count, progression bands, recent templates, time of day, server FPS/frame time, unresolved claims, and opt-in availability.
+**Inputs:** online count, progression bands, recent templates, time of day, server FPS/frame time, unresolved claims, and current native-system availability.
 
-**Choices:** micro safari, supply chase, community meter, volunteer invasion, route, trivia, or controlled wave. Each choice has minimum/maximum scale and cooldown.
+**Choices:** micro safari, supply chase, community meter, mandatory invasion, route, trivia, or controlled wave. Each choice has minimum/maximum scale and cooldown.
 
 **Non-goal:** machine-learning difficulty or unconstrained generation. Selection is deterministic policy over an approved template pool and recorded seed.
 
@@ -369,7 +376,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 | Outbreak | hunt + network spawn profile + dynamic zone + ownership cleanup |
 | Race | registration + ordered zones + timer + anti-skip policy + placements |
 | Relay | race + teams + per-leg participant + explicit handoff |
-| Defense | opt-in target + invasion/waves + survival/kill objective + health gate |
+| Defense | scheduled/selected/all-base target + native invasion/waves + survival/kill objective + health gate |
 | Passport | persistent distinct-set objectives across event families |
 | Community drive | global weighted objective + progress thresholds + everyone/contributor reward |
 | Tournament | registration + seed + rounds + native/host result + bracket archive |
@@ -384,7 +391,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 - Prefer personal best improvement, contribution thresholds, raffles, or cooperative goals over winner-takes-all.
 - Cap repeat scoring from the same species, item, spawner, container, or action source.
 - Snapshot guild rosters at declared boundaries.
-- Require opt-in for teleportation, PvP, base targeting, movement/input changes, or inventory-affecting rules.
+- Require opt-in for forced teleportation, PvP, movement/input changes, or inventory-affecting rules. Base invasions are mandatory world events and do not use consent.
 - Publish tie resolution before the event; use recorded deterministic seeds.
 - Never rely on display names as identity.
 - Do not reward actions that can be generated by the reward system itself.
@@ -430,7 +437,7 @@ The director may update known sign text or observe known objects. It does not sp
 | Dynamic server-spawned event buildings | No safe general build-request context is proven; a bare call has caused server aborts. Staff pre-place vanilla structures. |
 | Arbitrary low gravity or movement physics | Client prediction/desync risk and no established safe adapter. |
 | Forced inventory confiscation/escrow | High loss/duplication risk. Start with observation and voluntary/manual transfer. |
-| Surprise attacks on offline bases | Griefing and cleanup risk; invasion events require explicit consent and online defenders. |
+| Unbounded all-base attacker multiplication | Mandatory all-base invasions are allowed, but an uncapped actor/pathfinding burst can crash the server. Scale composition per base and test the actual maximum base count. |
 | Permanent hardcore/permadeath event on the main world | Disproportionate save risk. Use non-destructive scoring or an isolated world. |
 | Automatic punishment/ban from race telemetry | Event sampling is not anti-cheat evidence. Flag for review only. |
 | Arbitrary reflected function console | Bypasses capability validation, bounds, authorization, and cleanup. |
@@ -442,7 +449,7 @@ The director may update known sign text or observe known objects. It does not sp
 3. Add position/zone events.
 4. Add normal-play boss/dungeon/fishing/oil-rig scoring.
 5. Add one existing-character spawn profile and prove cleanup.
-6. Add native meteor and one opt-in invasion.
+6. Add native meteor and one mandatory invasion, then prove all-base scope and bounty-member substitution.
 7. Add setting leases one property at a time.
 8. Add compound and adaptive templates only after each primitive has independent soak evidence.
 9. Keep arena forcing, directed raids, AI escort, and mass invasion experimental until their full native lifecycle is understood.
