@@ -32,6 +32,51 @@ Current installed data contains:
 - one `DT_PalInvaderReward` entry for each of the 76 stock group names;
 - 34 special-enemy `DT_PalDropItem` rows that grant `BountyProof_1` at 100%.
 
+## Level selection and base alignment
+
+### Native behavior
+
+Pocketpair's Palworld 1.0 notes state that raid-enemy level automatically scales according to the level of Work Pals assigned to the deployed base. For an all-base event, “the deployed base” means the particular base receiving that incident. Two bases in the same guild can therefore be evaluated from different assigned workforces; there is no evidence that Palworld uses one guild-wide level for every guild base.
+
+That statement does **not** mean every invader has the same level as one Pal, or that the maximum/average worker level is copied directly. Current structures show an indirect pipeline:
+
+1. Palworld examines the target base and derives an invasion grade. Assigned Work-Pal levels are an official input; the aggregation formula is unknown.
+2. `SelectInvaders(Grade, Biome, ...)` chooses an eligible row whose `InvadeGradeMin`/`InvadeGradeMax` and biome match.
+3. The row supplies a minimum/maximum level for each of its five member slots, plus a `WaveLevelOffset` field.
+4. Selection produces one `FPalInvaderSpawnCharacterParameter` per concrete member, each with a final integer `Level`.
+5. The native spawn Blueprint passes `SpawnParameter.Level` into character initialization.
+
+The current installed grade bands are 1–10, 11–20, 21–40, 41–60, and 61–80. All current row wave offsets are zero. Those facts describe the current data, not permanent engine constraints. Some low-grade rows in endgame biomes still specify high member levels, proving that grade is a row-selection tier rather than guaranteed equality with attacker level.
+
+### Event Director control
+
+Yes, the event can specify boss levels. Route A transforms selected members at the final pre-spawn parameter, so changing `FPalInvaderSpawnCharacterParameter.Level` changes the exact level consumed by native character initialization. The transform should expose only these bounded policies:
+
+| Policy | Effective level | Use |
+|---|---|---|
+| `native` | Preserve the level Palworld selected for that member and target base. | Default; retains official per-base balance. |
+| `fixed` | A configured exact level, clamped to validated global/profile limits. | A deliberately uniform boss event. |
+| `relative` | Native final level plus a bounded signed offset, then clamped. | Harder/easier than the base's normal raid. |
+| `workerDerived` | A named, versioned project statistic over a snapshot of that base's assigned Work-Pal levels, then clamped. | Transparent custom scaling; experimental. |
+
+For the first bounty siege, use `native`: replace `CharacterID` and optionally `Otomo`, but leave `Level` unchanged. Each base then receives bounty actors at the levels Palworld had already selected for that base's invasion members. This preserves relative balance without claiming knowledge of Pocketpair's hidden grade formula.
+
+`fixed` and `relative` are technically direct and do not require changing a DataTable row. `workerDerived` is also possible once the base worker roster can be read reliably, but it is a separate Pal Event Director rule. It must name its statistic explicitly—for example, median or highest-N mean—rather than being presented as native parity.
+
+### Unknown native aggregation
+
+The exact Work-Pal aggregation remains unresolved. Generated SDK implementations are stubs, the native server binary does not expose a useful formula string, and the official note identifies only the input relationship. A live disposable-world experiment must vary one factor at a time and record native grade and final levels:
+
+- one assigned worker at controlled levels;
+- full bases where every worker has the same level;
+- one high-level worker among low-level workers and the inverse;
+- ascending mixed distributions to distinguish maximum, mean, median, and highest-N behavior;
+- empty slots and no assigned workers;
+- two different-workforce bases belonging to the same guild;
+- worker changes before declaration, during declaration, and before wave selection.
+
+Until that matrix is complete, documentation and player messaging may say “native per-base Work-Pal scaling,” but not “average worker level,” “highest worker,” or “bosses match your Pals.”
+
 ## Native invasion controls
 
 ### Scope
@@ -175,11 +220,7 @@ This is the preferred first bounty-siege spike because it avoids a custom DataTa
 2. Build the target set from every base ID known to the base/invasion managers. Do not filter by consent or online ownership.
 3. Register an always-present but normally inert hook around `UPalInvaderIncidentBase.SelectInvaders()`.
 4. Let Palworld select a valid stock row for each base's biome and invasion grade.
-5. In the post-hook, and only for occurrence-targeted base incidents, replace each `FPalInvaderSpawnCharacterParameter` in `OutInvaderMember` before `SpawnMemberCharacters()` runs:
-   - set `CharacterID` to an allowlisted bounty `BOSS_*` ID;
-   - set a bounded level appropriate to the event profile;
-   - set an existing companion Pal ID in `Otomo` where desired;
-   - preserve the array length or apply only a separately tested bounded count transform.
+5. In the post-hook, and only for occurrence-targeted base incidents, replace each `FPalInvaderSpawnCharacterParameter` in `OutInvaderMember` before `SpawnMemberCharacters()` runs. Set `CharacterID` to an allowlisted bounty `BOSS_*` ID, preserve or replace `Level` according to the event's bounded level policy, and set an existing companion Pal ID in `Otomo` where desired. Preserve the array length unless a bounded count transform has been tested separately.
 6. Start the world event with `StartInvaderMarchAll()` or the proven exact-group all-base path.
 7. Keep the transform armed until every targeted native incident has selected its members; do not assume selection is synchronous.
 8. Track each base and incident through native lifecycle delegates.
@@ -200,6 +241,7 @@ Unknowns:
 - whether `SelectInvaders()` runs before all data required by the character initializer is fixed;
 - whether a captured bounty is removed cleanly from the active invasion group;
 - whether stock group completion rewards remain appropriate after member substitution.
+- the exact native statistic that maps assigned Work-Pal levels to invasion grade.
 
 ### Route B: exact named group rows
 
@@ -244,7 +286,10 @@ A future definition should express policy explicitly:
     "declaration": "skip",
     "composition": {
       "mode": "replaceSelectedMembers",
-      "profile": "bounty.mixedByGrade"
+      "profile": "bounty.mixedByGrade",
+      "levelPolicy": {
+        "mode": "native"
+      }
     }
   }
 }
@@ -325,6 +370,9 @@ before any game modifiers affecting drops or butchering. Event preview should di
 11. Restart during declaration, every wave, and cleanup.
 12. Scale through 2, 4, 8, and the actual maximum base count while recording FPS, frame time, actor count, pathfinding failures, and cleanup.
 13. Repeat the final test with each client platform for which vanilla compatibility is claimed.
+14. With two same-guild bases whose assigned Work Pals have deliberately different levels, prove native grade and final levels are evaluated independently per base.
+15. Run the controlled workforce matrix and classify the native aggregation formula only if the observations distinguish it conclusively.
+16. Verify `native`, `fixed`, and positive/negative bounded `relative` policies from selected member through initialized actor level, including every wave and restart boundary.
 
 ## Current conclusion
 
@@ -333,5 +381,7 @@ before any game modifiers affecting drops or butchering. Event preview should di
 - **Choose a stock invader group:** probable-to-high confidence through `Debug_InvaderMarch(GroupName, ...)`.
 - **Use bounty targets in a native invasion:** technically strong and supported by the row/member model.
 - **Farm Successful Bounty Tokens:** high-confidence probable because the current 34 drop rows key 100% token drops directly to the `BOSS_*` character IDs.
+- **Specify exact bounty level:** probable-to-high confidence by setting the final pre-spawn member `Level`; clean-client and boundary tests are still required.
+- **Align independently to each base:** native policy should preserve Palworld 1.0's target-base Work-Pal scaling; it is indirect grade/row scaling, not proven exact equality to any worker statistic.
 - **Preserve original bounty-world progression:** not expected; event copies should be independent of fixed bounty spawners.
 - **Vanilla-client safety:** promising with Route A, but not confirmed until the clean-client spike passes.

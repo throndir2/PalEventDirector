@@ -253,6 +253,13 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 ### Bounty invasions
 
 - Transform native selected members before character initialization, never after their drop/combat state is fixed.
+- Log target base ID, assigned-Work-Pal snapshot summary, native invasion grade, selected stock row, wave, native member level, level-policy revision, and effective member level.
+- Under `native`, verify each substituted bounty retains the exact final level selected for the member it replaces.
+- Under `fixed`, verify minimum, maximum, invalid, and current game-level-cap behavior; reject rather than wrap, truncate, or silently exceed policy.
+- Under `relative`, verify positive and negative offsets, clamping, every wave, and no compounding when a hook is invoked more than once.
+- Under `workerDerived`, verify the named statistic against controlled level distributions, empty/partly filled bases, duplicate levels, workers added or removed during declaration, and restart recovery.
+- Create at least two bases in the same guild with materially different assigned Work-Pal levels and prove that native grades/final levels are evaluated per target base rather than copied guild-wide.
+- Determine the current native Work-Pal aggregation observationally; do not infer maximum, average, or exact worker-to-attacker equality from the official scaling statement.
 - Test a low-, middle-, and high-yield `BOSS_*` character ID.
 - Verify model, localized name, AI, weapon, companion Pal, level, and replication on a clean client.
 - Verify current `BountyProof_1` quantity on defeat and capture.

@@ -150,6 +150,31 @@ Installed-table findings:
 - Those bounty drop rows use level `0`, supporting a character-ID-wide drop rule rather than one fixed event level.
 - Invasion members do not carry `UniqueNPCID`; fixed-spawner bounty state and one-time progression should not be assumed to transfer.
 
+### Invasion level-scaling findings
+
+Pocketpair's [official Palworld 1.0 Steam announcement](https://steamcommunity.com/app/1623730/announcements/detail/1822556746155818?l=english) states that the level of raiding enemies now scales according to the level of Work Pals assigned to the deployed base. This supports target-base-local scaling rather than a single player level or guild-wide base-upgrade level. It does not publish the aggregation formula.
+
+Current Modding Kit and installed-asset inspection establish the remainder of the observable pipeline:
+
+- `FPalInvaderDatabaseBaseRow` has `InvadeGradeMin`/`InvadeGradeMax` and per-slot `LevelMin_*`/`LevelMax_*` fields.
+- `FPalInvaderDatabaseRow` adds `WaveLevelOffset`.
+- `UPalInvaderIncidentBase.SelectInvaders(Grade, Biome, OutInvaderMember)` resolves rows into `FPalInvaderSpawnCharacterParameter` values.
+- Every final member parameter has a writable integer `Level` alongside `CharacterID` and `Otomo`.
+- Decoded current native spawn Blueprint bytecode consumes `SpawnParameter.Level` during character initialization.
+- Current stock rows use grade bands 1–10, 11–20, 21–40, 41–60, and 61–80, although not every biome/group necessarily has every band.
+- All 240 current stock rows have `WaveLevelOffset` equal to zero. The field remains part of the API and cannot be assumed permanently unused.
+- A low invasion-grade row can still contain high fixed attacker levels in an endgame biome. Invasion grade is therefore an eligibility tier, not itself the guaranteed spawned level.
+
+The installed Blueprint class defaults were also decoded with the current community `Mappings.usmap` at commit `0e4ae19a05ba0d9fb95d859c09b28f168cb3624f` (SHA-256 `604550BA90FAAB1E394C2789F38EEFF625493D3729C2D7F6A6058BFEDB90A67B`). Invasion properties are inherited from native `UPalGameSetting`; the generated current constructor reports `InvadeOccurablePlayerLevel=5`, `InvadeOccurableBaseCampLevel=8`, and `InvadeGradeOffset=0`. These are eligibility/offset settings, not evidence for the worker-level aggregation formula, and Blueprint/runtime overrides still require observation.
+
+Consequences for the event design:
+
+- `native` level policy keeps the concrete level Palworld selected independently for each target base and is the safest initial bounty-siege policy.
+- `fixed` policy can set an exact boss level by replacing the final member parameter's `Level` before spawn.
+- `relative` policy can apply a bounded offset to that native final level.
+- `workerDerived` can implement a transparent project formula from a target-base worker snapshot, but must not be marketed as matching Palworld until the native formula is measured.
+- Official wording does not establish whether Palworld uses maximum, mean, median, a top-N statistic, work suitability, party power, or another score. That remains a live observational spike.
+
 ## PalSchema sources
 
 - [PalSchema features](https://okaetsu.github.io/PalSchema/docs/features)
@@ -266,14 +291,15 @@ PalForge reports that invoking `RequestSpawnMapObject_Server` from bare Lua abor
 14. Can a `SelectInvaders()` post-hook safely replace each output member before native character initialization without a custom DataTable row?
 15. Do bounty invasion copies drop `BountyProof_1` correctly on death, capture, and later butchering, and does capture complete the native wave?
 16. Are original overworld bounty spawner state, map markers, respawn, and first-clear Ancient Technology Points unaffected?
-17. What actor/handle identity survives unload/restart well enough for spawn reconciliation?
-18. Which existing Pal/NPC IDs and level ranges are safe to spawn and capturable?
-19. Can sign text be updated through the normal filtering path without impersonating a player request?
-20. Which world settings can change live, replicate correctly, and revert without stale client UI or active-task inconsistency?
-21. Can normal dungeon/boss/raid/oil-rig/arena completions be attributed without invoking private server-internal functions?
-22. How does the official loader preserve writable config/state across package updates?
-23. What performance cost do the required hooks and record/position reconciliation have on a mature world?
-24. What package disable/removal sequence leaves the world clean when an event was interrupted?
+17. Which statistic converts the target base's assigned Work-Pal levels into native invasion grade, and when is that workforce snapshot taken?
+18. What actor/handle identity survives unload/restart well enough for spawn reconciliation?
+19. Which existing Pal/NPC IDs and level ranges are safe to spawn and capturable?
+20. Can sign text be updated through the normal filtering path without impersonating a player request?
+21. Which world settings can change live, replicate correctly, and revert without stale client UI or active-task inconsistency?
+22. Can normal dungeon/boss/raid/oil-rig/arena completions be attributed without invoking private server-internal functions?
+23. How does the official loader preserve writable config/state across package updates?
+24. What performance cost do the required hooks and record/position reconciliation have on a mature world?
+25. What package disable/removal sequence leaves the world clean when an event was interrupted?
 
 ## Research workflow for each Palworld update
 

@@ -92,6 +92,7 @@ Record polling can supplement a missing event hook by comparing monotonic counte
 | Start invader march | Probable | Strong | High | `UPalInvaderManager` supports random, one-base, and all-base starts; base attacks are mandatory events, with no project consent gate. |
 | Select a stock invasion group | Probable/high confidence | Strong | High | `Debug_InvaderMarch(FName InvaderGropuName, bool)` accepts the descriptive group name and can skip declaration; confirm target scope live. |
 | Substitute bounty invasion members | Probable | Strong if pre-spawn | Very high | Post-hook native `SelectInvaders()` and replace output members with allowlisted existing `BOSS_*` IDs before native spawn. |
+| Control substituted invasion levels | Probable/high confidence | Strong if bounded | Very high | Preserve the native per-base final level, set an exact level, or apply a bounded offset by editing each selected `FPalInvaderSpawnCharacterParameter.Level` before spawn. |
 | Request built-in incident | Probable | Strong | High | Allowlisted incident IDs and complete context; force-stop only director-owned instance. |
 | Start/enter tower boss | Experimental | Conditional | High | Native manager lifecycle, preconditions, instance limit, safe exit. |
 | Orchestrate raid boss | Experimental | Conditional | Very high | Do not bypass altar/item/guild invariants until complete native flow is understood. |
@@ -124,7 +125,11 @@ Record polling can supplement a missing event hook by comparing monotonic counte
 
 `UPalInvaderManager` exposes random, selected-base, and all-base march starts plus declaration/start/arrival/wave/end delegates. Player-controller and cheat-manager APIs also accept an `InvaderGropuName`; current installed data uses 240 numeric row keys grouped under 76 descriptive `GroupName` values, strongly establishing the latter as the intended selector. The exact server API can skip invasion declaration, which is the candidate forced-assault path when the native Negotiator should not permit cancellation.
 
-Current `DT_PalInvader` rows define five character/companion slots, levels, counts, biome, invasion grade, weight, waves, intervals, experience, and wave offsets. Stock data contains no `BOSS_*` members. Current `DT_PalDropItem` contains 34 bounty-character rows that grant `BountyProof_1` at 100%, so replacing native selected members with existing bounty IDs before spawn is a strong candidate for token-farming sieges. See [the dedicated invasion design](11-invasion-and-bounty-design.md).
+Current `DT_PalInvader` rows define five character/companion slots, minimum/maximum member levels, counts, biome, invasion grade, weight, waves, intervals, experience, and wave offsets. Stock data contains no `BOSS_*` members. Current `DT_PalDropItem` contains 34 bounty-character rows that grant `BountyProof_1` at 100%, so replacing native selected members with existing bounty IDs before spawn is a strong candidate for token-farming sieges.
+
+Palworld 1.0 officially says raid-enemy level scales from the Work Pals assigned to the deployed base. The native pipeline therefore evaluates each targeted base separately; it is not documented as one guild-wide level. Runtime structures expose the resulting concrete level on every selected member as `FPalInvaderSpawnCharacterParameter.Level`, and the installed spawn Blueprint passes that value into character initialization. This gives the director a precise pre-spawn control point while allowing `native` policy to preserve Palworld's own target-base balance.
+
+The exact statistic used to reduce a base's assigned Work-Pal levels to an invasion grade is not exposed in generated source or the official notes. Do not describe it as maximum, mean, median, highest-N average, or equality with any particular worker until a controlled runtime matrix establishes that rule. Current grade bands and row level ranges also show that native scaling is indirect: Work-Pal state selects a grade/eligible row, then row data produces concrete attacker levels. See [the dedicated invasion design](11-invasion-and-bounty-design.md).
 
 `UPalIncidentSystem` can request and stop allowlisted native incidents. Invasion and incident adapters require concurrency, lifecycle, and ownership guards, but base targeting does not require player consent.
 
@@ -163,3 +168,4 @@ The roadmap must answer these before advanced templates ship:
 13. Instance-system observation before any forced entry/start/reset.
 14. Crash recovery while a modifier, spawn wave, teleport round, or pending reward is active.
 15. Pre-spawn bounty-member substitution, token drops on kill/capture/butcher, wave completion, and independence from fixed overworld bounty state.
+16. Per-base Work-Pal-to-grade behavior and final invasion levels across controlled worker-level distributions, including empty slots and workers changed during declaration.

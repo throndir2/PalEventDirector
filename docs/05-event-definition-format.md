@@ -202,6 +202,7 @@ Supported parameter types are intentionally finite:
 
 - `boolean`, `integer`, `number`, `string`, `duration`;
 - `palId`, `npcId`, `itemId`, `incidentId`, `invasionProfileId`, `modifierId`;
+- `invasionLevelPolicy` with only the registered modes and bounds described below;
 - `zoneId`, `signId`, `spawnProfileId`, `rewardTableId`;
 - bounded arrays and weighted choices of those types.
 
@@ -321,6 +322,35 @@ Action timing can be:
 Action categories include messaging, sign text, reward obligation, spawn wave, despawn owned actors, incident/invasion start, exact stock invasion-group start, all-base invasion start, pre-spawn invasion-member substitution, time/modifier lease, teleport, heal/revive, score adjustment, phase transition, sidecar notification, and save request.
 
 An action declares whether it is mandatory, retryable, idempotent, compensatable, and allowed to fall back.
+
+### Invasion level policies
+
+An invasion composition transform must choose one explicit level policy. It cannot evaluate an arbitrary expression:
+
+| Mode | Meaning | Initial release status |
+|---|---|---|
+| `native` | Keep each final level selected by Palworld for that particular target base. | Preferred first release. |
+| `fixed` | Replace every transformed member's final level with one bounded configured value. | Supported only after boundary-level spawn tests. |
+| `relative` | Add a signed bounded offset to each native final level, then clamp to global and profile limits. | Supported after native baseline logging is proven. |
+| `workerDerived` | Snapshot assigned Work-Pal levels for the target base, apply one named and versioned project statistic, then clamp. | Experimental until the native aggregation is measured or a deliberately different formula is approved. |
+
+`native` does not mean “make the bounty equal to a worker.” Palworld 1.0 says assigned Work-Pal levels drive raid scaling, while current data shows a grade-and-row pipeline that yields a concrete level range. The definition records both the native level and effective level for every transformed member so previews, recovery, and audits can explain the result.
+
+Illustrative composition fragment:
+
+```jsonc
+{
+  "composition": {
+    "mode": "replaceSelectedMembers",
+    "profile": "bounty.mixedByGrade",
+    "levelPolicy": {
+      "mode": "native"
+    }
+  }
+}
+```
+
+A `fixed` policy requires `level`; a `relative` policy requires `offset`, `minimum`, and `maximum`; a `workerDerived` policy requires an allowlisted `statistic`, empty-base behavior, snapshot boundary, minimum, and maximum. Global policy may further lower every maximum.
 
 ## Rewards
 
