@@ -55,9 +55,8 @@ local function boot()
     _G.PalEventDirector = {
         version = version,
         config = config,
-        director = director,
-        bridge = bridge,
         data_directory = data_directory,
+        status = function() return director:status_text() end,
     }
     local mod_ref = rawget(_G, "ModRef")
     if mod_ref and type(mod_ref.OnUnload) == "function" then

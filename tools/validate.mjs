@@ -18,10 +18,15 @@ const required = [
   'Scripts/ped/palworld.lua',
   'Scripts/ped/path.lua',
   'Scripts/ped/rewards.lua',
+  'Scripts/ped/scheduler.lua',
   'Scripts/ped/scoreboard.lua',
   'Scripts/ped/store.lua',
   'Scripts/ped/util.lua',
   'Scripts/ped/version.lua',
+  'docs/13-admin-and-scheduling.md',
+  'docs/14-imouto-dev-deployment.md',
+  'operations/imouto/Install-PalEventDirectorImouto.ps1',
+  'tools/build-imouto-bundle.mjs',
 ];
 
 async function exists(relative) {
@@ -68,29 +73,68 @@ if (info) {
   }
 }
 
-try {
-  JSON.parse(await readFile(path.join(root, 'Scripts/config/default.json'), 'utf8'));
-} catch (error) {
-  failures.push(`default config is invalid JSON: ${error.message}`);
-}
-
 const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), 'utf8'));
 if (info && packageJson.version !== info.Version) failures.push('package.json and Info.json versions differ');
 const versionLua = await readFile(path.join(root, 'Scripts/ped/version.lua'), 'utf8');
 if (info && !versionLua.includes(`version = "${info.Version}"`)) failures.push('Lua runtime and Info.json versions differ');
 
 const sourceFiles = (await walk(root)).filter((file) => !file.includes(`${path.sep}.git${path.sep}`) && !file.includes(`${path.sep}node_modules${path.sep}`) && !file.includes(`${path.sep}dist${path.sep}`));
+if (sourceFiles.some((file) => path.relative(root, file).replaceAll('\\', '/').startsWith('operations/dev/'))) {
+  failures.push('obsolete same-box operations/dev files are forbidden; IMOUTO is the only laboratory deployment target');
+}
 const forbiddenExtensions = new Set(['.uasset', '.uexp', '.ubulk', '.pak', '.dll', '.exe']);
 const secretPattern = /(adminpassword\s*[=:]|api[_ -]?key\s*[=:]|client[_ -]?secret\s*[=:]|bearer\s+[a-z0-9._-]{16,})/i;
+const protectedMikoPathPattern = /(?:c:\\palserverdev|d:\\scripts\\|startpalworldserver\.(?:cmd|ps1))/i;
 for (const file of sourceFiles) {
   const extension = path.extname(file).toLowerCase();
   const relative = path.relative(root, file).replaceAll('\\', '/');
   if (forbiddenExtensions.has(extension)) failures.push(`forbidden game/binary artifact: ${relative}`);
   const metadata = await stat(file);
   if (metadata.size > 1_000_000) failures.push(`unexpected source file over 1 MB: ${relative}`);
-  if (['.lua', '.json', '.md', '.mjs'].includes(extension)) {
+  if (['.lua', '.json', '.md', '.mjs', '.ps1'].includes(extension)) {
     const content = await readFile(file, 'utf8');
     if (secretPattern.test(content)) failures.push(`possible secret-bearing content: ${relative}`);
+  }
+  if (extension === '.json') {
+    try {
+      JSON.parse(await readFile(file, 'utf8'));
+    } catch (error) {
+      failures.push(`invalid JSON in ${relative}: ${error.message}`);
+    }
+  }
+  if (extension === '.ps1' && relative.startsWith('operations/')) {
+    const content = await readFile(file, 'utf8');
+    if (protectedMikoPathPattern.test(content)) {
+      failures.push(`deployment operation must not reference a protected MIKO path: ${relative}`);
+    }
+  }
+}
+
+const imoutoInstallerPath = path.join(root, 'operations', 'imouto', 'Install-PalEventDirectorImouto.ps1');
+if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
+  const installer = await readFile(imoutoInstallerPath, 'utf8');
+  for (const requiredGuard of [
+    "[Environment]::MachineName -ine 'IMOUTO'",
+    "[IO.DriveType]::Fixed",
+    "ServerRoot.StartsWith('\\\\')",
+    "Global\\PalEventDirectorImoutoInstaller",
+    'sourceDirty',
+    "version -ne '0.1.0-alpha.3'",
+  ]) {
+    if (!installer.includes(requiredGuard)) failures.push(`IMOUTO installer is missing required guard: ${requiredGuard}`);
+  }
+}
+
+if (process.platform === 'win32') {
+  const powershellFiles = sourceFiles.filter((candidate) => candidate.endsWith('.ps1'));
+  for (const file of powershellFiles) {
+    const quoted = file.replaceAll("'", "''");
+    const command = `$tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile('${quoted}',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|ForEach-Object{[Console]::Error.WriteLine($_.Message)};exit 1}`;
+    try {
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { cwd: root, stdio: 'pipe' });
+    } catch (error) {
+      failures.push(`PowerShell syntax validation failed for ${path.relative(root, file).replaceAll('\\', '/')}: ${error.stderr?.toString().trim() || error.message}`);
+    }
   }
 }
 

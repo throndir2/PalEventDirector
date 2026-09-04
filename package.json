@@ -1,6 +1,6 @@
 {
   "name": "pal-event-director",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "private": true,
   "type": "module",
   "description": "Build and test tooling for the Pal Event Director UE4SS Lua server mod",
@@ -8,6 +8,7 @@
     "test": "fengari tests/run.lua",
     "validate": "node tools/validate.mjs",
     "build": "node tools/build.mjs",
+    "build:imouto": "node tools/build-imouto-bundle.mjs",
     "check": "npm run test && npm run validate"
   },
   "devDependencies": {

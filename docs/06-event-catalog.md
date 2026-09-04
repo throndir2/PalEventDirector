@@ -89,7 +89,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 |---|---|---|---|---|
 | CBT-01 | Base Siege | A scheduled or selected base receives one mandatory native invasion; survive waves for rewards. | base/guild, invasion start/end | Probable |
 | CBT-02 | Siege Roulette | A seeded draw chooses a base and invasion profile; no owner registration or consent is required. | base selection, invasion, seed | Probable |
-| CBT-03 | All-Base Alarm | Start one mandatory native invasion occurrence against every registered base at the same logical boundary. | invasion-all, health, cleanup | Experimental |
+| CBT-03 | All-Base Alarm | Start one mandatory native invasion occurrence against every available idle base belonging to a guild represented online at the same logical boundary. | invasion-all, health, cleanup | Experimental |
 | CBT-04 | Horde Night | Spawn bounded waves of existing hostile Pals/NPCs in a neutral configured zone. | network spawn, AI, zones, cleanup | Experimental |
 | CBT-05 | Boss Roulette | Draw an existing field boss and announce its normal location or spawn an approved encounter. | boss metadata, optional spawn | Probable |
 | CBT-06 | Boss Rush | Sequential existing bosses, next wave only after owned prior wave resolves. | spawn, defeat attribution, cleanup | Experimental |
@@ -118,8 +118,8 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 | CBT-29 | Last Stand | Success requires surviving a bounded wave timer, not killing every actor; survivors are cleaned safely. | waves, survival, cleanup | Experimental |
 | CBT-30 | Base Defense League | Guilds earn points from normal or director-started invasion outcomes across a season. | invasion results, guild season | Probable |
 | CBT-31 | Bounty Siege | Replace native selected invasion members with grade-appropriate existing `BOSS_*` bounty targets that retain normal token drops. | invasion selection hook, bounty IDs, drops | Experimental |
-| CBT-32 | Most Wanted March | Every base receives escalating waves of 1-, 2-, 3-, and 4-token bounty targets. | all-base invasion, bounty profiles | Experimental |
-| CBT-33 | Kingpin Siege | Ram (`BOSS_DarkTrader`) leads a mandatory assault on every base for a high-yield five-token event. | all-base invasion, exact bounty member | Experimental |
+| CBT-32 | Most Wanted March | Every eligible online-guild base receives escalating waves of 1-, 2-, 3-, and 4-token bounty targets. | all-base invasion, bounty profiles | Experimental |
+| CBT-33 | Kingpin Siege | Ram (`BOSS_DarkTrader`) leads a mandatory assault on every eligible online-guild base for a high-yield five-token event. | all-base invasion, exact bounty member | Experimental |
 | CBT-34 | Fugitive Coalition | Up to five distinct bounty archetypes and their existing companion Pals form each native invasion wave. | bounty IDs, `Otomo`, native waves | Experimental |
 | CBT-35 | Bounty Jackpot | A deliberately economy-altering all-base raid uses only high-token bounty targets and previews maximum token creation. | bounty profiles, economy preview | Experimental |
 
@@ -286,7 +286,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 ### 2. Siege League: Siege Saturday
 
-**Fantasy:** The island declares every base a target for a native invasion league.
+**Fantasy:** The island declares every eligible online-guild base a target for a native invasion league.
 
 **Phases:** global warning → base snapshot → simultaneous native invasion starts → native waves → recovery interval → standings.
 
@@ -294,7 +294,7 @@ This means a “spotlight capture” family can produce hundreds of safe variant
 
 **Rewards:** every player meeting a bounded contribution threshold receives a personal participation reward. Successful bases receive a separate defender-completion reward. First, second, and third receive additional exactly-once podium grants with deliberately modest gaps. Native invasion rewards and bounty drops remain separate. An optional “Executioner” announcement can recognize the most final hits without attaching the largest economic reward to kill stealing.
 
-**Safety:** no consent or online-owner filter; every registered base is attempted. Technical failures such as an unavailable base model, blocked start point, or native cooldown are recorded. Per-base wave size is reduced before any base is omitted, and no cleanup operation touches unknown invaders.
+**Safety:** no consent gate; the start snapshot includes only available idle bases belonging to guilds with at least one online member. Technical failures such as an unavailable base model, blocked start point, or native cooldown are recorded. Per-base wave size is reduced before an eligible base is omitted, and no cleanup operation touches unknown invaders.
 
 **Bounty variant:** before native member spawning, replace selected members with existing bounty `BOSS_*` character IDs. Their current drop rows grant Successful Bounty Tokens at 100%. See [the mandatory invasion and bounty design](11-invasion-and-bounty-design.md).
 

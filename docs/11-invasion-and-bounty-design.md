@@ -2,9 +2,9 @@
 
 ## Decision
 
-Base-invasion events are mandatory world events. Pal Event Director will not add registration, consent, guild opt-in, or an online-defender requirement before targeting a base.
+Base-invasion events are mandatory world events. Pal Event Director will not add registration, consent, or guild opt-in before targeting an eligible base. The flagship policy does require that the base's guild have at least one online member at the start boundary.
 
-A scheduled all-base event attempts to attack every base known to Palworld's invasion manager at the same event boundary. Warnings are informational, not requests for permission. A base can still fail for technical reasons—no valid invasion start point, blocked navigation, invalid/unloaded model, an existing invasion, or a native engine restriction—but that is not treated as player choice.
+A scheduled event attempts every available idle observer base whose native guild ID appears in the online-player snapshot. Offline-only guilds are excluded. Warnings are informational rather than permission requests, but the 10-, 5-, and 1-minute sequence is mandatory before mutation. A base can still fail for technical reasons—no valid invasion start point, blocked navigation, invalid/unloaded model, an existing invasion, or a native engine restriction—but that is not treated as player choice.
 
 Palworld 1.0 has a native Negotiator phase that may let players buy off a declared raid. Event profiles can either preserve that native mechanic or use the exact-group debug/server path's `bSkipInvaderDeclaration` option for a forced assault. The forced all-base profile should skip declaration if testing confirms this also bypasses the Negotiator phase.
 
@@ -87,7 +87,7 @@ Until that matrix is complete, documentation and player messaging may say “nat
 - `StartInvaderMarchForBaseCamp(FGuid campID)`;
 - `StartInvaderMarchAll()`.
 
-The manager owns a base-ID-to-observer map and a base-ID-to-incident map. `StartInvaderMarchAll()` is therefore the intended first spike for one mandatory attack against every registered base observer.
+The manager owns a base-ID-to-observer map and a base-ID-to-incident map. `StartInvaderMarchAll()` remains a useful native-scope research control, but it cannot enforce the online-guild predicate. Alpha.3 therefore snapshots and filters observers first, then calls `StartInvaderMarchForBaseCamp()` for each eligible base.
 
 The word “all” still needs runtime confirmation. The generated Modding Kit implementation is a stub and cannot show whether Palworld internally excludes cooldown, unloaded, obstructed, or already-invaded bases.
 
@@ -217,11 +217,11 @@ A custom group should have a matching completion-reward policy. All 76 stock gro
 This is the preferred first bounty-siege spike because it avoids a custom DataTable row and a PalSchema dependency.
 
 1. Acquire an exclusive invasion-system lease for the occurrence.
-2. Build the target set from every base ID known to the base/invasion managers. Do not filter by consent or online ownership.
+2. Snapshot all online players, resolve every player to a native guild ID, and build the target set from available idle observer bases belonging to those guilds. Fail the start on uncertain membership; do not filter by consent.
 3. Register an always-present but normally inert hook around `UPalInvaderIncidentBase.SelectInvaders()`.
 4. Let Palworld select a valid stock row for each base's biome and invasion grade.
 5. In the post-hook, and only for occurrence-targeted base incidents, replace each `FPalInvaderSpawnCharacterParameter` in `OutInvaderMember` before `SpawnMemberCharacters()` runs. Set `CharacterID` to an allowlisted bounty `BOSS_*` ID, preserve or replace `Level` according to the event's bounded level policy, and set an existing companion Pal ID in `Otomo` where desired. Preserve the array length unless a bounded count transform has been tested separately.
-6. Start the world event with `StartInvaderMarchAll()` or the proven exact-group all-base path.
+6. Open one bounded request window per target and call `StartInvaderMarchForBaseCamp()` for that base. Accept success only from group-correlated lifecycle callbacks.
 7. Keep the transform armed until every targeted native incident has selected its members; do not assume selection is synchronous.
 8. Track each base and incident through native lifecycle delegates.
 9. Disarm the transform and release the lease only after every incident resolves or is classified for recovery.
@@ -265,7 +265,7 @@ The client RPC carries the complete selected row, making server-only operation p
 
 ### Route C: independent character wave
 
-Spawn bounty characters near every base with the general character manager and command them toward the base.
+Spawn bounty characters near every eligible base with the general character manager and command them toward the base.
 
 This is not preferred. It recreates AI targeting, navigation, wave state, client notifications, capture/death cleanup, and completion logic that the native invasion system already provides. It should be used only if native composition control proves impossible.
 
@@ -276,9 +276,9 @@ A future definition should express policy explicitly:
 ```jsonc
 {
   "targeting": {
-    "mode": "allRegisteredBases",
+    "mode": "onlineGuildBases",
     "policy": "mandatoryWorldEvent",
-    "requiresOnlineOwner": false,
+    "requiresOnlineGuildMember": true,
     "onNativeIneligibleBase": "recordFailureAndContinue"
   },
   "invasion": {
@@ -297,17 +297,17 @@ A future definition should express policy explicitly:
 
 `simultaneous` means one logical occurrence and no Event Director policy stagger. Palworld may still schedule declarations, pathfinding, or actor spawning over different frames internally.
 
-Health protection should reduce the per-base profile size before it excludes bases. For example, every base can receive one bounty leader rather than only some bases receiving sixteen attackers. An emergency server-health stop remains necessary, but it is a failure response rather than a consent or eligibility rule.
+Health protection should reduce the per-base profile size before it excludes otherwise eligible bases. For example, every online-guild base can receive one bounty leader rather than only some receiving sixteen attackers. An emergency server-health stop remains necessary, but it is a failure response rather than a consent rule.
 
 ### Chat activation
 
-Alpha.2 provides the fixed command `!siege start <profile>`. The default `operatorOnly` policy resolves the sender's stable player UID against `operatorUids`; display names never authorize a start. An optional `anyUser` policy permits any player to start one allowlisted profile, subject to a persistent global cooldown plus the ordinary active-event, recovery, compatibility, base-count, and native-concurrency guards.
+Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. It arms a durable countdown rather than attacking immediately and always includes 10-, 5-, and 1-minute notices. The default `operatorOnly` policy resolves the sender's stable player UID against `operatorUids`; display names never authorize a start. An optional `anyUser` policy permits any player to arm one allowlisted profile, subject to a persistent global cooldown plus the ordinary active-event, recovery, compatibility, base-count, and native-concurrency guards.
 
 The recommended live policy is operator-direct start and, later, a separately implemented player vote. `anyUser` is useful for a trusted private server but must retain a substantial cooldown. User text can select only fixed profile IDs and cannot supply character IDs, Unreal paths, levels, item IDs, or function names.
 
 The flagship command is:
 
-`!siege start all-bounty`
+`!siege start all-bounty 10`
 
 The `all-bounty` profile attempts to replace every concrete member in each intercepted array Palworld selected. It does not enlarge that array. A deterministic cursor rotates through all 34 audited bounty IDs across base selections; therefore all 34 are attempted when the event supplies at least 34 concrete slots, while a smaller event receives a deterministic subset. The transform leaves native levels, companion fields, counts, waves, pathfinding, lifecycle, and completion context untouched; live tests must prove the game consumes those values as expected.
 
@@ -453,7 +453,7 @@ before any game modifiers affecting drops or butchering. Event preview should di
 
 ## Required proof before enabling
 
-1. Call `StartInvaderMarchAll()` on a disposable world with several bases and record every base observer, incident, and failure.
+1. Snapshot several online/offline guilds, issue `StartInvaderMarchForBaseCamp()` for every eligible observer, and record every request, incident, exclusion, and failure. Use `StartInvaderMarchAll()` only as a native research comparison.
 2. Call `Debug_InvaderMarch()` with a known stock `GroupName` and confirm whether it targets all bases; compare `Debug_InvaderMarchForNearCamp()`.
 3. Confirm `bSkipInvaderDeclaration=true` bypasses declaration and the Negotiator rather than only hiding UI.
 4. Hook `SelectInvaders()` observationally and verify timing, context, output-array meaning, and invocation count.
@@ -479,7 +479,7 @@ before any game modifiers affecting drops or butchering. Event preview should di
 
 ## Current conclusion
 
-- **Every-base attack:** probable through `StartInvaderMarchAll()` and directly represented by the manager's per-base observer/incident maps.
+- **Every eligible-base attack:** implemented by filtering the manager's observer map through the online-player guild snapshot and issuing selected-base requests; multi-base live behavior still requires proof.
 - **Mandatory attack:** probable through the direct march path or `bSkipInvaderDeclaration=true`; no Event Director consent layer is required.
 - **Choose a stock invader group:** probable-to-high confidence through `Debug_InvaderMarch(GroupName, ...)`.
 - **Use bounty targets in a native invasion:** technically strong and supported by the row/member model.

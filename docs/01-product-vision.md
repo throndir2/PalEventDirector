@@ -50,7 +50,7 @@ The creative opportunity is not inventing assets. It is recombining Palworld's e
 
 ### World events do not imply consent
 
-Scheduled base invasions are world rules, like Palworld's ordinary raids. Pal Event Director does not add a registration or consent gate before attacking a base. An all-base event attempts every base known to the native invasion manager; native pathfinding, loading, cooldown, or state failures are technical outcomes rather than player choices. Consent remains available where an event directly takes control of an individual player, but it is not a prerequisite for server-wide invasion events.
+Scheduled base invasions are world rules, like Palworld's ordinary raids. Pal Event Director does not add a registration or consent gate before attacking an eligible base. The flagship event attempts every available idle base belonging to a guild with at least one online member at the start boundary; offline-only guilds are excluded, while native pathfinding, loading, cooldown, or state failures are technical outcomes rather than player choices. Consent remains available where an event directly takes control of an individual player, but it is not a prerequisite for server-wide invasion events.
 
 ### Capabilities, not one-off scripts
 

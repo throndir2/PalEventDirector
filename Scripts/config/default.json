@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "mode": "laboratory",
   "compatibility": {
     "requiredAdapter": "palworld-1.0.3-lab",
@@ -46,6 +46,7 @@
     ],
     "chatStartPolicy": "operatorOnly",
     "userStartCooldownSeconds": 3600,
+    "manualCountdownMinutes": 10,
     "allowCrossBaseRoaming": true,
     "targetPoints": 1000,
     "minimumParticipationPoints": 100,
@@ -57,6 +58,24 @@
     "creditActivePal": true,
     "creditBaseWorkers": false
   },
+  "schedules": [
+    {
+      "id": "weekly-all-bounty",
+      "name": "Weekly All-Bounty Alarm",
+      "enabled": false,
+      "frequency": "weekly",
+      "dayOfWeek": "SAT",
+      "hour": 19,
+      "minute": 0,
+      "profile": "all-bounty",
+      "warningSeconds": [
+        600,
+        300,
+        60
+      ],
+      "lateStartToleranceSeconds": 60
+    }
+  ],
   "rewards": {
     "allowedItemIds": [
       "BountyProof_1"

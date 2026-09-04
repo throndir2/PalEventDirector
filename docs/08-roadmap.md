@@ -239,7 +239,7 @@ Add adapters one signal family at a time:
 ### Exit criteria
 
 - No event can stop or clean a naturally occurring incident by mistake.
-- Every registered base receives an attempted outcome in all-base mode; native technical failures are classified and reported.
+- Every available idle base belonging to a guild represented online at the event boundary receives an attempted outcome; offline-only guilds are excluded and native technical failures are classified and reported.
 - Exact group-name scope and declaration/Negotiator bypass are proven rather than inferred from reflected names.
 - Bounty death/capture/butcher drops, wave completion, vanilla clients, and overworld-bounty independence are proven.
 - Target-budgeted damage standings reconcile against native combat events; final-hit and capture resolution cannot duplicate target scoring.

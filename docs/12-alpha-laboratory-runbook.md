@@ -2,15 +2,17 @@
 
 ## Scope
 
-Version `0.1.0-alpha.2` is a runnable, fail-closed UE4SS Lua laboratory build. It is not authorized for the production world. The purpose of this release is to prove current Palworld hook signatures, native invasion behavior, chat authorization, and bounty-member substitution without requiring client files.
+Version `0.1.0-alpha.3` is a runnable, fail-closed UE4SS Lua laboratory build. It is not authorized for the production world. The purpose of this release is to prove current Palworld hook signatures, native invasion behavior, warnings/schedules, online-guild targeting, global roster enrollment, chat authorization, and bounty-member substitution without requiring client files.
 
 ## Implemented
 
 - Official-loader `Info.json` with one server-only Lua rule and an explicit `UE4SS` dependency.
 - Persistent validated JSON configuration outside the managed package.
 - Checksummed append-only journal and atomic snapshot/backup writes.
-- Siege League lifecycle with an all-base native start adapter.
-- Admin or cooldown-bound user activation through `!siege start <profile>` after chat validation.
+- Siege League lifecycle with an online-guild-filtered selected-base native start adapter.
+- Daily/weekly host-local schedules plus durable mandatory 10/5/1-minute warnings.
+- Admin or cooldown-bound user activation through `!siege start <profile> [10-60 minutes]` after chat validation.
+- One global start/late-join leaderboard roster independent of guild membership.
 - Seven fixed composition profiles, including `all-bounty`, which attempts to replace every intercepted native member while cycling the complete audited 34-ID bounty catalog across the event.
 - Cross-base roaming: a player may defend every event base and accumulate contribution, final hits, base count, participation, and per-successful-base reward obligations.
 - Target-budgeted contribution with direct-player, active-Pal, optional base-worker, uncredited-damage, overkill, duplicate, and final-hit accounting.
@@ -31,15 +33,15 @@ The generated default has every Palworld observation/mutation switch off:
 
 `grantItems=true` is rejected by the alpha configuration validator. Reward obligation creation and transaction tests exist, but live delivery remains blocked until journal replay and every crash boundary are proven against a copied world.
 
-This alpha implements but does not enable bounty substitution. It does not yet alter levels, schedule recurring events, privately message players, or stop native invasions. `abort` stops director scoring and leaves Palworld's native incidents to their normal lifecycle.
+This alpha implements but does not enable bounty substitution or recurring schedules. It does not alter levels, privately message players, or stop native invasions. `abort` stops director scoring and leaves Palworld's native incidents to their normal lifecycle.
 
 ## Chat authorization and profiles
 
 After the chat hook passes Gate 2, set `chatCommands=true` and add canonical player GUIDs to `operatorUids`. The default `chatStartPolicy` is `operatorOnly`; an operator can run:
 
-`!siege start all-bounty`
+`!siege start all-bounty 10`
 
-Setting `chatStartPolicy` to `anyUser` lets any user run the same allowlisted command, but `userStartCooldownSeconds` applies globally and active/recovery/native-concurrency guards still fail closed. User text can select only IDs in `allowedProfiles`; it cannot name an Unreal path, character ID, item, or arbitrary function.
+Setting `chatStartPolicy` to `anyUser` lets any user run the same allowlisted command, but `userStartCooldownSeconds` applies globally and active/recovery/native-concurrency guards still fail closed. Every start arms the mandatory warning sequence; no operator form bypasses it. User text can select only IDs in `allowedProfiles`; it cannot name an Unreal path, character ID, item, or arbitrary function.
 
 Recommended profile cadence:
 
@@ -55,13 +57,13 @@ Recommended profile cadence:
 
 The transform remains armed for repeated or asynchronous selections until the occurrence ends. It acts only on enemy incidents whose base was in the pre-start observer snapshot; once a base accepts a native group GUID, later selections and damage must match that same group. Visitor selections and groups from unrelated incidents are ignored.
 
-Alpha.2 uses configuration schema 2 and intentionally rejects schema 1. Before upgrading, stop the laboratory server, rename the alpha.1 `config.json` to a timestamped audit backup, start alpha.2 once to create a fresh fail-closed schema-2 file, stop it, then reapply reviewed values explicitly.
+Alpha.3 uses configuration schema 3 and intentionally rejects older alpha schemas. Before upgrading, stop the laboratory server, rename the old `config.json` to a timestamped audit backup, start alpha.3 once to create a fresh fail-closed schema-3 file, stop it, then reapply reviewed values explicitly.
 
 ## Native concurrency conclusion
 
 Current reflected structures strongly indicate **one native invader-family incident per base**: `UPalInvaderManager.Incidents` maps one camp GUID to one incident, and each base observer has scalar invading/path-search flags. Different bases are structurally capable of one concurrent incident each. One global declaration/wave-info pointer makes normal simultaneous declarations uncertain.
 
-The alpha therefore refuses to start if any native invasion/visitor incident is already executing. `StartInvaderMarchAll()` remains a focused test: it may fan out per-base incidents concurrently, serialize them, or reject some native states. Runtime evidence decides which claim can ship.
+The alpha therefore refuses to start if any native invasion/visitor incident occupies the manager or an eligible observer is invading/path-searching. It snapshots online players and guild IDs, then calls `StartInvaderMarchForBaseCamp()` only for available observers belonging to represented guilds. Runtime evidence must still prove multi-base declaration behavior and selected-base concurrency.
 
 ## Gate 1: clean boot
 
@@ -72,6 +74,7 @@ The alpha therefore refuses to start if any native invasion/visitor incident is 
 5. Verify persistent files are under `Pal/Saved/PalEventDirector`, not under managed `Scripts`.
 6. Verify an unmodified remote client connects.
 7. Restart twice and verify hooks/timers do not multiply.
+8. Verify IMOUTO's dedicated-server install remains separate from its sibling vanilla-client install; the installer must not write into the client tree.
 
 ## Gate 2: observation only
 
@@ -96,21 +99,26 @@ With three widely separated eligible bases, test and record:
 
 1. second request to the same base during declaration, path search, and active wave;
 2. base A active followed by base B start;
-3. `StartInvaderMarchAll()` with A/B/C idle;
+3. selected-base requests for A/B/C at one event boundary;
 4. enemy versus visitor occupancy at the same base and different bases;
 5. victory, timeout, cancellation, path failure, restart, and base removal cleanup.
 
 Expected safety policy is at most one invader-family incident per camp. Do not interpret a `void` start call as success; group-correlated lifecycle callbacks are authoritative.
 
-## Gate 4: all-base Siege League mutation
+## Gate 4: eligible-base Siege League mutation
 
 Enable `startAllInvasions` and `substituteBountyMembers` only while `observeCombat` and `observeInvasions` remain enabled. Keep `grantItems=false`.
 
 The process environment must also set `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` to the exact Steam dedicated-server build ID in the configured allowlist. For this inspected build that value is `24575149`. An absent or changed value blocks mutation.
 
-Start the lowest-risk replacement through `ped start mixed`, then test `ped start all-bounty`. After chat validation, repeat as an operator with `!siege start all-bounty`, and optionally repeat under the any-user cooldown policy. Verify:
+`compatibility.allowedUe4ssVersions` must also contain the exact value returned by `UE4SS.GetVersion()`. An empty list, unavailable API, or mismatch blocks mutation.
 
-- every technically eligible base receives one classified attempted outcome;
+Start the lowest-risk replacement through `ped start mixed 10`, then test `ped start all-bounty 10`. After chat validation, repeat as an operator with `!siege start all-bounty 10`, and optionally repeat under the any-user cooldown policy. Verify:
+
+- 10-, 5-, and 1-minute notices are visible before every start, and a failed notice causes a missed occurrence rather than mutation;
+- every available idle base belonging to a guild with at least one member online at the boundary receives one classified attempted outcome;
+- offline-only guild bases receive no request;
+- every player online at the boundary and every late joiner enters one global leaderboard regardless of guild;
 - every concrete member in `all-bounty` has an audited `BOSS_*` ID while retaining Palworld's native level and companion fields;
 - `mixed` changes exactly one concrete member per native selection;
 - unauthorized users cannot start under `operatorOnly`, while `anyUser` starts once and then observes the durable global cooldown;
@@ -126,7 +134,7 @@ Start the lowest-risk replacement through `ped start mixed`, then test `ped star
 
 ## Gate 5: rewards and bounty outcomes
 
-Not available in `alpha.2`. The next release must add and prove:
+Not available in `alpha.3`. The next release must add and prove:
 
 - replayable reward state transitions anchored to the journal;
 - full/partial inventory behavior and exact `EPalItemOperationResult` handling;

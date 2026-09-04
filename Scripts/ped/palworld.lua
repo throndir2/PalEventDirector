@@ -50,7 +50,10 @@ local function property(object, name)
     local ok, value = pcall(function()
         return object[name]
     end)
-    return ok and unwrap(value) or nil
+    if not ok then
+        return nil
+    end
+    return unwrap(value)
 end
 
 local function call(object, method_name, ...)
@@ -138,6 +141,7 @@ function Bridge.new(options)
     return setmetatable({
         config = assert(options.config),
         logger = assert(options.logger),
+        clock = options.clock or util.now_seconds,
         director = nil,
         hook_ids = {},
         damage_sequence = 0,
@@ -149,6 +153,14 @@ function Bridge.new(options)
         selected_groups = {},
         expected_bases = {},
         pending_expected_bases = {},
+        pending_native_base_ids = {},
+        native_base_ids = {},
+        pending_base_guilds = {},
+        base_guilds = {},
+        pending_roster = {},
+        event_roster = {},
+        request_windows = {},
+        dispatching_base_id = nil,
         member_context = {},
         profile_id = "native",
         bounty_selector = nil,
@@ -172,20 +184,38 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.selected_groups = {}
     self.expected_bases = self.pending_expected_bases
     self.pending_expected_bases = {}
+    self.native_base_ids = self.pending_native_base_ids
+    self.pending_native_base_ids = {}
+    self.base_guilds = self.pending_base_guilds
+    self.pending_base_guilds = {}
+    self.event_roster = self.pending_roster
+    self.pending_roster = {}
+    self.request_windows = {}
+    self.dispatching_base_id = nil
     self.member_context = {}
     self.profile_id = profile_id or "native"
     self.bounty_selector = bounties.new_selector(self.profile_id, occurrence_id)
     self.substitution_count = 0
     self.timed_out_bases = {}
-    local ids = {}
-    for base_id in pairs(self.expected_bases) do ids[#ids + 1] = base_id end
-    table.sort(ids)
-    return ids
+    local targets = {}
+    for base_id in pairs(self.expected_bases) do
+        targets[#targets + 1] = { id = base_id, guildId = self.base_guilds[base_id] }
+    end
+    table.sort(targets, function(left, right) return left.id < right.id end)
+    return targets, util.deep_copy(self.event_roster)
 end
 
 function Bridge:close_event_discovery()
     self.discovery_open = false
     self.selection_open = false
+end
+
+function Bridge:_request_window_open(base_id)
+    local request = self.request_windows[base_id]
+    if not request or request.status == "dispatch_call_failed" then
+        return false
+    end
+    return self.clock() <= request.expiresAt
 end
 
 function Bridge:end_event_tracking()
@@ -196,6 +226,14 @@ function Bridge:end_event_tracking()
     self.selected_groups = {}
     self.expected_bases = {}
     self.pending_expected_bases = {}
+    self.native_base_ids = {}
+    self.pending_native_base_ids = {}
+    self.base_guilds = {}
+    self.pending_base_guilds = {}
+    self.event_roster = {}
+    self.pending_roster = {}
+    self.request_windows = {}
+    self.dispatching_base_id = nil
     self.member_context = {}
     self.profile_id = "native"
     self.bounty_selector = nil
@@ -297,17 +335,18 @@ function Bridge:_registered_base_ids(manager)
     end
     table.sort(ids)
     local incidents = property(manager, "Incidents")
-    if incidents then
-        local incident_count = 0
-        local counted, count_error = pcall(function()
-            incidents:ForEach(function() incident_count = incident_count + 1 end)
-        end)
-        if not counted then
-            return nil, "unable to inspect existing invasion incidents: " .. tostring(count_error)
-        end
-        if incident_count > 0 then
-            return nil, "one or more native invasion/visitor incidents already occupy base slots"
-        end
+    if not incidents then
+        return nil, "PalInvaderManager.Incidents is unavailable"
+    end
+    local incident_count = 0
+    local counted, count_error = pcall(function()
+        incidents:ForEach(function() incident_count = incident_count + 1 end)
+    end)
+    if not counted then
+        return nil, "unable to inspect existing invasion incidents: " .. tostring(count_error)
+    end
+    if incident_count > 0 then
+        return nil, "one or more native invasion/visitor incidents already occupy base slots"
     end
     return ids, id_set
 end
@@ -448,6 +487,89 @@ function Bridge:_player_display_name(uid)
         end
     end
     return util.mask_uid(uid)
+end
+
+function Bridge:list_online_players()
+    local players = {}
+    local seen = {}
+    for _, controller in ipairs(self:_find_all("PalPlayerController")) do
+        if valid(controller) then
+            local world_ok, world = call(controller, "GetWorld")
+            local uid_ok, uid_value = call(controller, "GetPlayerUId")
+            local uid = uid_ok and guid_string(uid_value) or nil
+            if world_ok and valid(world) and uid and not seen[uid] then
+                seen[uid] = true
+                local name = self:_player_display_name(uid)
+                players[#players + 1] = { uid = uid, name = name, controller = controller, guid = uid_value, world = world }
+            end
+        end
+    end
+    table.sort(players, function(left, right) return left.uid < right.uid end)
+    return players
+end
+
+function Bridge:_eligible_online_guild_bases(manager)
+    local utility = self:_utility()
+    if not valid(utility) then
+        return nil, nil, nil, nil, "PalUtility unavailable"
+    end
+    local expected = {}
+    local native_ids = {}
+    local base_guilds = {}
+    local online_guilds = {}
+    local roster = self:list_online_players()
+    local resolved_roster = {}
+    if #roster < 1 then
+        return {}, {}, {}, {}, nil
+    end
+    for _, player in ipairs(roster) do
+        local guild_ok, guild = call(utility, "GetGuildByPlayerUId", player.world, player.guid)
+        if not guild_ok or not valid(guild) then
+            return nil, nil, nil, nil, "guild lookup failed for online player " .. util.mask_uid(player.uid)
+        end
+        local guild_ok_id, guild_id_value = call(guild, "GetId")
+        local guild_id = guild_ok_id and guid_string(guild_id_value) or nil
+        if not guild_id then
+            return nil, nil, nil, nil, "guild identity failed for online player " .. util.mask_uid(player.uid)
+        end
+        online_guilds[guild_id] = true
+        resolved_roster[#resolved_roster + 1] = { uid = player.uid, name = player.name, guildId = guild_id }
+    end
+
+    local observers = property(manager, "Observers")
+    if not observers then return nil, nil, nil, nil, "PalInvaderManager.Observers is unavailable" end
+    local observer_error
+    local ok, iteration_error = pcall(function()
+        observers:ForEach(function(key, value)
+            local observer = unwrap(value)
+            local base = property(observer, "TargetBaseCamp")
+            if valid(base) then
+                local available_ok, available = call(base, "IsAvailable")
+                local id_ok, id_value = call(base, "GetId")
+                local group_ok, group_value = call(base, "GetGroupIdBelongTo")
+                local base_id = id_ok and guid_string(id_value) or guid_string(key)
+                local group_id = group_ok and guid_string(group_value) or nil
+                if base_id and group_id and online_guilds[group_id] then
+                    local invading = property(observer, "bIsInvading")
+                    local path_searching = property(observer, "bIsInvaderPathSearching")
+                    if invading == nil or path_searching == nil then
+                        observer_error = "observer state is unavailable for eligible base " .. util.mask_uid(base_id)
+                        return true
+                    elseif invading or path_searching then
+                        observer_error = "eligible base is already invading or path-searching: " .. util.mask_uid(base_id)
+                        return true
+                    elseif available_ok and available then
+                        expected[base_id] = true
+                        native_ids[base_id] = id_value
+                        base_guilds[base_id] = group_id
+                    end
+                end
+            end
+        end)
+    end)
+    if not ok then return nil, nil, nil, nil, "unable to enumerate eligible guild bases: " .. tostring(iteration_error) end
+    if observer_error then return nil, nil, nil, nil, observer_error end
+    return expected, native_ids, base_guilds, resolved_roster, nil
 end
 
 function Bridge:_target_context(defender)
@@ -663,6 +785,10 @@ function Bridge:_on_select_invaders(context, out_members)
             return
         end
     else
+        if not self:_request_window_open(base_id) then
+            self.logger:warn("Ignored bounty selection without an active request window", { base = util.mask_uid(base_id) })
+            return
+        end
         reservation = { internalId = internal_group_id, broadcastId = broadcast_group_id }
         self.selected_groups[base_id] = reservation
     end
@@ -785,7 +911,7 @@ function Bridge:register()
             local base_id, group_id, invader_type = self:_lifecycle_context(parameter)
             if self.config.diagnostics.traceHooks then self.logger:info("Invasion start hook", { base = util.mask_uid(base_id), group = util.mask_uid(group_id), discovery = self.discovery_open }) end
             local group_expected = self.owned_groups[group_id] == base_id
-            local native_discovery = self.profile_id == "native" and self.discovery_open
+            local native_discovery = self.profile_id == "native" and self.discovery_open and self:_request_window_open(base_id)
             local existing_group
             if self.director and self.director.state and self.director.state.event and self.director.state.event.bases[base_id] then
                 existing_group = self.director.state.event.bases[base_id].groupId
@@ -793,6 +919,7 @@ function Bridge:register()
             if base_id and group_id and (not existing_group or existing_group == group_id) and is_enemy_invader_type(invader_type) and self.expected_bases[base_id] and self.director and self.event_open and (group_expected or native_discovery) then
                 if self.director:on_invasion_start(base_id, group_id) then
                     self.owned_groups[group_id] = base_id
+                    if self.request_windows[base_id] then self.request_windows[base_id].status = "started" end
                 elseif not group_expected then
                     self.owned_groups[group_id] = nil
                 end
@@ -924,6 +1051,10 @@ function Bridge:active_invasion_count()
 end
 
 function Bridge:preflight_start(profile_id)
+    self.pending_expected_bases = {}
+    self.pending_native_base_ids = {}
+    self.pending_base_guilds = {}
+    self.pending_roster = {}
     if self.config.mode ~= "laboratory" then
         return false, "alpha invasion mutation is laboratory-only"
     end
@@ -940,20 +1071,29 @@ function Bridge:preflight_start(profile_id)
         return false, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is absent or not allowlisted"
     end
     local runtime = global("UE4SS")
-    if runtime and type(runtime.GetVersion) == "function" and #self.config.compatibility.allowedUe4ssVersions > 0 then
-        local ok, major, minor, patch = pcall(runtime.GetVersion, runtime)
-        local current = ok and string.format("%d.%d.%d", major, minor, patch) or "unknown"
-        local allowed = false
-        for _, candidate in ipairs(self.config.compatibility.allowedUe4ssVersions) do
-            if candidate == current then allowed = true; break end
-        end
-        if not allowed then
-            return false, "UE4SS version is not allowlisted: " .. current
-        end
+    if not runtime or type(runtime.GetVersion) ~= "function" then
+        return false, "UE4SS version discovery is unavailable"
+    end
+    if #self.config.compatibility.allowedUe4ssVersions < 1 then
+        return false, "no UE4SS version is allowlisted"
+    end
+    local ok, major, minor, patch = pcall(runtime.GetVersion)
+    local current = ok and type(major) == "number" and type(minor) == "number" and type(patch) == "number"
+        and string.format("%d.%d.%d", major, minor, patch) or "unknown"
+    local allowed = false
+    for _, candidate in ipairs(self.config.compatibility.allowedUe4ssVersions) do
+        if candidate == current then allowed = true; break end
+    end
+    if not allowed then
+        return false, "UE4SS version is not allowlisted: " .. current
     end
     local manager = self:_find_first("PalInvaderManager")
     if not valid(manager) then
         return false, "PalInvaderManager instance is unavailable"
+    end
+    local registered_ids, registration_error = self:_registered_base_ids(manager)
+    if not registered_ids then
+        return false, registration_error
     end
     if self:active_invasion_count() > 0 then
         return false, "a native invasion/visitor incident is already active; one incident per base is assumed and this alpha uses a global mutex"
@@ -971,33 +1111,71 @@ function Bridge:preflight_start(profile_id)
             return false, "SelectInvaders is unavailable for bounty substitution"
         end
     end
-    local base_ids, base_set_or_error = self:_registered_base_ids(manager)
-    if not base_ids then
-        return false, base_set_or_error
+    local base_set, native_ids, base_guilds, roster, eligibility_error = self:_eligible_online_guild_bases(manager)
+    if not base_set then return false, eligibility_error end
+    if #roster > self.config.limits.maxPlayers then
+        return false, string.format("online roster count %d exceeds configured maximum %d", #roster, self.config.limits.maxPlayers)
     end
-    if #base_ids < 1 then
-        return false, "no registered invasion base observers are available"
-    end
+    local base_ids = util.sorted_keys(base_set)
+    if #base_ids < 1 then return false, "no available base belongs to a guild with an online member" end
     if #base_ids > self.config.limits.maxBases then
         return false, string.format("registered base count %d exceeds configured maximum %d", #base_ids, self.config.limits.maxBases)
     end
-    self.pending_expected_bases = base_set_or_error
-    local function_object = self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchAll")
+    self.pending_expected_bases = base_set
+    self.pending_native_base_ids = native_ids
+    self.pending_base_guilds = base_guilds
+    self.pending_roster = roster
+    local function_object = self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchForBaseCamp")
     if not valid(function_object) then
-        return false, "StartInvaderMarchAll is unavailable for this revision"
+        return false, "StartInvaderMarchForBaseCamp is unavailable for this revision"
     end
     return true
 end
 
 function Bridge:start_all_invasions()
     local manager = self:_find_first("PalInvaderManager")
-    self.selection_open = true
-    local ok, result = call(manager, "StartInvaderMarchAll")
-    self.selection_open = false
-    if not ok then
-        return false, tostring(result)
+    if not valid(manager) then
+        return false, "PalInvaderManager instance became unavailable before dispatch"
     end
-    return true
+    self.selection_open = true
+    local requests = {}
+    local requested = 0
+    for _, base_id in ipairs(util.sorted_keys(self.expected_bases)) do
+        local native_id = self.native_base_ids[base_id]
+        if native_id == nil then
+            requests[#requests + 1] = { baseId = base_id, status = "dispatch_call_failed", error = "native GUID unavailable" }
+        else
+            local now = self.clock()
+            self.request_windows[base_id] = {
+                openedAt = now,
+                expiresAt = now + self.config.siegeLeague.startDiscoverySeconds,
+                status = "requesting",
+            }
+            self.dispatching_base_id = base_id
+            local ok, result = call(manager, "StartInvaderMarchForBaseCamp", native_id)
+            self.dispatching_base_id = nil
+            if ok then
+                requested = requested + 1
+                if self.request_windows[base_id].status ~= "started" then
+                    self.request_windows[base_id].status = "request_issued"
+                end
+                requests[#requests + 1] = { baseId = base_id, status = "request_issued" }
+            else
+                self.request_windows[base_id].status = "dispatch_call_failed"
+                self.request_windows[base_id].error = tostring(result)
+                requests[#requests + 1] = { baseId = base_id, status = "dispatch_call_failed", error = tostring(result) }
+            end
+        end
+    end
+    self.selection_open = false
+    if requested == 0 then
+        local first = requests[1]
+        return false, { requested = 0, requests = requests, error = first and first.error or "no eligible base start was requested" }
+    end
+    if requested < #requests then
+        self.logger:warn("Some filtered base invasion requests failed synchronously", { failures = #requests - requested, requested = requested })
+    end
+    return true, { requested = requested, requests = requests }
 end
 
 function Bridge:announce(message)

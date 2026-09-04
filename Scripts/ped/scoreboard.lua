@@ -38,6 +38,7 @@ function Scoreboard.new(options, restored_state)
         max_players = options.max_players or 128,
         max_damage_records = options.max_damage_records or 100000,
         qualification_percent = options.qualification_percent or 5,
+        require_enrollment = options.require_enrollment == true,
     }, Scoreboard)
 end
 
@@ -106,6 +107,19 @@ function Scoreboard:_ensure_player(uid, display_name)
     return player
 end
 
+function Scoreboard:enroll_player(uid, display_name, joined_at)
+    if type(uid) ~= "string" or uid == "" then
+        return false, "invalid_player_uid"
+    end
+    local player, player_error = self:_ensure_player(uid, display_name)
+    if not player then
+        return false, player_error
+    end
+    player.enrolledAt = player.enrolledAt or joined_at
+    player.lastSeenAt = joined_at or player.lastSeenAt
+    return true, player
+end
+
 local function source_is_eligible(input)
     return input.source_kind == "direct_player" or input.source_kind == "active_pal" or input.source_kind == "base_worker"
 end
@@ -150,7 +164,13 @@ function Scoreboard:record_damage(input)
         return true, { consumed = consumed, credited = 0 }
     end
 
-    local player, player_error = self:_ensure_player(input.player_uid, input.player_name)
+    local player = self.state.players[input.player_uid]
+    local player_error
+    if not player and self.require_enrollment then
+        target.uncreditedDamage = target.uncreditedDamage + consumed
+        return true, { consumed = consumed, credited = 0, reason = "player_not_enrolled" }
+    end
+    player, player_error = self:_ensure_player(input.player_uid, input.player_name)
     if not player then
         target.uncreditedDamage = target.uncreditedDamage + consumed
         return self:_reject(player_error)

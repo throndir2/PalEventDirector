@@ -28,6 +28,7 @@ const packageFiles = [
   'Scripts/ped/palworld.lua',
   'Scripts/ped/path.lua',
   'Scripts/ped/rewards.lua',
+  'Scripts/ped/scheduler.lua',
   'Scripts/ped/scoreboard.lua',
   'Scripts/ped/store.lua',
   'Scripts/ped/util.lua',

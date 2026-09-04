@@ -15,39 +15,45 @@ function M.read(file_path)
     if not file then
         return nil, open_error
     end
-    local content = file:read("*a")
-    file:close()
+    local content, read_error = file:read("*a")
+    local closed, close_error = file:close()
+    if content == nil then
+        return nil, read_error
+    end
+    if not closed then
+        return nil, close_error
+    end
     return content
 end
 
-function M.write(file_path, content)
-    local file, open_error = io.open(file_path, "wb")
+local function write_all(file_path, mode, content)
+    local file, open_error = io.open(file_path, mode)
     if not file then
         return false, open_error
     end
-    local ok, write_error = file:write(content)
-    if not ok then
+    local written, write_error = file:write(content)
+    if not written then
         file:close()
         return false, write_error
     end
-    file:flush()
-    file:close()
+    local flushed, flush_error = file:flush()
+    if not flushed then
+        file:close()
+        return false, flush_error
+    end
+    local closed, close_error = file:close()
+    if not closed then
+        return false, close_error
+    end
     return true
 end
 
+function M.write(file_path, content)
+    return write_all(file_path, "wb", content)
+end
+
 function M.append(file_path, content)
-    local file, open_error = io.open(file_path, "ab")
-    if not file then
-        return false, open_error
-    end
-    local ok, write_error = file:write(content)
-    if not ok then
-        file:close()
-        return false, write_error
-    end
-    file:flush()
-    file:close()
-    return true
+    return write_all(file_path, "ab", content)
 end
 
 function M.remove(file_path)

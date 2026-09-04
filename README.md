@@ -2,7 +2,7 @@
 
 Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
-> **Project state:** runnable `0.1.0-alpha.2` laboratory build. It boots, validates persistent configuration, maintains a checksummed journal/snapshot, tracks cross-base Siege League contribution/final hits through current reflected candidates, creates exactly-once reward obligations, exposes operator/chat controls, and can transform native selected members through audited bounty profiles. All gameplay observation, invasion starts, bounty substitution, chat hooks, and live item delivery are disabled by default until the disposable-world gates pass.
+> **Project state:** runnable `0.1.0-alpha.3` laboratory build. It adds daily/weekly local-time schedules, durable 10/5/1-minute notices, manual warning countdowns, online-guild-only base targeting, a global start/late-join roster, operator/chat controls, and audited bounty profiles. All gameplay observation, invasion starts, bounty substitution, chat hooks, schedules, and live item delivery are disabled by default until the disposable-world gates pass.
 
 `Info.json` intentionally leaves `MinRevision` at `0` for this unpublished laboratory package because the installed executable does not expose the official five-digit title revision in file metadata. Record that revision in-game and set it before any published release.
 
@@ -20,7 +20,9 @@ Prerequisite: one Palworld-compatible `UE4SS` package managed by Pocketpair's of
 6. Enable `diagnostics.observationProbe` and one observation capability at a time, restart, and complete the checklist in [the alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md). Use `traceHooks` only for short focused troubleshooting.
 7. Enable `startAllInvasions` and `substituteBountyMembers` only after observation and substitution probes pass. Live `grantItems` is intentionally rejected in this build; rewards remain durable pending obligations until the next persistence gate is implemented.
 
-The primary admin command is `!siege start all-bounty`. `chatStartPolicy=operatorOnly` is the safe default and authorizes UIDs in `operatorUids`; `anyUser` permits any player to start an enabled profile subject to the durable global cooldown. Chat hooks remain disabled until validated. Available player commands are `!siege status`, `!siege profiles`, `!siege score`, and `!siege leaderboard`. Operators additionally get `!siege start <profile>`, `!siege resolve`, `!siege abort`, and `!siege reset`.
+For the current laboratory topology, MIKO performs source validation and clean builds while IMOUTO hosts the disposable dedicated server and vanilla client. After each clean pushed build, run `npm run build:imouto` on MIKO and invoke the installer from the generated `dist/IMOUTO-*` bundle on IMOUTO. It defaults to `D:\SteamLibrary\steamapps\common\PalServer`, backs up repeat deployments, and never touches MIKO Production or the sibling Palworld client. See [the IMOUTO deployment runbook](docs/14-imouto-dev-deployment.md).
+
+The primary admin command is `!siege start all-bounty [10-60 minutes]`. It always arms the mandatory 10/5/1-minute warning sequence; there is no immediate-start command. `chatStartPolicy=operatorOnly` is the safe default and authorizes UIDs in `operatorUids`; `anyUser` permits any player to start an enabled profile subject to the durable global cooldown. Chat hooks remain disabled until validated. Available player commands are `!siege status`, `!siege profiles`, `!siege schedule`, `!siege score`, and `!siege leaderboard`. Operators additionally get `!siege start <profile> [minutes]`, `!siege cancel`, `!siege resolve`, `!siege abort`, and `!siege reset`. See [the complete administration reference](docs/13-admin-and-scheduling.md).
 
 Built-in profiles:
 
@@ -34,7 +36,7 @@ Built-in profiles:
 | `jackpot` | Every member uses a four- or five-token target. |
 | `native` | No composition substitution; useful as the baseline control. |
 
-The corresponding server-console forms are `ped start <profile>`, `ped status`, `ped profiles`, `ped leaderboard`, `ped resolve`, `ped abort`, and `ped reset`.
+The corresponding server-console forms are `ped start [profile] [minutes]`, `ped cancel`, `ped status`, `ped profiles`, `ped schedule`, `ped leaderboard`, `ped resolve`, `ped abort`, `ped reset`, and the currently blocked `ped rewards`.
 
 ## Non-negotiable contract
 
@@ -61,7 +63,7 @@ The planned system includes:
 - Objectives based on joins, chat, captures, final hits, direct-versus-owned-Pal kills, damage contribution, gathering, crafting, building, fishing, travel, dungeons, bosses, raids, arenas, oil rigs, zones, and elapsed time where corresponding hooks prove reliable.
 - Existing-item, experience, technology-point, status, and recognition rewards.
 - Controlled spawning of existing Pals and NPCs, built-in incidents, invasions, meteorites, supply drops, and instance systems where safe adapters are validated.
-- Mandatory scheduled invasions that can target every registered base without an Event Director consent layer, including experimental all-base bounty-target sieges with native per-base or explicitly configured level policies.
+- Mandatory scheduled invasions that target every available idle base belonging to a guild represented by at least one online member at the event boundary, including experimental bounty-target sieges with native per-base or explicitly configured level policies.
 - Per-player, team, guild, cooperative, competitive, server-wide, and season-long scoring.
 - Crash-safe state, exactly-once reward delivery, modifier leases, spawn cleanup, audit logs, and per-capability kill switches.
 - Vanilla UX through announcements, private system chat, public chat, commands, and staff-placed signboards.
@@ -83,6 +85,8 @@ Read these in order:
 10. [Research sources](docs/10-research-sources.md) — source hierarchy, findings, and unresolved questions.
 11. [Mandatory invasions and bounty sieges](docs/11-invasion-and-bounty-design.md) — all-base targeting, exact invasion groups, bounty-token farming, and required proof.
 12. [Alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md) — implemented scope, fail-closed switches, installation, and staged live validation.
+13. [Alpha.3 administration and scheduling](docs/13-admin-and-scheduling.md) — all chat/console commands, profiles, schedules, warnings, eligibility, and configuration fields.
+14. [IMOUTO DEV deployment](docs/14-imouto-dev-deployment.md) — continuous stopped-server deployment from MIKO builds, dependency pins, rollback, and manual vanilla-client checks without touching MIKO Production.
 
 ## Feasibility language
 

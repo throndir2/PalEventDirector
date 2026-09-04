@@ -51,7 +51,7 @@ Initial budgets are conservative and will be replaced by measured limits.
 | Private responses | per-player token bucket | Return one cooldown notice, then suppress. |
 | Alive spawned event actors | template cap under global cap; initial global cap 20 | Stop new spawning and reconcile. |
 | Total spawned per occurrence | initial global cap 100 | End wave/event according to policy. |
-| Simultaneous invasions | one in laboratory; all registered bases after staged scale proof | Treat all-base siege as one exclusive occurrence; reduce per-base composition before omitting targets. |
+| Simultaneous invasions | one in laboratory; all eligible online-guild bases after staged scale proof | Treat the filtered siege as one exclusive occurrence; reduce per-base composition before omitting eligible targets. |
 | Simultaneous supply incidents | initial cap 1 | Queue or reject conflicts. |
 | State checkpoint | at phase changes and bounded periodic interval | Pause new mutations if storage is unhealthy. |
 | Journal/reward outbox | hard size/age alarms | Pause starts; preserve cleanup and delivery. |
@@ -255,10 +255,10 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 
 - Native preconditions and concurrent-system limits.
 - Declaration/start/arrival/wave/end/timeout/cancel.
-- `StartInvaderMarchAll()` coverage across every registered base observer.
+- `StartInvaderMarchForBaseCamp()` coverage across every available idle observer belonging to a guild represented online at the event boundary.
 - Exact stock `GroupName` selection and the scope difference between generic and nearest-base debug calls.
 - `bSkipInvaderDeclaration=true`, including whether it bypasses the Negotiator and starts a forced assault.
-- Target base removed, unloaded, obstructed, on cooldown, already invaded, or without online owners.
+- Target base removed, unloaded, obstructed, on cooldown, already invaded, in an offline-only guild, or affected by a player/guild lookup failure.
 - Incident completes while area unloaded.
 - Restart mid-incident.
 - No cleanup call affects a naturally occurring incident.

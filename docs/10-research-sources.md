@@ -134,7 +134,7 @@ Current reflected APIs establish:
 - `UPalInvaderIncidentBase.SelectInvaders(...)` and its output array of `FPalInvaderSpawnCharacterParameter`;
 - reliable native invasion lifecycle delivery through `UPalNetworkInvaderComponent` and the complete selected row in `FPalIncidentBroadcastParameter`.
 
-The event policy is now explicit: base invasions are mandatory world events. No project registration, consent, or online-owner filter is required. Native inability to create an incident remains a technical failure.
+The event policy is now explicit: base invasions are mandatory world events without registration or consent, but the flagship target set is filtered to available idle bases belonging to guilds with an online member at the start boundary. Native inability to create an eligible incident remains a technical failure.
 
 The local Modding Kit clone was clean at commit `e6632458b97af0083eb81715775651b08104ef6a`.
 

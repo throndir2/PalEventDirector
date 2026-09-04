@@ -6,7 +6,7 @@ local M = {}
 
 function M.defaults()
     return {
-        schemaVersion = 2,
+        schemaVersion = 3,
         mode = "laboratory",
         compatibility = {
             requiredAdapter = "palworld-1.0.3-lab",
@@ -43,6 +43,7 @@ function M.defaults()
             allowedProfiles = json.array(bounties.profile_ids()),
             chatStartPolicy = "operatorOnly",
             userStartCooldownSeconds = 3600,
+            manualCountdownMinutes = 10,
             allowCrossBaseRoaming = true,
             targetPoints = 1000,
             minimumParticipationPoints = 100,
@@ -54,6 +55,20 @@ function M.defaults()
             creditActivePal = true,
             creditBaseWorkers = false,
         },
+        schedules = json.array({
+            {
+                id = "weekly-all-bounty",
+                name = "Weekly All-Bounty Alarm",
+                enabled = false,
+                frequency = "weekly",
+                dayOfWeek = "SAT",
+                hour = 19,
+                minute = 0,
+                profile = "all-bounty",
+                warningSeconds = json.array({ 600, 300, 60 }),
+                lateStartToleranceSeconds = 60,
+            },
+        }),
         rewards = {
             allowedItemIds = json.array({ "BountyProof_1" }),
             participation = {
@@ -107,7 +122,7 @@ function M.validate(config)
         return false, "configuration root must be an object"
     end
     local ok, message = pcall(function()
-        require_integer(config.schemaVersion, "schemaVersion", 2, 2)
+        require_integer(config.schemaVersion, "schemaVersion", 3, 3)
         if config.mode ~= "laboratory" and config.mode ~= "production" then
             error("mode must be 'laboratory' or 'production'")
         end
@@ -124,7 +139,7 @@ function M.validate(config)
                 error("compatibility.allowedUe4ssVersions[" .. index .. "] is invalid")
             end
         end
-        require_integer(config.runtime.pollIntervalMs, "runtime.pollIntervalMs", 250, 60000)
+        require_integer(config.runtime.pollIntervalMs, "runtime.pollIntervalMs", 250, 5000)
         require_integer(config.runtime.checkpointIntervalSeconds, "runtime.checkpointIntervalSeconds", 1, 300)
         if not ({ debug = true, info = true, warn = true, error = true })[config.runtime.logLevel] then
             error("runtime.logLevel is invalid")
@@ -135,15 +150,22 @@ function M.validate(config)
         require_boolean(config.diagnostics.traceHooks, "diagnostics.traceHooks")
         require_boolean(config.diagnostics.observationProbe, "diagnostics.observationProbe")
         if config.capabilities.grantItems then
-            error("grantItems is not available in alpha.2; scoring and reward obligations are implemented, but live delivery requires journal replay validation")
+            error("grantItems is not available in alpha.3; scoring and reward obligations are implemented, but live delivery requires journal replay validation")
         end
         if config.capabilities.startAllInvasions and (not config.capabilities.observeCombat or not config.capabilities.observeInvasions) then
             error("startAllInvasions requires observeCombat and observeInvasions")
+        end
+        if config.capabilities.startAllInvasions and #(config.compatibility.allowedServerBuildIds or {}) < 1 then
+            error("startAllInvasions requires at least one allowedServerBuildIds entry")
+        end
+        if config.capabilities.startAllInvasions and #(config.compatibility.allowedUe4ssVersions or {}) < 1 then
+            error("startAllInvasions requires at least one allowedUe4ssVersions entry")
         end
         if config.siegeLeague.chatStartPolicy ~= "operatorOnly" and config.siegeLeague.chatStartPolicy ~= "anyUser" then
             error("siegeLeague.chatStartPolicy must be 'operatorOnly' or 'anyUser'")
         end
         require_integer(config.siegeLeague.userStartCooldownSeconds, "siegeLeague.userStartCooldownSeconds", 60, 604800)
+        require_integer(config.siegeLeague.manualCountdownMinutes, "siegeLeague.manualCountdownMinutes", 10, 60)
         local allowed_profiles = {}
         for index, profile_id in ipairs(config.siegeLeague.allowedProfiles or {}) do
             local normalized = bounties.normalize_profile_id(profile_id)
@@ -181,6 +203,34 @@ function M.validate(config)
         require_boolean(config.siegeLeague.creditDirectPlayer, "siegeLeague.creditDirectPlayer")
         require_boolean(config.siegeLeague.creditActivePal, "siegeLeague.creditActivePal")
         require_boolean(config.siegeLeague.creditBaseWorkers, "siegeLeague.creditBaseWorkers")
+        local schedule_ids = {}
+        local weekdays = { SUN = true, MON = true, TUE = true, WED = true, THU = true, FRI = true, SAT = true }
+        for index, schedule in ipairs(config.schedules or {}) do
+            local prefix = "schedules[" .. index .. "]"
+            if type(schedule.id) ~= "string" or not schedule.id:match("^[a-z0-9][a-z0-9%-%.]*$") then error(prefix .. ".id is invalid") end
+            if schedule_ids[schedule.id] then error("duplicate schedule id " .. schedule.id) end
+            schedule_ids[schedule.id] = true
+            if type(schedule.name) ~= "string" or util.trim(schedule.name) == "" or #schedule.name > 120 then error(prefix .. ".name is invalid") end
+            require_boolean(schedule.enabled, prefix .. ".enabled")
+            if schedule.enabled and not config.capabilities.startAllInvasions then error(prefix .. " requires startAllInvasions") end
+            if schedule.frequency ~= "daily" and schedule.frequency ~= "weekly" then error(prefix .. ".frequency must be daily or weekly") end
+            if schedule.frequency == "weekly" and not weekdays[schedule.dayOfWeek] then error(prefix .. ".dayOfWeek is invalid") end
+            require_integer(schedule.hour, prefix .. ".hour", 0, 23)
+            require_integer(schedule.minute, prefix .. ".minute", 0, 59)
+            if not allowed_profiles[schedule.profile] then error(prefix .. ".profile is not enabled") end
+            if schedule.enabled and schedule.profile ~= "native" and not config.capabilities.substituteBountyMembers then
+                error(prefix .. " requires substituteBountyMembers")
+            end
+            require_integer(schedule.lateStartToleranceSeconds, prefix .. ".lateStartToleranceSeconds", 0, 600)
+            local warnings = {}
+            for warning_index, seconds in ipairs(schedule.warningSeconds or {}) do
+                require_integer(seconds, prefix .. ".warningSeconds[" .. warning_index .. "]", 1, 86400)
+                warnings[seconds] = true
+            end
+            if not warnings[600] or not warnings[300] or not warnings[60] then
+                error(prefix .. ".warningSeconds must include 600, 300, and 60")
+            end
+        end
         validate_reward(config.rewards.participation, "rewards.participation")
         validate_reward(config.rewards.baseCompletion, "rewards.baseCompletion")
         require_integer(config.rewards.baseCompletion.maxPerPlayer, "rewards.baseCompletion.maxPerPlayer", 1, config.limits.maxBases)
