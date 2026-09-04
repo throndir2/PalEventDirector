@@ -1050,11 +1050,7 @@ function Bridge:active_invasion_count()
     return count
 end
 
-function Bridge:preflight_start(profile_id)
-    self.pending_expected_bases = {}
-    self.pending_native_base_ids = {}
-    self.pending_base_guilds = {}
-    self.pending_roster = {}
+function Bridge:preflight_environment()
     if self.config.mode ~= "laboratory" then
         return false, "alpha invasion mutation is laboratory-only"
     end
@@ -1063,12 +1059,15 @@ function Bridge:preflight_start(profile_id)
         return false, "configured adapter identity does not match this runtime"
     end
     local observed_build_id = os.getenv("PAL_EVENT_DIRECTOR_SERVER_BUILD_ID")
+    if not observed_build_id or observed_build_id == "" then
+        return false, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is absent"
+    end
     local build_allowed = false
     for _, candidate in ipairs(self.config.compatibility.allowedServerBuildIds) do
         if candidate == observed_build_id then build_allowed = true; break end
     end
     if not build_allowed then
-        return false, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is absent or not allowlisted"
+        return false, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is not allowlisted: " .. tostring(observed_build_id)
     end
     local runtime = global("UE4SS")
     if not runtime or type(runtime.GetVersion) ~= "function" then
@@ -1086,6 +1085,18 @@ function Bridge:preflight_start(profile_id)
     end
     if not allowed then
         return false, "UE4SS version is not allowlisted: " .. current
+    end
+    return true, { serverBuildId = observed_build_id, ue4ssVersion = current }
+end
+
+function Bridge:preflight_start(profile_id)
+    self.pending_expected_bases = {}
+    self.pending_native_base_ids = {}
+    self.pending_base_guilds = {}
+    self.pending_roster = {}
+    local environment_ok, environment_error = self:preflight_environment()
+    if not environment_ok then
+        return false, environment_error
     end
     local manager = self:_find_first("PalInvaderManager")
     if not valid(manager) then

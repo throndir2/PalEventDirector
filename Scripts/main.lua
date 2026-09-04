@@ -22,7 +22,7 @@ local function boot()
 
     local data_directory, path_source = path.resolve_data_directory(scripts_root)
     if not data_directory then
-        error("Unable to derive an external data directory. Set PAL_EVENT_DIRECTOR_DATA_DIR to an absolute writable path.")
+        error("Unable to derive an external data directory (classification: " .. tostring(path_source or "unknown") .. "). Set PAL_EVENT_DIRECTOR_DATA_DIR to an absolute writable path.")
     end
     local directory_ok, directory_error = path.ensure_directory(data_directory)
     if not directory_ok then

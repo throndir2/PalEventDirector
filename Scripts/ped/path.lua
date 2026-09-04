@@ -43,12 +43,17 @@ function M.file_exists(value)
 end
 
 local function trusted_shell_path(value)
-    return type(value) == "string" and value ~= "" and not value:find('["\r\n]')
+    return type(value) == "string" and value ~= "" and not value:find('["\r\n%%!&|<>%^]')
 end
 
 local function is_absolute(value)
     local canonical = tostring(value or ""):gsub("\\", "/")
-    return canonical:match("^%a:/") ~= nil or canonical:sub(1, 2) == "//" or canonical:sub(1, 1) == "/"
+    if separator == "\\" then
+        if canonical:match("^%a:/") then return true end
+        if canonical:sub(1, 2) ~= "//" or canonical:match("^//[%.%?]/") then return false end
+        return canonical:match("^//[^/]+/[^/]+") ~= nil
+    end
+    return canonical:sub(1, 1) == "/"
 end
 
 function M.ensure_directory(value)
@@ -88,8 +93,9 @@ function M.script_path(stack_level)
     return normalize(source)
 end
 
-function M.resolve_data_directory(scripts_root)
-    local override = os.getenv("PAL_EVENT_DIRECTOR_DATA_DIR")
+function M.resolve_data_directory(scripts_root, getenv)
+    getenv = getenv or os.getenv
+    local override = getenv("PAL_EVENT_DIRECTOR_DATA_DIR")
     if override and trusted_shell_path(override) and is_absolute(override) then
         return normalize(override), "environment"
     elseif override then
@@ -98,8 +104,15 @@ function M.resolve_data_directory(scripts_root)
 
     local canonical = normalize(scripts_root):gsub("\\", "/")
     local lower = canonical:lower()
+    local current_marker = "/pal/binaries/win64/ue4ss/mods/"
+    local marker_start = lower:find(current_marker, 1, true)
+    if marker_start then
+        local server_root = canonical:sub(1, marker_start - 1)
+        return normalize(server_root .. "/Pal/Saved/PalEventDirector"), "win64-ue4ss-layout"
+    end
+
     local marker = "/mods/nativemods/ue4ss/mods/"
-    local marker_start = lower:find(marker, 1, true)
+    marker_start = lower:find(marker, 1, true)
     if marker_start then
         local server_root = canonical:sub(1, marker_start - 1)
         return normalize(server_root .. "/Pal/Saved/PalEventDirector"), "official-loader-layout"

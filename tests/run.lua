@@ -16,6 +16,7 @@ local Rewards = require("ped.rewards")
 local Scheduler = require("ped.scheduler")
 local Scoreboard = require("ped.scoreboard")
 local Store = require("ped.store")
+local Path = require("ped.path")
 local bounties = require("ped.bounties")
 local json = require("ped.json")
 local util = require("ped.util")
@@ -120,6 +121,120 @@ test("invasion mutation requires an explicit UE4SS version allowlist", function(
     config.capabilities.substituteBountyMembers = true
     valid, validation_error = Config.validate(config)
     truthy(valid, validation_error)
+end)
+
+test("data path resolver accepts installer official and legacy UE4SS layouts", function()
+    local no_override = function() return nil end
+    local cases = {
+        {
+            root = "D:\\SteamLibrary\\steamapps\\common\\PalServer\\Pal\\Binaries\\Win64\\ue4ss\\Mods\\PalEventDirector\\Scripts",
+            expected = "D:\\SteamLibrary\\steamapps\\common\\PalServer\\Pal\\Saved\\PalEventDirector",
+            source = "win64-ue4ss-layout",
+        },
+        {
+            root = "d:\\STEAMLIBRARY\\steamapps\\COMMON\\PALSERVER\\PAL\\BINARIES\\WIN64\\UE4SS\\MODS\\PalEventDirector\\Scripts",
+            expected = "d:\\STEAMLIBRARY\\steamapps\\COMMON\\PALSERVER\\Pal\\Saved\\PalEventDirector",
+            source = "win64-ue4ss-layout",
+        },
+        {
+            root = "C:\\PalServer\\Mods\\NativeMods\\UE4SS\\Mods\\PalEventDirector\\Scripts",
+            expected = "C:\\PalServer\\Pal\\Saved\\PalEventDirector",
+            source = "official-loader-layout",
+        },
+        {
+            root = "C:\\PalServer\\Pal\\Binaries\\Win64\\Mods\\PalEventDirector\\Scripts",
+            expected = "C:\\PalServer\\Pal\\Saved\\PalEventDirector",
+            source = "legacy-ue4ss-layout",
+        },
+    }
+    for _, case in ipairs(cases) do
+        local resolved, source = Path.resolve_data_directory(case.root, no_override)
+        equal(resolved, case.expected, case.source)
+        equal(source, case.source)
+    end
+end)
+
+test("data path resolver accepts only safe absolute environment overrides", function()
+    local resolved, source = Path.resolve_data_directory("unrecognized", function() return "D:\\PED Data" end)
+    equal(resolved, "D:\\PED Data")
+    equal(source, "environment")
+    resolved, source = Path.resolve_data_directory("unrecognized", function() return "\\\\server\\share\\PED Data" end)
+    equal(resolved, "\\\\server\\share\\PED Data")
+    equal(source, "environment")
+    for _, override in ipairs({
+        "relative\\data", "..\\data", "\\root-relative", "/root-relative", "\\\\.\\pipe\\ped",
+        "\\\\?\\D:\\ped", "\\\\server", 'D:\\bad"path', "D:\\bad\npath", "D:\\bad%TEMP%",
+        "D:\\bad!name", "D:\\bad&name",
+    }) do
+        resolved, source = Path.resolve_data_directory("unrecognized", function() return override end)
+        equal(resolved, nil)
+        equal(source, "unsafe-relative-environment-override")
+    end
+    resolved, source = Path.resolve_data_directory("unrecognized", function() return nil end)
+    equal(resolved, nil)
+    equal(source, "unrecognized-layout")
+end)
+
+test("bridge environment preflight distinguishes absent matching and mismatched build IDs", function()
+    local previous_getenv = os.getenv
+    local previous_ue4ss = _G.UE4SS
+    local checked, failure = xpcall(function()
+        local config = Config.defaults()
+        config.compatibility.allowedUe4ssVersions = json.array({ "3.0.1" })
+        local bridge = Bridge.new({
+            config = config,
+            logger = { info = function() end, warn = function() end, error = function() end },
+        })
+        _G.UE4SS = { GetVersion = function() return 3, 0, 1 end }
+
+        os.getenv = function(name)
+            if name == "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID" then return nil end
+            return previous_getenv(name)
+        end
+        local ok, environment_error = bridge:preflight_environment()
+        equal(ok, false)
+        equal(environment_error, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is absent")
+
+        os.getenv = function(name)
+            if name == "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID" then return "99999999" end
+            return previous_getenv(name)
+        end
+        ok, environment_error = bridge:preflight_environment()
+        equal(ok, false)
+        truthy(environment_error:match("not allowlisted: 99999999"))
+
+        os.getenv = function(name)
+            if name == "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID" then return "24575149" end
+            return previous_getenv(name)
+        end
+        local details
+        ok, details = bridge:preflight_environment()
+        truthy(ok, details)
+        equal(details.serverBuildId, "24575149")
+        equal(details.ue4ssVersion, "3.0.1")
+    end, debug.traceback)
+    os.getenv = previous_getenv
+    _G.UE4SS = previous_ue4ss
+    if not checked then error(failure) end
+end)
+
+test("manual countdown is not armed when launch environment preflight fails", function()
+    local config = Config.defaults()
+    config.capabilities.observeCombat = true
+    config.capabilities.observeInvasions = true
+    config.capabilities.startAllInvasions = true
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local bridge = {
+        preflight_environment = function() return false, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is absent" end,
+        announce = function() return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 1000 end })
+    local armed, arm_error = director:arm_start("test", "native", 10)
+    equal(armed, false)
+    equal(arm_error, "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID is absent")
+    equal(util.count(director.scheduler.state.occurrences), 0)
 end)
 
 test("weekly scheduler emits ten five one warnings and starts once", function()

@@ -5,6 +5,14 @@ import process from 'node:process';
 
 const root = path.resolve(import.meta.dirname, '..');
 const failures = [];
+const windowsPowerShellEnvironment = process.platform === 'win32' ? {
+  ...process.env,
+  PSModulePath: [
+    path.join(process.env.USERPROFILE, 'Documents', 'WindowsPowerShell', 'Modules'),
+    path.join(process.env.ProgramFiles, 'WindowsPowerShell', 'Modules'),
+    path.join(process.env.SystemRoot, 'system32', 'WindowsPowerShell', 'v1.0', 'Modules'),
+  ].join(path.delimiter),
+} : process.env;
 const required = [
   'Info.json',
   'Scripts/main.lua',
@@ -26,7 +34,10 @@ const required = [
   'docs/13-admin-and-scheduling.md',
   'docs/14-imouto-dev-deployment.md',
   'operations/imouto/Install-PalEventDirectorImouto.ps1',
+  'operations/imouto/Start-PalEventDirectorImouto.ps1',
   'operations/imouto/Import-MikoProductionWorldImouto.ps1',
+  'tests/path_contract.lua',
+  'tests/imouto-launcher.ps1',
   'tools/build-imouto-bundle.mjs',
   'tools/build-imouto-world-seed.mjs',
 ];
@@ -125,8 +136,30 @@ if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
     'function Read-Ue4ssModEntries',
     '$ExistingEntries = @(Read-Ue4ssModEntries -Path $ModsJson)',
     '$Entries = @(Read-Ue4ssModEntries -Path $ModsJson)',
+    "LauncherSource = Join-Path $PSScriptRoot 'Start-PalEventDirectorImouto.ps1'",
+    'launchIntegrationConfigured = $true',
+    "launchEnvironmentSource = 'verified-steam-manifest'",
   ]) {
     if (!installer.includes(requiredGuard)) failures.push(`IMOUTO installer is missing required guard: ${requiredGuard}`);
+  }
+}
+
+const imoutoLauncherPath = path.join(root, 'operations', 'imouto', 'Start-PalEventDirectorImouto.ps1');
+if (await exists('operations/imouto/Start-PalEventDirectorImouto.ps1')) {
+  const launcher = await readFile(imoutoLauncherPath, 'utf8');
+  for (const requiredGuard of [
+    "[Environment]::MachineName -ine 'IMOUTO'",
+    "CanonicalServerRoot = 'D:\\SteamLibrary\\steamapps\\common\\PalServer'",
+    "$VerifiedBuildId = $buildMatch.Groups['Value'].Value",
+    '$env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = $VerifiedBuildId',
+    '$env:PAL_EVENT_DIRECTOR_DATA_DIR = $DataDirectory',
+    "EnvironmentScope = 'child-process-only'",
+    '$ValidateOnly',
+    '$deployment.rootServerExecutableSha256',
+    "$deployment.version -ne '0.1.0-alpha.3'",
+    "$deployment.ue4ssTag -ne '2281fa31'",
+  ]) {
+    if (!launcher.includes(requiredGuard)) failures.push(`IMOUTO launcher is missing required guard: ${requiredGuard}`);
   }
 }
 
@@ -180,20 +213,33 @@ if (process.platform === 'win32') {
     const quoted = file.replaceAll("'", "''");
     const command = `$tokens=$null;$errors=$null;[Management.Automation.Language.Parser]::ParseFile('${quoted}',[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count){$errors|ForEach-Object{[Console]::Error.WriteLine($_.Message)};exit 1}`;
     try {
-      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { cwd: root, stdio: 'pipe' });
+      execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], { cwd: root, env: windowsPowerShellEnvironment, stdio: 'pipe' });
     } catch (error) {
       failures.push(`PowerShell syntax validation failed for ${path.relative(root, file).replaceAll('\\', '/')}: ${error.stderr?.toString().trim() || error.message}`);
     }
   }
+  try {
+    const output = execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      path.join(root, 'tests', 'imouto-launcher.ps1'),
+    ], { cwd: root, env: windowsPowerShellEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    process.stdout.write(output);
+  } catch (error) {
+    failures.push(`IMOUTO launcher contract failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
 }
 
-const luaRunner = path.join(root, 'node_modules', '.bin', process.platform === 'win32' ? 'fengari.cmd' : 'fengari');
+const luaRunner = path.join(root, 'node_modules', 'fengari-node-cli', 'src', 'lua-cli.js');
 if (!await exists(path.relative(root, luaRunner))) {
   failures.push('Lua test VM is unavailable; run npm install');
 } else {
   const luaFiles = sourceFiles.filter((candidate) => candidate.endsWith('.lua'));
   try {
-    execFileSync(luaRunner, ['tests/compile.lua', ...luaFiles], { cwd: root, stdio: 'pipe' });
+    execFileSync(process.execPath, [luaRunner, 'tests/compile.lua', ...luaFiles], { cwd: root, stdio: 'pipe' });
   } catch (error) {
     failures.push(`Lua syntax validation failed: ${error.stderr?.toString().trim() || error.message}`);
   }

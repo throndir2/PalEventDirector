@@ -109,7 +109,7 @@ Expected safety policy is at most one invader-family incident per camp. Do not i
 
 Enable `startAllInvasions` and `substituteBountyMembers` only while `observeCombat` and `observeInvasions` remain enabled. Keep `grantItems=false`.
 
-The process environment must also set `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` to the exact Steam dedicated-server build ID in the configured allowlist. For this inspected build that value is `24575149`. An absent or changed value blocks mutation.
+The process environment must also set `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` to the exact Steam dedicated-server build ID in the configured allowlist. For this inspected build that value is `24575149`. An absent or changed value blocks mutation before a manual countdown is armed. On IMOUTO, use the installer-generated `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1`; it obtains this value from the verified local Steam manifest and sets it only for the child server process.
 
 `compatibility.allowedUe4ssVersions` must also contain the exact value returned by `UE4SS.GetVersion()`. An empty list, unavailable API, or mismatch blocks mutation.
 

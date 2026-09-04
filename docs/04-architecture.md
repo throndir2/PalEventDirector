@@ -74,7 +74,7 @@ Writable runtime directory outside the staged package
 
 Exact installation and writable paths will be finalized after the official loader's deployed layout is tested. Package updates must not overwrite operator configuration or runtime state.
 
-The alpha resolves official-loader or legacy UE4SS layouts to `Pal/Saved/PalEventDirector`, with an explicit `PAL_EVENT_DIRECTOR_DATA_DIR` override for laboratory layouts. It refuses an unrecognized layout rather than placing player/runtime state under packaged `Scripts`.
+The alpha resolves the current `Pal/Binaries/Win64/ue4ss/Mods`, official-loader `Mods/NativeMods/UE4SS/Mods`, and legacy `Pal/Binaries/Win64/Mods` layouts to `Pal/Saved/PalEventDirector`, with an explicit absolute `PAL_EVENT_DIRECTOR_DATA_DIR` override. It refuses an unrecognized layout rather than placing player/runtime state under packaged `Scripts`.
 
 ## Layer model
 

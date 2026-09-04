@@ -202,7 +202,11 @@ try {
   const manifestBytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`);
   const importerBytes = await readFile(importerPath);
   const importerRelative = 'operations/imouto/Import-MikoProductionWorldImouto.ps1';
-  const workingImporterBlob = git('hash-object', `--path=${importerRelative}`, importerRelative);
+  const workingImporterBlob = execFileSync('git', [
+    'hash-object',
+    '--stdin',
+    `--path=${importerRelative}`,
+  ], { cwd: root, input: importerBytes, encoding: 'utf8' }).trim();
   const trackedImporterBlob = git('rev-parse', `${sourceRevision}:${importerRelative}`);
   if (workingImporterBlob !== trackedImporterBlob) throw new Error('world importer bytes differ from the selected Git revision');
   if (git('status', '--porcelain') !== '' || git('rev-parse', 'HEAD') !== sourceRevision ||

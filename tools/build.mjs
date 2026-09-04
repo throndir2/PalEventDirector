@@ -13,6 +13,21 @@ const archiveName = `${info.PackageName}-${info.Version}.zip`;
 const archivePath = path.join(outputDirectory, archiveName);
 const fixedDate = new Date('2000-01-01T00:00:00.000Z');
 
+const installer = await readFile(path.join(root, 'operations', 'imouto', 'Install-PalEventDirectorImouto.ps1'), 'utf8');
+const serverRootMatch = installer.match(/\[string\]\$ServerRoot\s*=\s*'([^']+)'/);
+if (!serverRootMatch) throw new Error('unable to derive installer ServerRoot');
+const values = { ServerRoot: serverRootMatch[1] };
+for (const [name, parent] of [
+  ['Win64Root', 'ServerRoot'],
+  ['Ue4ssRoot', 'Win64Root'],
+  ['ModsRoot', 'Ue4ssRoot'],
+  ['ModTarget', 'ModsRoot'],
+]) {
+  const expression = new RegExp(`\\$${name}\\s*=\\s*Join-Path\\s+\\$${parent}\\s+'([^']+)'`);
+  const match = installer.match(expression);
+  if (!match) throw new Error(`unable to derive installer ${name}`);
+  values[name] = path.win32.join(values[parent], match[1]);
+}
 await mkdir(outputDirectory, { recursive: true });
 await rm(archivePath, { force: true });
 const packageFiles = [
@@ -35,6 +50,24 @@ const packageFiles = [
   'Scripts/ped/version.lua',
 ];
 const files = packageFiles.map((relative) => path.join(root, relative));
+const stageDirectory = path.join(outputDirectory, '.package-stage');
+await rm(stageDirectory, { recursive: true, force: true });
+for (let index = 0; index < files.length; index += 1) {
+  const staged = path.join(stageDirectory, packageFiles[index]);
+  await mkdir(path.dirname(staged), { recursive: true });
+  await writeFile(staged, await readFile(files[index]));
+}
+
+const installedScriptsRoot = path.win32.join(values.ModTarget, 'Scripts');
+const expectedDataDirectory = path.win32.join(values.ServerRoot, 'Pal', 'Saved', 'PalEventDirector');
+const luaRunner = path.join(root, 'node_modules', 'fengari-node-cli', 'src', 'lua-cli.js');
+execFileSync(process.execPath, [luaRunner,
+  'tests/path_contract.lua',
+  installedScriptsRoot,
+  expectedDataDirectory,
+  'win64-ue4ss-layout',
+  path.join(stageDirectory, 'Scripts'),
+], { cwd: root, stdio: 'inherit' });
 
 await new Promise((resolve, reject) => {
   const output = createWriteStream(archivePath);
@@ -45,15 +78,16 @@ await new Promise((resolve, reject) => {
   archive.on('error', reject);
   archive.pipe(output);
   (async () => {
-  for (const file of files) {
-    const name = path.relative(root, file).replaceAll('\\', '/');
-    archive.append(await readFile(file), { name, date: fixedDate, mode: 0o644 });
+  for (const relative of packageFiles) {
+    const name = relative.replaceAll('\\', '/');
+    archive.append(await readFile(path.join(stageDirectory, relative)), { name, date: fixedDate, mode: 0o644 });
   }
   await archive.finalize();
   })().catch(reject);
 });
 
 const bytes = await readFile(archivePath);
+await rm(stageDirectory, { recursive: true, force: true });
 const sha256 = createHash('sha256').update(bytes).digest('hex');
 let revision = 'unknown';
 let dirty = true;

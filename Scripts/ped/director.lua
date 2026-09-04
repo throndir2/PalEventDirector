@@ -212,6 +212,12 @@ function Director:arm_start(source, requested_profile, countdown_minutes)
     if profile_id ~= "native" and not self.config.capabilities.substituteBountyMembers then
         return false, "capabilities.substituteBountyMembers is disabled"
     end
+    if self.bridge.preflight_environment then
+        local environment_ok, environment_error = self.bridge:preflight_environment()
+        if not environment_ok then
+            return false, environment_error
+        end
+    end
     if countdown_minutes == nil or countdown_minutes == "" then
         countdown_minutes = self.config.siegeLeague.manualCountdownMinutes
     else

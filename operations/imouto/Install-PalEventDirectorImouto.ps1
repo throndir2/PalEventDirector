@@ -17,6 +17,7 @@ $ProgressPreference = 'SilentlyContinue'
 
 $ExpectedAppId = '2394010'
 $ExpectedBuildId = '24575149'
+$ExpectedRootExeHash = '4a42e42750ccb7537e378c5ca4f781b9534c53fd12f4bc1410f8cd16bec592da'
 $ExpectedExeHash = '6be7c3f4d4762b70990e4b7f919016ba4ef8584552950e749c37d40502b1a115'
 $ExpectedPakHash = 'bffab47cbd3b3c6d14d616376d4e0b060b2429a5eb4c2022820d4f38d36a0770'
 $RuntimeTag = '2281fa31'
@@ -28,6 +29,9 @@ $RuntimeFiles = [ordered]@{
     'ue4ss\UE4SS.dll' = '21b691a69a20c0801f465369d4fcbca7d7444764022fac2a7e8edc7709ef92b8'
     'ue4ss\MemberVariableLayout.ini' = '1f93bb4fec5d00f7a958e62b3e3ce101d25e41879bf308ff19252957c0cbdcb1'
 }
+$InstallerSource = $MyInvocation.MyCommand.Path
+$LauncherSource = Join-Path $PSScriptRoot 'Start-PalEventDirectorImouto.ps1'
+$BundleManifestPath = Join-Path $PSScriptRoot 'bundle.json'
 
 function Get-ProcessesUnderRoot {
     param([Parameter(Mandatory)][string]$Root)
@@ -152,6 +156,7 @@ if ([IO.Path]::GetFileName($ServerRoot) -ine 'PalServer') {
 $SteamAppsRoot = Split-Path (Split-Path $ServerRoot -Parent) -Parent
 $ClientRoot = Join-Path (Split-Path $ServerRoot -Parent) 'Palworld'
 $SteamManifest = Join-Path $SteamAppsRoot 'appmanifest_2394010.acf'
+$RootServerExe = Join-Path $ServerRoot 'PalServer.exe'
 $Win64Root = Join-Path $ServerRoot 'Pal\Binaries\Win64'
 $ServerExe = Join-Path $Win64Root 'PalServer-Win64-Shipping-Cmd.exe'
 $ServerPak = Join-Path $ServerRoot 'Pal\Content\Paks\Pal-WindowsServer.pak'
@@ -160,11 +165,12 @@ $ModsRoot = Join-Path $Ue4ssRoot 'Mods'
 $ModTarget = Join-Path $ModsRoot 'PalEventDirector'
 $DeployRoot = Join-Path $ServerRoot 'PalEventDirectorDeployments'
 $DeployRecord = Join-Path $DeployRoot 'deployment.json'
+$LauncherTarget = Join-Path $DeployRoot 'Start-PalEventDirectorImouto.ps1'
 
 if ($ServerRoot -ieq $ClientRoot -or $ServerRoot.StartsWith($ClientRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Refusing to install into the Palworld client.'
 }
-foreach ($required in @($SteamManifest, $ServerExe, $ServerPak)) {
+foreach ($required in @($SteamManifest, $RootServerExe, $ServerExe, $ServerPak)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required Palworld Dedicated Server file is missing: $required"
     }
@@ -183,7 +189,9 @@ Assert-ServerStopped -Root $ServerRoot
 
 $acf = [IO.File]::ReadAllText($SteamManifest)
 if ((Get-AcfValue $acf 'appid') -ne $ExpectedAppId) { throw 'Target is not Dedicated Server App ID 2394010.' }
-if ((Get-AcfValue $acf 'buildid') -ne $ExpectedBuildId) { throw "Target is not validated build $ExpectedBuildId." }
+$VerifiedBuildId = Get-AcfValue $acf 'buildid'
+if ($VerifiedBuildId -ne $ExpectedBuildId) { throw "Target is not validated build $ExpectedBuildId." }
+if ((Get-FileHash -LiteralPath $RootServerExe -Algorithm SHA256).Hash -ine $ExpectedRootExeHash) { throw 'Root dedicated-server launcher hash is unvalidated.' }
 if ((Get-FileHash -LiteralPath $ServerExe -Algorithm SHA256).Hash -ine $ExpectedExeHash) { throw 'Dedicated-server executable hash is unvalidated.' }
 if ((Get-FileHash -LiteralPath $ServerPak -Algorithm SHA256).Hash -ine $ExpectedPakHash) { throw 'Dedicated-server pak hash is unvalidated.' }
 
@@ -221,6 +229,23 @@ if ($ExpectedSourceRevision) {
         throw 'The clean-build source revision does not match ExpectedSourceRevision.'
     }
 }
+foreach ($required in @($InstallerSource, $LauncherSource, $BundleManifestPath)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+        throw "The deployment bundle is incomplete: $required"
+    }
+}
+$BundleManifest = Get-Content -LiteralPath $BundleManifestPath -Raw | ConvertFrom-Json
+if ($BundleManifest.schemaVersion -ne 1 -or [string]$BundleManifest.packageName -ne 'PalEventDirector' -or
+    [string]$BundleManifest.version -ne [string]$BuildManifest.version -or
+    [string]$BundleManifest.sourceRevision -ne [string]$BuildManifest.sourceRevision -or
+    [string]$BundleManifest.artifact -ne (Split-Path $ArtifactPath -Leaf) -or
+    [string]$BundleManifest.artifactSha256 -ine $ArtifactHash -or
+    [string]$BundleManifest.installer -ne (Split-Path $InstallerSource -Leaf) -or
+    [string]$BundleManifest.installerSha256 -ine (Get-FileHash $InstallerSource -Algorithm SHA256).Hash -or
+    [string]$BundleManifest.launcher -ne (Split-Path $LauncherSource -Leaf) -or
+    [string]$BundleManifest.launcherSha256 -ine (Get-FileHash $LauncherSource -Algorithm SHA256).Hash) {
+    throw 'The IMOUTO deployment bundle provenance is invalid.'
+}
 
 $RuntimeMatches = Test-PinnedRuntime $Win64Root
 $RuntimeExists = (Test-Path -LiteralPath $Ue4ssRoot) -or (Test-Path -LiteralPath (Join-Path $Win64Root 'dwmapi.dll'))
@@ -252,24 +277,36 @@ $HasMutex = $false
 $Stage = Join-Path $ServerRoot ('.ped-stage-' + [Guid]::NewGuid().ToString('N'))
 $LocalArtifact = Join-Path $Stage (Split-Path $ArtifactPath -Leaf)
 $LocalBuildManifest = Join-Path $Stage 'manifest.json'
+$LocalBundleManifest = Join-Path $Stage 'bundle.json'
+$LocalLauncher = Join-Path $Stage 'Start-PalEventDirectorImouto.ps1'
 $ArtifactStage = Join-Path $Stage 'artifact'
 $RuntimeStage = Join-Path $Stage 'runtime'
 $Backup = Join-Path $ServerRoot ('PalEventDirectorInstallerBackups\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
-$HadUe4ss = Test-Path -LiteralPath $Ue4ssRoot
-$HadProxy = Test-Path -LiteralPath (Join-Path $Win64Root 'dwmapi.dll')
-$HadDeployRecord = Test-Path -LiteralPath $DeployRecord
+$HadUe4ss = $false
+$HadProxy = $false
+$HadDeployRecord = $false
+$HadLauncher = $false
+$LauncherIncoming = "$LauncherTarget.incoming"
 $MutationStarted = $false
 
 try {
     $HasMutex = $Mutex.WaitOne(0)
     if (-not $HasMutex) { throw 'Another Pal Event Director installation is already running on IMOUTO.' }
     Assert-ServerStopped -Root $ServerRoot
+    $HadUe4ss = Test-Path -LiteralPath $Ue4ssRoot
+    $HadProxy = Test-Path -LiteralPath (Join-Path $Win64Root 'dwmapi.dll')
+    $HadDeployRecord = Test-Path -LiteralPath $DeployRecord
+    $HadLauncher = Test-Path -LiteralPath $LauncherTarget
     New-Item -ItemType Directory -Path $Stage -ErrorAction Stop | Out-Null
     Copy-Item -LiteralPath $ArtifactPath -Destination $LocalArtifact -ErrorAction Stop
     Copy-Item -LiteralPath $BuildManifestPath -Destination $LocalBuildManifest -ErrorAction Stop
+    Copy-Item -LiteralPath $BundleManifestPath -Destination $LocalBundleManifest -ErrorAction Stop
+    Copy-Item -LiteralPath $LauncherSource -Destination $LocalLauncher -ErrorAction Stop
     $LocalManifest = Get-Content -LiteralPath $LocalBuildManifest -Raw | ConvertFrom-Json
     if ((Get-FileHash -LiteralPath $LocalArtifact -Algorithm SHA256).Hash -ine $ArtifactHash -or
-        [string]$LocalManifest.sha256 -ine $ArtifactHash -or [string]$LocalManifest.sourceRevision -ine [string]$BuildManifest.sourceRevision) {
+        [string]$LocalManifest.sha256 -ine $ArtifactHash -or [string]$LocalManifest.sourceRevision -ine [string]$BuildManifest.sourceRevision -or
+        (Get-FileHash $LocalBundleManifest -Algorithm SHA256).Hash -ine (Get-FileHash $BundleManifestPath -Algorithm SHA256).Hash -or
+        (Get-FileHash $LocalLauncher -Algorithm SHA256).Hash -ine [string]$BundleManifest.launcherSha256) {
         throw 'The local immutable artifact snapshot differs from the validated MIKO source.'
     }
     New-Item -ItemType Directory -Path $ArtifactStage -Force | Out-Null
@@ -311,11 +348,12 @@ try {
     }
 
     New-Item -ItemType Directory -Path $Backup -ErrorAction Stop | Out-Null
-    $BackupMetadata = [ordered]@{ schemaVersion = 1; hadUe4ss = $HadUe4ss; hadProxy = $HadProxy; hadDeploymentRecord = $HadDeployRecord }
+    $BackupMetadata = [ordered]@{ schemaVersion = 1; hadUe4ss = $HadUe4ss; hadProxy = $HadProxy; hadDeploymentRecord = $HadDeployRecord; hadLauncher = $HadLauncher }
     [IO.File]::WriteAllText((Join-Path $Backup 'backup.json'), (($BackupMetadata | ConvertTo-Json) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
     if ($HadUe4ss) { Copy-Item -LiteralPath $Ue4ssRoot -Destination (Join-Path $Backup 'ue4ss') -Recurse -Force }
     if ($HadProxy) { Copy-Item -LiteralPath (Join-Path $Win64Root 'dwmapi.dll') -Destination (Join-Path $Backup 'dwmapi.dll') -Force }
     if ($HadDeployRecord) { Copy-Item -LiteralPath $DeployRecord -Destination (Join-Path $Backup 'deployment.json') -Force }
+    if ($HadLauncher) { Copy-Item -LiteralPath $LauncherTarget -Destination (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1') -Force }
 
     $MutationStarted = $true
     Assert-ServerStopped -Root $ServerRoot
@@ -350,6 +388,12 @@ try {
 
     if (-not (Test-PinnedRuntime $Win64Root)) { throw 'Installed UE4SS failed final verification.' }
     New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
+    Remove-Item -LiteralPath $LauncherIncoming -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $LocalLauncher -Destination $LauncherIncoming -Force -ErrorAction Stop
+    if ((Get-FileHash $LauncherIncoming -Algorithm SHA256).Hash -ine [string]$BundleManifest.launcherSha256) {
+        throw 'Staged IMOUTO launcher failed final verification.'
+    }
+    Move-Item -LiteralPath $LauncherIncoming -Destination $LauncherTarget -Force -ErrorAction Stop
     $Record = [ordered]@{
         schemaVersion = 1
         packageName = 'PalEventDirector'
@@ -358,7 +402,15 @@ try {
         artifactSha256 = $ArtifactHash.ToLowerInvariant()
         ue4ssTag = $RuntimeTag
         serverAppId = $ExpectedAppId
-        serverBuildId = $ExpectedBuildId
+        serverBuildId = $VerifiedBuildId
+        rootServerExecutableSha256 = (Get-FileHash $RootServerExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        serverExecutableSha256 = (Get-FileHash $ServerExe -Algorithm SHA256).Hash.ToLowerInvariant()
+        serverPakSha256 = (Get-FileHash $ServerPak -Algorithm SHA256).Hash.ToLowerInvariant()
+        dataDirectory = Join-Path $ServerRoot 'Pal\Saved\PalEventDirector'
+        launcherPath = $LauncherTarget
+        launcherSha256 = ([string]$BundleManifest.launcherSha256).ToLowerInvariant()
+        launchIntegrationConfigured = $true
+        launchEnvironmentSource = 'verified-steam-manifest'
         installedAtUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         backupRoot = $Backup
     }
@@ -372,6 +424,9 @@ try {
         SourceRevision = $Record.sourceRevision
         ArtifactSha256 = $Record.artifactSha256
         BackupRoot = $Backup
+        LaunchIntegrationConfigured = $true
+        LauncherPath = $LauncherTarget
+        ServerBuildId = $VerifiedBuildId
         ServerStarted = $false
     }
 } catch {
@@ -384,9 +439,14 @@ try {
             if ($HadUe4ss -and (Test-Path -LiteralPath (Join-Path $Backup 'ue4ss'))) { Copy-Item -LiteralPath (Join-Path $Backup 'ue4ss') -Destination $Ue4ssRoot -Recurse -ErrorAction Stop }
             if ($HadProxy -and (Test-Path -LiteralPath (Join-Path $Backup 'dwmapi.dll'))) { Copy-Item -LiteralPath (Join-Path $Backup 'dwmapi.dll') -Destination $ProxyPath -ErrorAction Stop }
             if (Test-Path -LiteralPath $DeployRecord) { Remove-Item -LiteralPath $DeployRecord -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $LauncherTarget) { Remove-Item -LiteralPath $LauncherTarget -Force -ErrorAction Stop }
             if ($HadDeployRecord -and (Test-Path -LiteralPath (Join-Path $Backup 'deployment.json'))) {
                 New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $Backup 'deployment.json') -Destination $DeployRecord -ErrorAction Stop
+            }
+            if ($HadLauncher -and (Test-Path -LiteralPath (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1'))) {
+                New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
+                Copy-Item -LiteralPath (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1') -Destination $LauncherTarget -ErrorAction Stop
             }
         } catch {
             throw "Installation failed ($($OriginalError.Exception.Message)) and rollback also failed ($($_.Exception.Message)). Keep the server stopped and recover from $Backup."
@@ -395,6 +455,7 @@ try {
     throw $OriginalError
 } finally {
     Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+    if ($HasMutex) { Remove-Item -LiteralPath $LauncherIncoming -Force -ErrorAction SilentlyContinue }
     if ($HasMutex) { $Mutex.ReleaseMutex() }
     $Mutex.Dispose()
 }

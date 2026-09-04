@@ -212,6 +212,8 @@ Profiles never resize Palworld's native member array. A transformation failure l
 | `schedules` | Array of schedule objects described above; an empty array disables recurrence. |
 | `operatorUids` | Canonical GUID strings, 8–64 hex/hyphen characters. |
 
+On IMOUTO, do not start the laboratory server with Steam when testing mutation. Use `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1`; it reads the build ID from the verified App ID `2394010` Steam manifest and sets `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` plus `PAL_EVENT_DIRECTOR_DATA_DIR` only in the launched child process. `-ValidateOnly` checks the manifest/deployment match without starting the server. Missing or mismatched launch build IDs fail before a manual countdown is armed.
+
 ### Reward obligations
 
 Reward configuration creates durable obligations during resolution, but alpha.3 does not deliver items.

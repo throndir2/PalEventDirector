@@ -7,6 +7,7 @@ const root = path.resolve(import.meta.dirname, '..');
 const dist = path.join(root, 'dist');
 const manifestPath = path.join(dist, 'manifest.json');
 const installerPath = path.join(root, 'operations', 'imouto', 'Install-PalEventDirectorImouto.ps1');
+const launcherPath = path.join(root, 'operations', 'imouto', 'Start-PalEventDirectorImouto.ps1');
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
 const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 
@@ -24,15 +25,25 @@ if (head !== git('ls-remote', '--exit-code', 'origin', 'refs/heads/main').split(
 }
 
 const archivePath = path.join(dist, manifest.archive);
-const [archive, installer, manifestBytes] = await Promise.all([
+const [archive, installer, launcher, manifestBytes] = await Promise.all([
   readFile(archivePath),
   readFile(installerPath),
+  readFile(launcherPath),
   readFile(manifestPath),
 ]);
+const hashBufferAsPath = (buffer, relative) => execFileSync('git', [
+  'hash-object',
+  '--stdin',
+  `--path=${relative}`,
+], { cwd: root, input: buffer, encoding: 'utf8' }).trim();
 const installerRelative = 'operations/imouto/Install-PalEventDirectorImouto.ps1';
-const workingInstallerBlob = git('hash-object', `--path=${installerRelative}`, installerRelative);
+const workingInstallerBlob = hashBufferAsPath(installer, installerRelative);
 const trackedInstallerBlob = git('rev-parse', `${head}:${installerRelative}`);
 if (workingInstallerBlob !== trackedInstallerBlob) throw new Error('installer bytes differ from the selected Git revision');
+const launcherRelative = 'operations/imouto/Start-PalEventDirectorImouto.ps1';
+const workingLauncherBlob = hashBufferAsPath(launcher, launcherRelative);
+const trackedLauncherBlob = git('rev-parse', `${head}:${launcherRelative}`);
+if (workingLauncherBlob !== trackedLauncherBlob) throw new Error('launcher bytes differ from the selected Git revision');
 const archiveHash = createHash('sha256').update(archive).digest('hex');
 if (archiveHash !== manifest.sha256) throw new Error('artifact hash differs from manifest');
 
@@ -47,6 +58,8 @@ const bundle = {
   artifactSha256: manifest.sha256,
   installer: path.basename(installerPath),
   installerSha256: createHash('sha256').update(installer).digest('hex'),
+  launcher: path.basename(launcherPath),
+  launcherSha256: createHash('sha256').update(launcher).digest('hex'),
 };
 if (git('status', '--porcelain') !== '' || git('rev-parse', 'HEAD') !== head ||
     git('rev-parse', 'refs/remotes/origin/main') !== head ||
@@ -56,6 +69,7 @@ if (git('status', '--porcelain') !== '' || git('rev-parse', 'HEAD') !== head ||
 try {
   await mkdir(temporaryPath, { recursive: false });
   await writeFile(path.join(temporaryPath, path.basename(installerPath)), installer);
+  await writeFile(path.join(temporaryPath, path.basename(launcherPath)), launcher);
   await writeFile(path.join(temporaryPath, 'manifest.json'), manifestBytes);
   await writeFile(path.join(temporaryPath, manifest.archive), archive);
   await writeFile(path.join(temporaryPath, 'bundle.json'), `${JSON.stringify(bundle, null, 2)}\n`);

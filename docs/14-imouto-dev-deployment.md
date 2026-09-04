@@ -54,7 +54,7 @@ For each revision:
 6. Stop only the IMOUTO dedicated server.
 7. From a PowerShell session on IMOUTO, invoke the installer through the MIKO share.
 8. Review the reported version, source revision, artifact SHA-256, and backup path.
-9. Start the IMOUTO dedicated server through its normal local method.
+9. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch to start the dedicated server. Do not use Steam Play for PED mutation tests because Steam does not supply the required process-local environment.
 10. Perform the manual vanilla-client checks on IMOUTO.
 
 The normal invocation needs no arguments when the repository is reached through the script path:
@@ -65,7 +65,7 @@ The normal invocation needs no arguments when the repository is reached through 
 
 If PowerShell marks network scripts as remote, invoke the same file from a trusted PowerShell session with the appropriate local execution policy. Do not weaken machine-wide execution policy solely for this installer.
 
-The installer supports the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
+The installer and generated launcher support the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
 
 ## One-time Production world seed
 
@@ -128,7 +128,8 @@ The installer stages and validates everything before mutating the dedicated-serv
 4. places the clean package under `Pal\Binaries\Win64\ue4ss\Mods\PalEventDirector`;
 5. enables exactly Pal Event Director in both UE4SS mod-control files;
 6. verifies installed runtime and package files again; and
-7. writes provenance to `PalEventDirectorDeployments\deployment.json`.
+7. installs the verified `Start-PalEventDirectorImouto.ps1` launcher; and
+8. writes its verified manifest build ID, data path, launcher hash, and package provenance to `PalEventDirectorDeployments\deployment.json`.
 
 If any mutation step fails, the installer removes the partial runtime and restores the backed-up UE4SS tree, proxy DLL, and prior deployment record. It never rolls back or edits Palworld saves because it never touches them.
 
@@ -149,7 +150,21 @@ The installer downloads that exact GitHub release asset only when the pinned run
 
 ## First boot and configuration
 
-The first successful server boot creates the persistent Pal Event Director configuration below the IMOUTO server's save directory. Every capability remains disabled. Stop the IMOUTO server before editing the generated configuration and follow the staged laboratory gates in the alpha runbook.
+The installed `Pal/Binaries/Win64/ue4ss/Mods/PalEventDirector/Scripts` layout resolves automatically to `Pal/Saved/PalEventDirector`; no manual data-directory variable is needed merely to load PED. The installer-generated launcher nevertheless supplies that same absolute path explicitly as defense in depth. The first successful server boot creates the persistent configuration and PED log there. Every capability remains disabled. Stop the IMOUTO server before editing the generated configuration and follow the staged laboratory gates in the alpha runbook.
+
+Validate without starting:
+
+```powershell
+& 'D:\SteamLibrary\steamapps\common\PalServer\PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1' -ValidateOnly
+```
+
+Start for testing:
+
+```powershell
+& 'D:\SteamLibrary\steamapps\common\PalServer\PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1'
+```
+
+The launcher reads App ID and build ID from IMOUTO's Steam dedicated-server manifest, requires the deployment record to match, and exports `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` and `PAL_EVENT_DIRECTOR_DATA_DIR` only to the spawned PalServer process. It does not modify user/machine environment variables, Steam settings, the client, or MIKO.
 
 Before enabling invasion mutation, record the exact value returned by `UE4SS.GetVersion()` and add it to `compatibility.allowedUe4ssVersions`. The process environment must also provide the allowlisted dedicated-server build ID. Do not infer the runtime version from its release tag.
 
@@ -173,7 +188,7 @@ Running the local client and dedicated server concurrently increases IMOUTO's CP
 
 ## Rollback
 
-Stop the IMOUTO dedicated server. The previous runtime/mod state is retained beneath the backup path reported by the installer. Restore the complete backed-up `ue4ss` directory and `dwmapi.dll` together; never mix files from two UE4SS releases. Restore the previous deployment record if provenance history matters.
+Stop the IMOUTO dedicated server. The previous runtime/mod state is retained beneath the backup path reported by the installer. Restore the complete backed-up `ue4ss` directory and `dwmapi.dll` together; never mix files from two UE4SS releases. Restore or remove `deployment.json` and `Start-PalEventDirectorImouto.ps1` together because the launcher validates itself against that record.
 
 World-import rollback is separate. Keep IMOUTO stopped and use the path reported as `ImoutoBackup`. Preserve the replacement world for diagnosis, restore the backup's complete `SaveGames` directory, restore `GameUserSettings.ini`, restore the backup's `PalEventDirector` directory when present, and restore or remove the prior `PalworldWorldSeedImports` marker according to `backup.json`. Confirm `PalWorldSettings.ini` remained unchanged before starting. Never copy any IMOUTO world or event state back to MIKO Production.
 
