@@ -35,9 +35,11 @@ const required = [
   'docs/14-imouto-dev-deployment.md',
   'operations/imouto/Install-PalEventDirectorImouto.ps1',
   'operations/imouto/Start-PalEventDirectorImouto.ps1',
+  'operations/imouto/Enable-PalEventDirectorLaboratory.ps1',
   'operations/imouto/Import-MikoProductionWorldImouto.ps1',
   'tests/path_contract.lua',
   'tests/imouto-launcher.ps1',
+  'tests/imouto-activation.ps1',
   'tools/build-imouto-bundle.mjs',
   'tools/build-imouto-world-seed.mjs',
 ];
@@ -130,7 +132,7 @@ if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
     "[Environment]::MachineName -ine 'IMOUTO'",
     "[IO.DriveType]::Fixed",
     "ServerRoot.StartsWith('\\\\')",
-    "Global\\PalEventDirectorImoutoInstaller",
+    "Global\\PalEventDirectorImoutoLifecycle",
     'sourceDirty',
     "version -ne '0.1.0-alpha.3'",
     'function Read-Ue4ssModEntries',
@@ -139,6 +141,8 @@ if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
     "LauncherSource = Join-Path $PSScriptRoot 'Start-PalEventDirectorImouto.ps1'",
     'launchIntegrationConfigured = $true',
     "launchEnvironmentSource = 'verified-steam-manifest'",
+    "ActivationSource = Join-Path $PSScriptRoot 'Enable-PalEventDirectorLaboratory.ps1'",
+    'laboratoryActivationConfigured = $true',
   ]) {
     if (!installer.includes(requiredGuard)) failures.push(`IMOUTO installer is missing required guard: ${requiredGuard}`);
   }
@@ -160,6 +164,27 @@ if (await exists('operations/imouto/Start-PalEventDirectorImouto.ps1')) {
     "$deployment.ue4ssTag -ne '2281fa31'",
   ]) {
     if (!launcher.includes(requiredGuard)) failures.push(`IMOUTO launcher is missing required guard: ${requiredGuard}`);
+  }
+}
+
+const imoutoActivationPath = path.join(root, 'operations', 'imouto', 'Enable-PalEventDirectorLaboratory.ps1');
+if (await exists('operations/imouto/Enable-PalEventDirectorLaboratory.ps1')) {
+  const activation = await readFile(imoutoActivationPath, 'utf8');
+  for (const requiredGuard of [
+    "ExpectedUe4ssApiVersion = '3.0.1'",
+    "ExpectedBuildId = '24575149'",
+    "AuthorizationPolicy = 'operatorOrPalworldAdmin'",
+    '$config.capabilities.chatCommands = $true',
+    '$config.capabilities.startAllInvasions = $true',
+    '$config.capabilities.substituteBountyMembers = $true',
+    '$config.capabilities.grantItems = $false',
+    '$schedule.enabled = $false',
+    "MandatoryWarnings = '600,300,60'",
+    'RestartRequired = $true',
+    '$deployment.laboratoryActivationConfigured',
+    '$deployment.activationSha256',
+  ]) {
+    if (!activation.includes(requiredGuard)) failures.push(`IMOUTO activation is missing required guard: ${requiredGuard}`);
   }
 }
 
@@ -230,6 +255,19 @@ if (process.platform === 'win32') {
     process.stdout.write(output);
   } catch (error) {
     failures.push(`IMOUTO launcher contract failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
+  try {
+    const output = execFileSync('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      path.join(root, 'tests', 'imouto-activation.ps1'),
+    ], { cwd: root, env: windowsPowerShellEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    process.stdout.write(output);
+  } catch (error) {
+    failures.push(`IMOUTO activation contract failed: ${error.stderr?.toString().trim() || error.message}`);
   }
 }
 

@@ -489,6 +489,45 @@ function Bridge:_player_display_name(uid)
     return util.mask_uid(uid)
 end
 
+function Bridge:command_principal(controller)
+    controller = unwrap(controller)
+    if not valid(controller) then
+        return nil, "server player controller is invalid"
+    end
+    local uid_ok, uid_value = call(controller, "GetPlayerUId")
+    local uid = uid_ok and guid_string(uid_value) or nil
+    if not uid then
+        return nil, "stable player UID is unavailable"
+    end
+    local admin_ok, admin_value = pcall(function()
+        return unwrap(controller.bAdmin)
+    end)
+    if not admin_ok then
+        return {
+            transport = "chat",
+            uid = uid,
+            palworldAdmin = nil,
+            palworldAdminReadable = false,
+            palworldAdminError = "APalPlayerController.bAdmin access failed",
+        }
+    end
+    if type(admin_value) ~= "boolean" then
+        return {
+            transport = "chat",
+            uid = uid,
+            palworldAdmin = nil,
+            palworldAdminReadable = false,
+            palworldAdminError = "APalPlayerController.bAdmin is unavailable or ambiguous",
+        }
+    end
+    return {
+        transport = "chat",
+        uid = uid,
+        palworldAdmin = admin_value,
+        palworldAdminReadable = true,
+    }
+end
+
 function Bridge:list_online_players()
     local players = {}
     local seen = {}
@@ -955,9 +994,12 @@ function Bridge:register()
         required[#required + 1] = { "chat", HOOKS.chat, function(context, message)
             if not self.director then return end
             local controller = unwrap(context)
-            local ok, uid = call(controller, "GetPlayerUId")
-            uid = ok and guid_string(uid) or nil
-            if uid then self.director:handle_chat(uid, to_string(message)) end
+            local principal, principal_error = self:command_principal(controller)
+            if principal then
+                self.director:handle_chat(principal, to_string(message))
+            else
+                self.logger:warn("Ignored chat command without an authoritative principal", { reason = principal_error })
+            end
         end }
     end
 

@@ -41,7 +41,7 @@ function M.defaults()
             name = "Siege League",
             defaultProfile = "all-bounty",
             allowedProfiles = json.array(bounties.profile_ids()),
-            chatStartPolicy = "operatorOnly",
+            chatStartPolicy = "operatorOrPalworldAdmin",
             userStartCooldownSeconds = 3600,
             manualCountdownMinutes = 10,
             allowCrossBaseRoaming = true,
@@ -161,8 +161,13 @@ function M.validate(config)
         if config.capabilities.startAllInvasions and #(config.compatibility.allowedUe4ssVersions or {}) < 1 then
             error("startAllInvasions requires at least one allowedUe4ssVersions entry")
         end
-        if config.siegeLeague.chatStartPolicy ~= "operatorOnly" and config.siegeLeague.chatStartPolicy ~= "anyUser" then
-            error("siegeLeague.chatStartPolicy must be 'operatorOnly' or 'anyUser'")
+        if not ({
+            operatorOnly = true,
+            palworldAdminOnly = true,
+            operatorOrPalworldAdmin = true,
+            anyUser = true,
+        })[config.siegeLeague.chatStartPolicy] then
+            error("siegeLeague.chatStartPolicy must be 'operatorOnly', 'palworldAdminOnly', 'operatorOrPalworldAdmin', or 'anyUser'")
         end
         require_integer(config.siegeLeague.userStartCooldownSeconds, "siegeLeague.userStartCooldownSeconds", 60, 604800)
         require_integer(config.siegeLeague.manualCountdownMinutes, "siegeLeague.manualCountdownMinutes", 10, 60)

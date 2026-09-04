@@ -30,7 +30,7 @@ The sibling Palworld client directory is not a valid target. The installer requi
 - the mod archive matches a clean MIKO build manifest; and
 - any existing UE4SS runtime is either the exact pinned runtime or explicitly approved for backed-up replacement.
 
-The installer never modifies the Palworld client, Steam manifests, server configuration, world saves, Windows firewall, router, or MIKO. It does not start or stop the IMOUTO server.
+The installer never modifies the Palworld client, Steam manifests, server configuration, world saves, Windows firewall, router, or MIKO. It does not start or stop the IMOUTO server. It installs separate launcher and laboratory-activation commands, but it leaves gameplay capabilities disabled until the explicit activation command is confirmed.
 
 ## Continuous deployment workflow
 
@@ -54,8 +54,9 @@ For each revision:
 6. Stop only the IMOUTO dedicated server.
 7. From a PowerShell session on IMOUTO, invoke the installer through the MIKO share.
 8. Review the reported version, source revision, artifact SHA-256, and backup path.
-9. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch to start the dedicated server. Do not use Steam Play for PED mutation tests because Steam does not supply the required process-local environment.
-10. Perform the manual vanilla-client checks on IMOUTO.
+9. Run `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` after every install and confirm the configuration validation/mutation. Persistent capability values may survive an upgrade, but the installer deliberately reports them as requiring reactivation against the new deployment.
+10. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch to start the dedicated server. Do not use Steam Play for PED mutation tests because Steam does not supply the required process-local environment.
+11. Perform the manual vanilla-client checks on IMOUTO.
 
 The normal invocation needs no arguments when the repository is reached through the script path:
 
@@ -66,6 +67,26 @@ The normal invocation needs no arguments when the repository is reached through 
 If PowerShell marks network scripts as remote, invoke the same file from a trusted PowerShell session with the appropriate local execution policy. Do not weaken machine-wide execution policy solely for this installer.
 
 The installer and generated launcher support the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
+
+## Explicit laboratory activation
+
+Ordinary installation does not auto-enable server mutation. To make the private IMOUTO laboratory work without hand-editing JSON, stop the server and run:
+
+```powershell
+& 'D:\SteamLibrary\steamapps\common\PalServer\PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1'
+```
+
+The command requires explicit confirmation. It validates dedicated build `24575149`, the pinned UE4SS DLL/API `3.0.1`, deployment provenance, configuration schema 3, laboratory mode, command policy, and every mandatory warning offset. It creates a timestamped configuration backup and enables:
+
+- `chatCommands`;
+- `observeCombat`;
+- `observeInvasions`;
+- `startAllInvasions`; and
+- `substituteBountyMembers`.
+
+It sets the recommended `operatorOrPalworldAdmin` policy by default, pins the verified build/runtime allowlists, disables every recurring schedule, leaves the 10/5/1 warning sequence intact, and forcibly leaves `grantItems=false`. Its result reports `RestartRequired=True`. Optional `AuthorizationPolicy` values are `operatorOnly`, `palworldAdminOnly`, and `operatorOrPalworldAdmin`; `anyUser` is intentionally unavailable through this convenience command.
+
+After restart through the generated launcher, authenticate with Palworld's built-in admin mechanism and run `!siege status`. PED reads the resulting server-side `APalPlayerController.bAdmin` Boolean fresh for each privileged command. It does not inspect the password or authorize by display name.
 
 ## One-time Production world seed
 
@@ -128,8 +149,8 @@ The installer stages and validates everything before mutating the dedicated-serv
 4. places the clean package under `Pal\Binaries\Win64\ue4ss\Mods\PalEventDirector`;
 5. enables exactly Pal Event Director in both UE4SS mod-control files;
 6. verifies installed runtime and package files again; and
-7. installs the verified `Start-PalEventDirectorImouto.ps1` launcher; and
-8. writes its verified manifest build ID, data path, launcher hash, and package provenance to `PalEventDirectorDeployments\deployment.json`.
+7. installs verified `Start-PalEventDirectorImouto.ps1` and `Enable-PalEventDirectorLaboratory.ps1` commands; and
+8. writes its verified manifest build ID, runtime API, data path, script hashes, and package provenance to `PalEventDirectorDeployments\deployment.json`.
 
 If any mutation step fails, the installer removes the partial runtime and restores the backed-up UE4SS tree, proxy DLL, and prior deployment record. It never rolls back or edits Palworld saves because it never touches them.
 
@@ -188,7 +209,7 @@ Running the local client and dedicated server concurrently increases IMOUTO's CP
 
 ## Rollback
 
-Stop the IMOUTO dedicated server. The previous runtime/mod state is retained beneath the backup path reported by the installer. Restore the complete backed-up `ue4ss` directory and `dwmapi.dll` together; never mix files from two UE4SS releases. Restore or remove `deployment.json` and `Start-PalEventDirectorImouto.ps1` together because the launcher validates itself against that record.
+Stop the IMOUTO dedicated server. The previous runtime/mod state is retained beneath the backup path reported by the installer. Restore the complete backed-up `ue4ss` directory and `dwmapi.dll` together; never mix files from two UE4SS releases. Restore or remove `deployment.json`, `Start-PalEventDirectorImouto.ps1`, and `Enable-PalEventDirectorLaboratory.ps1` together because the commands validate themselves against that deployment.
 
 World-import rollback is separate. Keep IMOUTO stopped and use the path reported as `ImoutoBackup`. Preserve the replacement world for diagnosis, restore the backup's complete `SaveGames` directory, restore `GameUserSettings.ini`, restore the backup's `PalEventDirector` directory when present, and restore or remove the prior `PalworldWorldSeedImports` marker according to `backup.json`. Confirm `PalWorldSettings.ini` remained unchanged before starting. Never copy any IMOUTO world or event state back to MIKO Production.
 

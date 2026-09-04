@@ -37,11 +37,13 @@ This alpha implements but does not enable bounty substitution or recurring sched
 
 ## Chat authorization and profiles
 
-After the chat hook passes Gate 2, set `chatCommands=true` and add canonical player GUIDs to `operatorUids`. The default `chatStartPolicy` is `operatorOnly`; an operator can run:
+The default `chatStartPolicy` is `operatorOrPalworldAdmin`. A player is privileged when the stable UID appears in `operatorUids` or the current server-side `APalPlayerController.bAdmin` is true after Palworld's built-in admin authentication. PED reads that Boolean fresh per command and never reads the password, trusts a name, or caches authority. An authorized player can run:
 
 `!siege start all-bounty 10`
 
-Setting `chatStartPolicy` to `anyUser` lets any user run the same allowlisted command, but `userStartCooldownSeconds` applies globally and active/recovery/native-concurrency guards still fail closed. Every start arms the mandatory warning sequence; no operator form bypasses it. User text can select only IDs in `allowedProfiles`; it cannot name an Unreal path, character ID, item, or arbitrary function.
+`palworldAdminOnly` requires current native authentication; `operatorOnly` requires a configured UID; the combined default accepts either. `anyUser` is a legacy private-server policy that authorizes all privileged chat actions and should be selected deliberately. Every start still arms the mandatory warning sequence; authority never bypasses capabilities, compatibility, concurrency, or persistence gates. User text can select only IDs in `allowedProfiles`; it cannot name an Unreal path, character ID, item, or arbitrary function.
+
+On IMOUTO, ordinary installation remains non-mutating. After installation, run the generated `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` while the server is stopped. It validates build `24575149`, pinned UE4SS API `3.0.1`, schema 3, and the chosen authorization policy; backs up configuration; enables chat/combat/invasion/start/substitution capabilities; disables every schedule; leaves `grantItems=false`; and reports that a restart is required.
 
 Recommended profile cadence:
 
@@ -121,7 +123,7 @@ Start the lowest-risk replacement through `ped start mixed 10`, then test `ped s
 - every player online at the boundary and every late joiner enters one global leaderboard regardless of guild;
 - every concrete member in `all-bounty` has an audited `BOSS_*` ID while retaining Palworld's native level and companion fields;
 - `mixed` changes exactly one concrete member per native selection;
-- unauthorized users cannot start under `operatorOnly`, while `anyUser` starts once and then observes the durable global cooldown;
+- an authenticated Palworld admin and configured PED operator are authorized under the combined policy, ordinary/spoofed-name users are denied, and reconnect/admin logout revokes native authority;
 - players can move between all active bases and score at each;
 - each native group GUID belongs only to this occurrence;
 - natural/overlapping incidents never enter the event;

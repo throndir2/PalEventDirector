@@ -4,6 +4,8 @@
 
 Alpha.3 is a laboratory-only release. Its mutation preflight rejects any mode other than `laboratory`, and every capability is disabled in the generated configuration. It never requires a client mod: players connect with normal vanilla clients and use ordinary Palworld chat and server notices.
 
+On IMOUTO, no manual JSON editing is required for the validated gameplay path. While the dedicated server is stopped, run `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` and explicitly confirm it. The command backs up schema-3 configuration, selects `operatorOrPalworldAdmin`, pins build `24575149` and UE4SS API `3.0.1`, enables chat/combat/invasion/start/substitution, disables all schedules, preserves 10/5/1 warnings, leaves `grantItems=false`, and reports that restart is required.
+
 The persistent configuration is `Pal/Saved/PalEventDirector/config.json` below the dedicated-server root, or the directory selected by `PAL_EVENT_DIRECTOR_DATA_DIR`. It is strict JSON, not JSONC. Stop the laboratory server before editing it and restart after every edit; configuration is loaded only at mod startup.
 
 Schema 3 intentionally has no migration from earlier alpha configurations or state. Archive the complete `Pal/Saved/PalEventDirector` directory before an upgrade, start once to generate a safe schema-3 configuration, stop, and reapply reviewed values. Never copy the Production event-state directory into DEV.
@@ -91,6 +93,8 @@ The scheduler plans the next occurrence in advance, including a next-day event w
 
 Use `ped schedule` or `!siege schedule` to display up to five upcoming local timestamps. To disable or change a recurring schedule, stop the server, edit the configuration, and restart. `cancel` affects only a currently armed manual countdown.
 
+On restart, a restored recurring occurrence is retained only when its complete embedded definition exactly matches the currently enabled schedule with the same ID. Disabling, removing, or editing its time, profile, name, warning offsets, or tolerance cancels the stale occurrence before it can announce or start.
+
 ## Chat commands
 
 Chat handling is available only when `capabilities.chatCommands=true`. Queries are rate-limited per player and globally to avoid announcement spam.
@@ -109,9 +113,20 @@ Public forms:
 | `!siege leaderboard` | Global standings. |
 | `!siege start <profile> [minutes]` | Arms a 10–60-minute warning countdown when policy permits. Omitted minutes use `manualCountdownMinutes`. |
 
-`chatStartPolicy=operatorOnly` permits only UIDs listed in `operatorUids`. `chatStartPolicy=anyUser` permits any player to request an allowed profile, subject to the persistent global `userStartCooldownSeconds` and all ordinary safety checks. Display names never authorize a command.
+`chatStartPolicy` is the unified policy for every privileged chat command:
 
-Operator-only chat forms:
+| Policy | Authority |
+|---|---|
+| `operatorOnly` | Stable player UID must appear in `operatorUids`. |
+| `palworldAdminOnly` | The sender's current server-side `APalPlayerController.bAdmin` must be the Boolean `true`. |
+| `operatorOrPalworldAdmin` | Either configured UID or current Palworld admin authentication; this is the default and the recommended IMOUTO policy. |
+| `anyUser` | Every player may use every privileged chat command. This legacy/private-server option also exposes cancel/resolve/abort/reset and should be selected deliberately. |
+
+Palworld admin authentication and PED operators are different. A player becomes a Palworld admin through Palworld's built-in administrator mechanism; PED reads only its validated result, `APalPlayerController.bAdmin`, from the server-side controller supplied by the chat callback. PED never reads `AdminPassword`, parses a password command, trusts a display name, or accepts a client-provided admin claim. The property is reflected as a replicated Boolean in the Palworld 1.0 Modding Kit and is runtime-gated to adapter `palworld-1.0.3-lab`, dedicated build `24575149`.
+
+The bridge reads `bAdmin` again for every command and retains no controller or authority cache. Admin logout or reconnect therefore uses the fresh controller state. A missing, throwing, non-Boolean, or otherwise ambiguous property produces a specific fail-closed denial under either policy that depends on Palworld admin state. Under the combined policy, an independently matching `operatorUids` entry remains sufficient. Every decision is audited with a masked stable UID; names never participate.
+
+Privileged chat forms:
 
 | Command | Result |
 |---|---|
@@ -119,7 +134,7 @@ Operator-only chat forms:
 | `!siege resolve` | Resolves a starting, active, or recovery event and creates score/reward obligations. |
 | `!siege abort` | Stops director scoring/tracking; native Palworld incidents continue normally. |
 | `!siege reset` | Returns completed/aborted/recovery state to idle only when no native invasion is active. |
-| `!ped <operator command>` | Runs the corresponding console command below after UID authorization. |
+| `!ped <operator command>` | Runs the corresponding console command below after the same fresh policy decision. |
 
 Unknown commands print the bounded help form. Chat has a two-second per-UID command limit, public queries share a five-second announcement limit, and start attempts have an additional ten-second process-local limit.
 
@@ -196,7 +211,7 @@ Profiles never resize Palworld's native member array. A transformation failure l
 | `siegeLeague.name` | Event label. |
 | `siegeLeague.defaultProfile` | Canonical enabled profile used when omitted. |
 | `siegeLeague.allowedProfiles` | Array of unique canonical profile IDs. Arbitrary character IDs/functions are never accepted. |
-| `siegeLeague.chatStartPolicy` | `operatorOnly` or `anyUser`. |
+| `siegeLeague.chatStartPolicy` | `operatorOnly`, `palworldAdminOnly`, `operatorOrPalworldAdmin`, or `anyUser`; applies to all privileged chat commands. |
 | `siegeLeague.userStartCooldownSeconds` | 60–604800, global and persistent for non-operator starts. |
 | `siegeLeague.manualCountdownMinutes` | 10–60. |
 | `siegeLeague.allowCrossBaseRoaming` | Must be `true` in alpha.3; all eligible-base contribution accumulates globally. |
@@ -229,3 +244,14 @@ Reward configuration creates durable obligations during resolution, but alpha.3 
 | `rewards.podium` | Unique rank objects for ranks 1, 2, and/or 3; each has an allowlisted `itemId`, count 1–1000, and optional `enabled=false`. |
 
 Standings sort by contribution points, then final hits, qualified targets, and a deterministic occurrence-specific tie value. Final hits never outrank greater contribution.
+
+The delivery gate remains closed because Palworld's native inventory mutation has no idempotency receipt. A crash after the item is added but before the durable result is written cannot prove whether retrying would duplicate a valuable reward. Alpha.3 records the obligation and moves an interrupted grant to operator review rather than guessing.
+
+Community v1.0.3 index candidates for the next progression-aware reward revision are listed below; none enters the build-`24575149` allowlist until exact static-table extraction verifies it:
+
+- Pal Souls: `PalUpgradeStone`, `PalUpgradeStone2`, `PalUpgradeStone3`, and `PalUpgradeStone4`, selected from a snapshotted recipient progression band;
+- trust consumables: `AffectionFruit_02` (Little Kinship Peach) and `AffectionFruit_01` (Kinship Peach); no row literally named `TrustHeart` appears in the cited current community indexes;
+- one curated schematic for rare podium events, selected from a verified static family at or below the recipient's actual level/unlocked technology rather than synthesizing an item ID; and
+- guild/base level only as audit/coarse maturity context until its relationship to technology progression is proven.
+
+The reward ID and progression evidence must be resolved and journaled at event settlement, not recomputed later when delivery occurs. Schematics and full Kinship Peaches must not be multiplied per defended base. Before enabling delivery, build `24575149` still needs static item/recipe verification, exact `EPalItemOperationResult` handling, 64-bit before/after counts, inventory-full tests, offline retry tests, and crash-boundary reconciliation. The explicit IMOUTO activation command therefore leaves `grantItems=false`.

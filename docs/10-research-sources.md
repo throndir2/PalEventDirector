@@ -150,6 +150,38 @@ Installed-table findings:
 - Those bounty drop rows use level `0`, supporting a character-ID-wide drop rule rather than one fixed event level.
 - Invasion members do not carry `UniqueNPCID`; fixed-spawner bounty state and one-time progression should not be assumed to transfer.
 
+### Built-in administrator state
+
+The Palworld 1.0 Modding Kit exposes `APalPlayerController.bAdmin` as a replicated, Blueprint-readable Boolean. The generated controller constructor initializes it to false and lifetime replication includes it. No reflected `IsAdmin()` function or equivalent player-state/session privilege result was found. PED therefore reads `bAdmin` fresh from the server-side controller supplied by each chat callback. It does not query `UPalUtility.GetAdminPasswordForCmdline`, inspect world settings, parse `/AdminPassword`, or retain controller authority across messages.
+
+This is the validated-result boundary rather than credential handling. Pocketpair's server command documentation describes `/AdminPassword <password>` as granting administrative privileges; the exact build-`24575149` live gate must prove true after authentication, false for ordinary users, and false again after logout/reconnect. An unavailable, throwing, or non-Boolean reflected property fails closed.
+
+Primary references:
+
+- local Modding Kit `PalPlayerController.h` (`bAdmin`) and `PalPlayerController.cpp` (false default and `DOREPLIFETIME`), commit `e6632458b97af0083eb81715775651b08104ef6a`;
+- Pocketpair [server commands](https://docs.palworldgame.com/settings-and-operation/commands/); and
+- UE4SS [UObject/RemoteObject property access](https://docs.ue4ss.com/dev/lua-api/classes/uobject.html).
+
+### Progression reward candidates
+
+The local reflected API establishes the mechanics but not the current cooked item rows:
+
+- `EPalItemTypeA::Blueprint` and `EPalItemTypeB::ConsumePalGainFriendshipPoint` identify schematic and trust-consumable categories;
+- `FPalItemRecipe.UnlockItemID` links a schematic inventory item to a crafted product;
+- `APalPlayerController.GetDefaultPlayerCharacter`, `UPalIndividualCharacterParameter.GetLevel`, and `APalPlayerState.GetTechnologyData` provide candidate player-progression evidence;
+- guild/base `GetBaseCampLevel()` is only coarse maturity context and has no proven technology mapping; and
+- `UPalPlayerInventoryData.AddItem_ServerInternal` returns `EPalItemOperationResult`, while `CountItemNum64` provides the required 64-bit count surface.
+
+Current v1.0.3 community item indexes list the following **candidates**, not yet build-`24575149` allowlisted findings:
+
+- Pal Souls: `PalUpgradeStone`, `PalUpgradeStone2`, `PalUpgradeStone3`, and `PalUpgradeStone4`;
+- trust consumables: `AffectionFruit_02` and `AffectionFruit_01`; and
+- schematics in curated `Blueprint_*` families whose technology/product mapping must be exported rather than inferred from naming.
+
+No row literally named `TrustHeart` appears in those indexes; this is not yet an installed-table assertion. Candidate sources are [PalDB's v1.0.3 item table](https://paldb.cc/en/Items_Table) and the [PalMods item-ID snapshot](https://www.palmods.gg/docs/authors/game-ids/items). Before any candidate enters the reward allowlist, read-only extraction from the exact server build must verify ID, item types, stack limit, legality, schematic unlock product, and technology level.
+
+Delivery remains blocked in alpha.3. Native inventory mutation has no reflected idempotency receipt, so a crash after the item is added but before the durable result is recorded creates an ambiguous retry. Valuable schematics, souls, and Kinship Peaches must remain pending obligations until exact enum/delta, full-inventory, offline, reconnect, and crash-boundary tests pass.
+
 ### Invasion level-scaling findings
 
 Pocketpair's [official Palworld 1.0 Steam announcement](https://steamcommunity.com/app/1623730/announcements/detail/1822556746155818?l=english) states that the level of raiding enemies now scales according to the level of Work Pals assigned to the deployed base. This supports target-base-local scaling rather than a single player level or guild-wide base-upgrade level. It does not publish the aggregation formula.

@@ -21,6 +21,7 @@ $ExpectedRootExeHash = '4a42e42750ccb7537e378c5ca4f781b9534c53fd12f4bc1410f8cd16
 $ExpectedExeHash = '6be7c3f4d4762b70990e4b7f919016ba4ef8584552950e749c37d40502b1a115'
 $ExpectedPakHash = 'bffab47cbd3b3c6d14d616376d4e0b060b2429a5eb4c2022820d4f38d36a0770'
 $RuntimeTag = '2281fa31'
+$RuntimeApiVersion = '3.0.1'
 $RuntimeName = 'UE4SS-Palworld-g2281fa31-zDev.zip'
 $RuntimeUrl = 'https://github.com/Okaetsu/RE-UE4SS/releases/download/2281fa31/UE4SS-Palworld-g2281fa31-zDev.zip'
 $RuntimeHash = '3b5c8ad11ed7983edde08412eac214222749e83e4b47f12476741c6c536bf060'
@@ -31,6 +32,7 @@ $RuntimeFiles = [ordered]@{
 }
 $InstallerSource = $MyInvocation.MyCommand.Path
 $LauncherSource = Join-Path $PSScriptRoot 'Start-PalEventDirectorImouto.ps1'
+$ActivationSource = Join-Path $PSScriptRoot 'Enable-PalEventDirectorLaboratory.ps1'
 $BundleManifestPath = Join-Path $PSScriptRoot 'bundle.json'
 
 function Get-ProcessesUnderRoot {
@@ -166,6 +168,7 @@ $ModTarget = Join-Path $ModsRoot 'PalEventDirector'
 $DeployRoot = Join-Path $ServerRoot 'PalEventDirectorDeployments'
 $DeployRecord = Join-Path $DeployRoot 'deployment.json'
 $LauncherTarget = Join-Path $DeployRoot 'Start-PalEventDirectorImouto.ps1'
+$ActivationTarget = Join-Path $DeployRoot 'Enable-PalEventDirectorLaboratory.ps1'
 
 if ($ServerRoot -ieq $ClientRoot -or $ServerRoot.StartsWith($ClientRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Refusing to install into the Palworld client.'
@@ -229,7 +232,7 @@ if ($ExpectedSourceRevision) {
         throw 'The clean-build source revision does not match ExpectedSourceRevision.'
     }
 }
-foreach ($required in @($InstallerSource, $LauncherSource, $BundleManifestPath)) {
+foreach ($required in @($InstallerSource, $LauncherSource, $ActivationSource, $BundleManifestPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "The deployment bundle is incomplete: $required"
     }
@@ -243,7 +246,9 @@ if ($BundleManifest.schemaVersion -ne 1 -or [string]$BundleManifest.packageName 
     [string]$BundleManifest.installer -ne (Split-Path $InstallerSource -Leaf) -or
     [string]$BundleManifest.installerSha256 -ine (Get-FileHash $InstallerSource -Algorithm SHA256).Hash -or
     [string]$BundleManifest.launcher -ne (Split-Path $LauncherSource -Leaf) -or
-    [string]$BundleManifest.launcherSha256 -ine (Get-FileHash $LauncherSource -Algorithm SHA256).Hash) {
+    [string]$BundleManifest.launcherSha256 -ine (Get-FileHash $LauncherSource -Algorithm SHA256).Hash -or
+    [string]$BundleManifest.activation -ne (Split-Path $ActivationSource -Leaf) -or
+    [string]$BundleManifest.activationSha256 -ine (Get-FileHash $ActivationSource -Algorithm SHA256).Hash) {
     throw 'The IMOUTO deployment bundle provenance is invalid.'
 }
 
@@ -272,13 +277,14 @@ if ($RuntimeMatches) {
 
 if (-not $PSCmdlet.ShouldProcess($ServerRoot, "deploy PalEventDirector $($BuildManifest.version) and pinned UE4SS $RuntimeTag")) { return }
 
-$Mutex = [Threading.Mutex]::new($false, 'Global\PalEventDirectorImoutoInstaller')
+$Mutex = [Threading.Mutex]::new($false, 'Global\PalEventDirectorImoutoLifecycle')
 $HasMutex = $false
 $Stage = Join-Path $ServerRoot ('.ped-stage-' + [Guid]::NewGuid().ToString('N'))
 $LocalArtifact = Join-Path $Stage (Split-Path $ArtifactPath -Leaf)
 $LocalBuildManifest = Join-Path $Stage 'manifest.json'
 $LocalBundleManifest = Join-Path $Stage 'bundle.json'
 $LocalLauncher = Join-Path $Stage 'Start-PalEventDirectorImouto.ps1'
+$LocalActivation = Join-Path $Stage 'Enable-PalEventDirectorLaboratory.ps1'
 $ArtifactStage = Join-Path $Stage 'artifact'
 $RuntimeStage = Join-Path $Stage 'runtime'
 $Backup = Join-Path $ServerRoot ('PalEventDirectorInstallerBackups\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
@@ -286,7 +292,9 @@ $HadUe4ss = $false
 $HadProxy = $false
 $HadDeployRecord = $false
 $HadLauncher = $false
+$HadActivation = $false
 $LauncherIncoming = "$LauncherTarget.incoming"
+$ActivationIncoming = "$ActivationTarget.incoming"
 $MutationStarted = $false
 
 try {
@@ -297,16 +305,19 @@ try {
     $HadProxy = Test-Path -LiteralPath (Join-Path $Win64Root 'dwmapi.dll')
     $HadDeployRecord = Test-Path -LiteralPath $DeployRecord
     $HadLauncher = Test-Path -LiteralPath $LauncherTarget
+    $HadActivation = Test-Path -LiteralPath $ActivationTarget
     New-Item -ItemType Directory -Path $Stage -ErrorAction Stop | Out-Null
     Copy-Item -LiteralPath $ArtifactPath -Destination $LocalArtifact -ErrorAction Stop
     Copy-Item -LiteralPath $BuildManifestPath -Destination $LocalBuildManifest -ErrorAction Stop
     Copy-Item -LiteralPath $BundleManifestPath -Destination $LocalBundleManifest -ErrorAction Stop
     Copy-Item -LiteralPath $LauncherSource -Destination $LocalLauncher -ErrorAction Stop
+    Copy-Item -LiteralPath $ActivationSource -Destination $LocalActivation -ErrorAction Stop
     $LocalManifest = Get-Content -LiteralPath $LocalBuildManifest -Raw | ConvertFrom-Json
     if ((Get-FileHash -LiteralPath $LocalArtifact -Algorithm SHA256).Hash -ine $ArtifactHash -or
         [string]$LocalManifest.sha256 -ine $ArtifactHash -or [string]$LocalManifest.sourceRevision -ine [string]$BuildManifest.sourceRevision -or
         (Get-FileHash $LocalBundleManifest -Algorithm SHA256).Hash -ine (Get-FileHash $BundleManifestPath -Algorithm SHA256).Hash -or
-        (Get-FileHash $LocalLauncher -Algorithm SHA256).Hash -ine [string]$BundleManifest.launcherSha256) {
+        (Get-FileHash $LocalLauncher -Algorithm SHA256).Hash -ine [string]$BundleManifest.launcherSha256 -or
+        (Get-FileHash $LocalActivation -Algorithm SHA256).Hash -ine [string]$BundleManifest.activationSha256) {
         throw 'The local immutable artifact snapshot differs from the validated MIKO source.'
     }
     New-Item -ItemType Directory -Path $ArtifactStage -Force | Out-Null
@@ -348,12 +359,13 @@ try {
     }
 
     New-Item -ItemType Directory -Path $Backup -ErrorAction Stop | Out-Null
-    $BackupMetadata = [ordered]@{ schemaVersion = 1; hadUe4ss = $HadUe4ss; hadProxy = $HadProxy; hadDeploymentRecord = $HadDeployRecord; hadLauncher = $HadLauncher }
+    $BackupMetadata = [ordered]@{ schemaVersion = 1; hadUe4ss = $HadUe4ss; hadProxy = $HadProxy; hadDeploymentRecord = $HadDeployRecord; hadLauncher = $HadLauncher; hadActivation = $HadActivation }
     [IO.File]::WriteAllText((Join-Path $Backup 'backup.json'), (($BackupMetadata | ConvertTo-Json) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
     if ($HadUe4ss) { Copy-Item -LiteralPath $Ue4ssRoot -Destination (Join-Path $Backup 'ue4ss') -Recurse -Force }
     if ($HadProxy) { Copy-Item -LiteralPath (Join-Path $Win64Root 'dwmapi.dll') -Destination (Join-Path $Backup 'dwmapi.dll') -Force }
     if ($HadDeployRecord) { Copy-Item -LiteralPath $DeployRecord -Destination (Join-Path $Backup 'deployment.json') -Force }
     if ($HadLauncher) { Copy-Item -LiteralPath $LauncherTarget -Destination (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1') -Force }
+    if ($HadActivation) { Copy-Item -LiteralPath $ActivationTarget -Destination (Join-Path $Backup 'Enable-PalEventDirectorLaboratory.ps1') -Force }
 
     $MutationStarted = $true
     Assert-ServerStopped -Root $ServerRoot
@@ -394,6 +406,12 @@ try {
         throw 'Staged IMOUTO launcher failed final verification.'
     }
     Move-Item -LiteralPath $LauncherIncoming -Destination $LauncherTarget -Force -ErrorAction Stop
+    Remove-Item -LiteralPath $ActivationIncoming -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $LocalActivation -Destination $ActivationIncoming -Force -ErrorAction Stop
+    if ((Get-FileHash $ActivationIncoming -Algorithm SHA256).Hash -ine [string]$BundleManifest.activationSha256) {
+        throw 'Staged IMOUTO laboratory activation command failed final verification.'
+    }
+    Move-Item -LiteralPath $ActivationIncoming -Destination $ActivationTarget -Force -ErrorAction Stop
     $Record = [ordered]@{
         schemaVersion = 1
         packageName = 'PalEventDirector'
@@ -401,6 +419,8 @@ try {
         sourceRevision = ([string]$BuildManifest.sourceRevision).ToLowerInvariant()
         artifactSha256 = $ArtifactHash.ToLowerInvariant()
         ue4ssTag = $RuntimeTag
+        ue4ssApiVersion = $RuntimeApiVersion
+        ue4ssDllSha256 = $RuntimeFiles['ue4ss\UE4SS.dll']
         serverAppId = $ExpectedAppId
         serverBuildId = $VerifiedBuildId
         rootServerExecutableSha256 = (Get-FileHash $RootServerExe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -409,12 +429,33 @@ try {
         dataDirectory = Join-Path $ServerRoot 'Pal\Saved\PalEventDirector'
         launcherPath = $LauncherTarget
         launcherSha256 = ([string]$BundleManifest.launcherSha256).ToLowerInvariant()
+        activationPath = $ActivationTarget
+        activationSha256 = ([string]$BundleManifest.activationSha256).ToLowerInvariant()
+        laboratoryActivationConfigured = $true
         launchIntegrationConfigured = $true
         launchEnvironmentSource = 'verified-steam-manifest'
         installedAtUtc = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
         backupRoot = $Backup
     }
     [IO.File]::WriteAllText($DeployRecord, (($Record | ConvertTo-Json -Depth 5) + [Environment]::NewLine), $Utf8)
+
+    $PersistentConfigPath = Join-Path $ServerRoot 'Pal\Saved\PalEventDirector\config.json'
+    $PersistentCapabilitiesConfigured = $false
+    $CapabilityStatus = 'NotConfigured'
+    $GrantItemsEnabled = $false
+    $EnabledScheduleCount = 0
+    if (Test-Path $PersistentConfigPath -PathType Leaf) {
+        try {
+            $PersistentConfig = Get-Content $PersistentConfigPath -Raw | ConvertFrom-Json
+            $CapabilityNames = @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')
+            $PersistentCapabilitiesConfigured = @($CapabilityNames | Where-Object { $PersistentConfig.capabilities.$_ -ne $true }).Count -eq 0
+            $GrantItemsEnabled = $PersistentConfig.capabilities.grantItems -eq $true
+            $EnabledScheduleCount = @($PersistentConfig.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count
+            $CapabilityStatus = if ($PersistentCapabilitiesConfigured) { 'ConfiguredEnabled-ReactivationRequired' } else { 'ConfiguredButNotFullyEnabled-ReactivationRequired' }
+        } catch {
+            $CapabilityStatus = 'ConfigurationUnreadable'
+        }
+    }
 
     [pscustomobject]@{
         Status = 'Installed'
@@ -426,6 +467,13 @@ try {
         BackupRoot = $Backup
         LaunchIntegrationConfigured = $true
         LauncherPath = $LauncherTarget
+        LaboratoryActivationConfigured = $true
+        ActivationPath = $ActivationTarget
+        PersistentCapabilitiesConfigured = $PersistentCapabilitiesConfigured
+        CapabilitiesValidatedForThisDeployment = $false
+        CapabilityStatus = $CapabilityStatus
+        GrantItemsEnabled = $GrantItemsEnabled
+        EnabledScheduleCount = $EnabledScheduleCount
         ServerBuildId = $VerifiedBuildId
         ServerStarted = $false
     }
@@ -440,6 +488,7 @@ try {
             if ($HadProxy -and (Test-Path -LiteralPath (Join-Path $Backup 'dwmapi.dll'))) { Copy-Item -LiteralPath (Join-Path $Backup 'dwmapi.dll') -Destination $ProxyPath -ErrorAction Stop }
             if (Test-Path -LiteralPath $DeployRecord) { Remove-Item -LiteralPath $DeployRecord -Force -ErrorAction Stop }
             if (Test-Path -LiteralPath $LauncherTarget) { Remove-Item -LiteralPath $LauncherTarget -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $ActivationTarget) { Remove-Item -LiteralPath $ActivationTarget -Force -ErrorAction Stop }
             if ($HadDeployRecord -and (Test-Path -LiteralPath (Join-Path $Backup 'deployment.json'))) {
                 New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $Backup 'deployment.json') -Destination $DeployRecord -ErrorAction Stop
@@ -447,6 +496,10 @@ try {
             if ($HadLauncher -and (Test-Path -LiteralPath (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1'))) {
                 New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1') -Destination $LauncherTarget -ErrorAction Stop
+            }
+            if ($HadActivation -and (Test-Path -LiteralPath (Join-Path $Backup 'Enable-PalEventDirectorLaboratory.ps1'))) {
+                New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
+                Copy-Item -LiteralPath (Join-Path $Backup 'Enable-PalEventDirectorLaboratory.ps1') -Destination $ActivationTarget -ErrorAction Stop
             }
         } catch {
             throw "Installation failed ($($OriginalError.Exception.Message)) and rollback also failed ($($_.Exception.Message)). Keep the server stopped and recover from $Backup."
@@ -456,6 +509,7 @@ try {
 } finally {
     Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
     if ($HasMutex) { Remove-Item -LiteralPath $LauncherIncoming -Force -ErrorAction SilentlyContinue }
+    if ($HasMutex) { Remove-Item -LiteralPath $ActivationIncoming -Force -ErrorAction SilentlyContinue }
     if ($HasMutex) { $Mutex.ReleaseMutex() }
     $Mutex.Dispose()
 }

@@ -846,7 +846,145 @@ function Director:player_text(uid)
     return string.format("Siege score for %s: %.3f points, %d final hits, %d bases defended (direct %d, Pal %d damage).", result.displayName, result.score, result.finalHits, result.basesDefended, result.directDamage, result.palDamage)
 end
 
-function Director:handle_chat(uid, message)
+function Director:_normalize_chat_principal(principal)
+    if type(principal) == "string" then
+        return {
+            transport = "chat",
+            uid = principal,
+            palworldAdmin = nil,
+            palworldAdminReadable = false,
+            palworldAdminError = "authoritative Palworld administrator state was not supplied",
+        }
+    end
+    if type(principal) ~= "table" or type(principal.uid) ~= "string" or principal.uid == "" then
+        return nil
+    end
+    return principal
+end
+
+function Director:_authorize_chat_command(principal, action)
+    principal = self:_normalize_chat_principal(principal)
+    if not principal then
+        return false, "authoritative chat principal is unavailable"
+    end
+    local uid = principal.uid
+    local configured_operator = config_module.is_operator(self.config, uid)
+    local policy = self.config.siegeLeague.chatStartPolicy
+    local allowed = false
+    local authority
+    local denial
+    if policy == "anyUser" then
+        allowed = true
+        if configured_operator then
+            authority = "configured-operator"
+        elseif principal.palworldAdminReadable == true and principal.palworldAdmin == true then
+            authority = "palworld-admin"
+        else
+            authority = "any-user-policy"
+        end
+    elseif policy == "operatorOnly" then
+        allowed = configured_operator
+        authority = allowed and "configured-operator" or nil
+        denial = "configured PED operator UID required"
+    elseif policy == "palworldAdminOnly" then
+        if principal.palworldAdminReadable ~= true then
+            denial = "Palworld administrator state is unavailable or ambiguous: " .. tostring(principal.palworldAdminError or "APalPlayerController.bAdmin unavailable")
+        elseif principal.palworldAdmin == true then
+            allowed = true
+            authority = "palworld-admin"
+        else
+            denial = "authenticated Palworld administrator required"
+        end
+    elseif policy == "operatorOrPalworldAdmin" then
+        if configured_operator then
+            allowed = true
+            authority = "configured-operator"
+        elseif principal.palworldAdminReadable ~= true then
+            denial = "Palworld administrator state is unavailable or ambiguous: " .. tostring(principal.palworldAdminError or "APalPlayerController.bAdmin unavailable")
+        elseif principal.palworldAdmin == true then
+            allowed = true
+            authority = "palworld-admin"
+        else
+            denial = "configured PED operator UID or authenticated Palworld administrator required"
+        end
+    else
+        denial = "configured command authorization policy is unsupported"
+    end
+    local audit = {
+        action = action,
+        authority = authority,
+        player = util.mask_uid(uid),
+        policy = policy,
+    }
+    if allowed then
+        self.logger:info("Privileged chat command authorized", audit)
+        return true, nil, authority
+    end
+    audit.reason = denial
+    self.logger:warn("Privileged chat command denied", audit)
+    return false, denial
+end
+
+function Director:_handle_chat_start(principal, requested_profile, countdown_minutes, now)
+    local uid = principal.uid
+    local authorized, denial, authority = self:_authorize_chat_command(principal, "start")
+    if not authorized then
+        self:_announce("Siege League start denied: " .. tostring(denial) .. ".")
+        return true
+    end
+    local ordinary_user = authority == "any-user-policy"
+    if ordinary_user then
+        local last_start = self.state.lastUserStartAt or 0
+        local remaining = last_start > 0 and (self.config.siegeLeague.userStartCooldownSeconds - (now - last_start)) or 0
+        if remaining > 0 then
+            self:_announce("Siege League user-start cooldown: " .. math.ceil(remaining / 60) .. " minute(s) remaining.")
+            return true
+        end
+    end
+    if now - self.last_start_attempt < 10 then
+        self:_announce("Siege League start requests are temporarily rate-limited.")
+        return true
+    end
+    self.last_start_attempt = now
+    local profile_id, profile_error = self:_profile_allowed(requested_profile)
+    if not profile_id then
+        self:_announce("Siege League start failed: " .. tostring(profile_error))
+        return true
+    end
+    if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
+        self:_announce("Siege League start failed: director is " .. self.state.status)
+        return true
+    end
+    local previous_user_start = self.state.lastUserStartAt or 0
+    if ordinary_user then
+        self.state.lastUserStartAt = now
+        local persisted, persist_error = self:_persist("user_start_cooldown_intent", {
+            playerUid = util.mask_uid(uid),
+            profileId = profile_id,
+        })
+        if not persisted then
+            self.state.lastUserStartAt = previous_user_start
+            self:_announce("Siege League start failed: unable to persist user cooldown: " .. tostring(persist_error))
+            return true
+        end
+    end
+    local ok, result = self:arm_start("chat:" .. util.mask_uid(uid), profile_id, countdown_minutes)
+    if not ok and ordinary_user then
+        self.state.lastUserStartAt = previous_user_start
+        local rollback_ok = self:_persist("user_start_cooldown_rollback", {
+            playerUid = util.mask_uid(uid),
+            reason = tostring(result),
+        })
+        if not rollback_ok then self.state.status = "recovery_required" end
+    end
+    if not ok then self:_announce("Siege League start failed: " .. tostring(result)) end
+    return true
+end
+
+function Director:handle_chat(principal, message)
+    principal = self:_normalize_chat_principal(principal)
+    if not principal then return false end
+    local uid = principal.uid
     message = util.trim(message)
     local lowered = message:lower()
     if not util.starts_with(lowered, "!") then
@@ -859,6 +997,7 @@ function Director:handle_chat(uid, message)
     local words = util.split_words(lowered)
     local public_query = lowered == "!event" or lowered == "!score" or lowered == "!leaderboard"
         or (words[1] == "!siege" and ({ status = true, profiles = true, schedule = true, score = true, leaderboard = true })[words[2] or "status"])
+        or (words[1] == "!ped" and ({ status = true, profiles = true, schedule = true, leaderboard = true })[words[2] or "status"])
     if public_query and now - self.last_public_command < 5 then
         return true
     end
@@ -882,62 +1021,10 @@ function Director:handle_chat(uid, message)
             self:_announce(self:leaderboard_text())
             return true
         elseif action == "start" then
-            local operator = config_module.is_operator(self.config, uid)
-            if not operator and self.config.siegeLeague.chatStartPolicy ~= "anyUser" then
-                self:_announce("Siege League start denied: only configured operators may start an alarm.")
-                return true
-            end
-            if not operator then
-                local last_start = self.state.lastUserStartAt or 0
-                local remaining = last_start > 0 and (self.config.siegeLeague.userStartCooldownSeconds - (now - last_start)) or 0
-                if remaining > 0 then
-                    self:_announce("Siege League user-start cooldown: " .. math.ceil(remaining / 60) .. " minute(s) remaining.")
-                    return true
-                end
-            end
-            if now - self.last_start_attempt < 10 then
-                self:_announce("Siege League start requests are temporarily rate-limited.")
-                return true
-            end
-            self.last_start_attempt = now
-            local profile_id, profile_error = self:_profile_allowed(words[3])
-            if not profile_id then
-                self:_announce("Siege League start failed: " .. tostring(profile_error))
-                return true
-            end
-            if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
-                self:_announce("Siege League start failed: director is " .. self.state.status)
-                return true
-            end
-            local previous_user_start = self.state.lastUserStartAt or 0
-            if not operator then
-                self.state.lastUserStartAt = now
-                local persisted, persist_error = self:_persist("user_start_cooldown_intent", { playerUid = util.mask_uid(uid), profileId = profile_id })
-                if not persisted then
-                    self.state.lastUserStartAt = previous_user_start
-                    self:_announce("Siege League start failed: unable to persist user cooldown: " .. tostring(persist_error))
-                    return true
-                end
-            end
-            local ok, result = self:arm_start("chat:" .. util.mask_uid(uid), profile_id, words[4])
-            if not ok and not operator then
-                self.state.lastUserStartAt = previous_user_start
-                local rollback_ok = self:_persist("user_start_cooldown_rollback", { playerUid = util.mask_uid(uid), reason = tostring(result) })
-                if not rollback_ok then
-                    self.state.status = "recovery_required"
-                end
-            end
-            if not ok then
-                self:_announce("Siege League start failed: " .. tostring(result))
-            end
+            return self:_handle_chat_start(principal, words[3], words[4], now)
+        elseif action == "cancel" or action == "resolve" or action == "abort" or action == "reset" then
+            self:handle_operator_command(action, "chat:" .. util.mask_uid(uid), principal)
             return true
-        elseif config_module.is_operator(self.config, uid) and action == "cancel" then
-            local ok, result = self.scheduler:cancel_manual("chat_operator")
-            if ok then self:_checkpoint("manual_countdown_cancelled") end
-            self:_announce((ok and "Siege countdown cancelled." or "Siege cancel failed: " .. tostring(result)))
-            return true
-        elseif config_module.is_operator(self.config, uid) and (action == "resolve" or action == "abort" or action == "reset") then
-            return self:handle_operator_command(action, "chat:" .. util.mask_uid(uid))
         end
         self:_announce("Siege commands: !siege status|profiles|schedule|score|leaderboard|start <profile> [10-60 minutes].")
         return true
@@ -950,15 +1037,26 @@ function Director:handle_chat(uid, message)
     elseif lowered == "!leaderboard" then
         self:_announce(self:leaderboard_text())
         return true
-    elseif util.starts_with(lowered, "!ped ") and config_module.is_operator(self.config, uid) then
-        return self:handle_operator_command(message:sub(6), "chat:" .. util.mask_uid(uid))
+    elseif util.starts_with(lowered, "!ped ") then
+        if words[2] == "start" then
+            return self:_handle_chat_start(principal, words[3], words[4], now)
+        end
+        self:handle_operator_command(message:sub(6), "chat:" .. util.mask_uid(uid), principal)
+        return true
     end
     return false
 end
 
-function Director:handle_operator_command(command, source)
+function Director:handle_operator_command(command, source, principal)
     local words = util.split_words(command)
     local action = (words[1] or "status"):lower()
+    if source and source:match("^chat:") then
+        local authorized, denial = self:_authorize_chat_command(principal, action)
+        if not authorized then
+            self:_announce("PED ERROR: command denied: " .. tostring(denial) .. ".")
+            return false, denial
+        end
+    end
     local ok, result
     if action == "start" then
         ok, result = self:arm_start(source or "console", words[2], words[3])

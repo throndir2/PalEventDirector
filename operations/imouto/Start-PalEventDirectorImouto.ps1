@@ -61,6 +61,12 @@ $ShippingExecutable = Join-Path $ServerRoot 'Pal\Binaries\Win64\PalServer-Win64-
 $ServerPak = Join-Path $ServerRoot 'Pal\Content\Paks\Pal-WindowsServer.pak'
 $DataDirectory = Join-Path $ServerRoot 'Pal\Saved\PalEventDirector'
 
+$LifecycleMutex = [Threading.Mutex]::new($false, 'Global\PalEventDirectorImoutoLifecycle')
+$HasLifecycleMutex = $false
+try {
+    $HasLifecycleMutex = $LifecycleMutex.WaitOne(0)
+    if (-not $HasLifecycleMutex) { throw 'Another IMOUTO install, activation, launch, or world import is running.' }
+
 foreach ($required in @($SteamManifestPath, $DeploymentPath, $ServerExecutable, $ShippingExecutable, $ServerPak)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Required launch file is missing: $required"
@@ -167,3 +173,7 @@ try {
 $launch['ProcessId'] = $process.Id
 $launch['Started'] = $true
 [pscustomobject]$launch
+} finally {
+    if ($HasLifecycleMutex) { $LifecycleMutex.ReleaseMutex() }
+    $LifecycleMutex.Dispose()
+}

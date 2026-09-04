@@ -267,7 +267,7 @@ if (Test-Path $CurrentRecord) {
 $summary = "$PrimaryCharacterCount primary characters, $PlayerSidecarCount player sidecars, $($ExpectedInventory.Count) active files, snapshot $($manifest.sourceSnapshot)"
 if (-not $PSCmdlet.ShouldProcess($ServerRoot, "replace the disposable IMOUTO world from immutable MIKO seed ($summary); preserve IMOUTO settings")) { return }
 
-$Mutex = [Threading.Mutex]::new($false, 'Global\PalEventDirectorImoutoWorldImport')
+$Mutex = [Threading.Mutex]::new($false, 'Global\PalEventDirectorImoutoLifecycle')
 $HasMutex = $false
 $TransactionId = [Guid]::NewGuid().ToString('N')
 $Stage = Join-Path $SavedRoot ('.ped-world-stage-' + $TransactionId)

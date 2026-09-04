@@ -109,6 +109,21 @@ test("configuration arrays replace defaults and live grants fail closed", functi
     truthy(validation_error:match("grantItems"))
 end)
 
+test("command authorization policies validate and combined policy is the default", function()
+    equal(Config.defaults().siegeLeague.chatStartPolicy, "operatorOrPalworldAdmin")
+    for _, policy in ipairs({ "operatorOnly", "palworldAdminOnly", "operatorOrPalworldAdmin", "anyUser" }) do
+        local config = Config.defaults()
+        config.siegeLeague.chatStartPolicy = policy
+        local valid, validation_error = Config.validate(config)
+        truthy(valid, validation_error)
+    end
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "displayNameAdmin"
+    local valid, validation_error = Config.validate(config)
+    equal(valid, false)
+    truthy(validation_error:match("chatStartPolicy"))
+end)
+
 test("invasion mutation requires an explicit UE4SS version allowlist", function()
     local config = Config.defaults()
     config.capabilities.observeCombat = true
@@ -335,7 +350,7 @@ test("restored scheduled occurrence is processed after its calendar date changes
     }
     local starts = 0
     local scheduler = Scheduler.new({
-        schedules = {},
+        schedules = { schedule },
         clock = function() return restarted_at end,
         persist = function() return true end,
         announce = function() return true end,
@@ -345,6 +360,82 @@ test("restored scheduled occurrence is processed after its calendar date changes
     scheduler:tick(restarted_at)
     equal(starts, 1)
     equal(restored.occurrences[key].status, "started")
+end)
+
+test("restored recurring occurrence is cancelled when schedule is disabled", function()
+    local schedule = util.deep_copy(Config.defaults().schedules[1])
+    schedule.enabled = true
+    local intended = os.time({ year = 2026, month = 9, day = 7, hour = 12, min = 0, sec = 0, isdst = nil })
+    local key = schedule.id .. "@" .. tostring(intended)
+    local restored = {
+        schemaVersion = 2,
+        occurrences = {
+            [key] = {
+                key = key,
+                scheduleId = schedule.id,
+                profileId = schedule.profile,
+                intendedAt = intended,
+                warningsSent = { ["600"] = true, ["300"] = true, ["60"] = true },
+                warningAttempts = {},
+                status = "planned",
+                schedule = schedule,
+            },
+        },
+        manualNonce = 0,
+    }
+    local starts = 0
+    local persisted_kind
+    local scheduler = Scheduler.new({
+        schedules = {},
+        clock = function() return intended end,
+        persist = function(kind) persisted_kind = kind; return true end,
+        announce = function() return true end,
+        can_start = function() return true end,
+        start_event = function() starts = starts + 1; return true end,
+    }, restored)
+    scheduler:tick(intended)
+    equal(starts, 0)
+    equal(restored.occurrences[key].status, "cancelled")
+    equal(restored.occurrences[key].reason, "schedule_disabled_or_removed")
+    equal(persisted_kind, "schedule_occurrence_cancelled")
+end)
+
+test("restored recurring occurrence is cancelled when schedule definition changes", function()
+    local old_schedule = util.deep_copy(Config.defaults().schedules[1])
+    old_schedule.enabled = true
+    local current_schedule = util.deep_copy(old_schedule)
+    current_schedule.profile = "native"
+    local intended = os.time({ year = 2026, month = 9, day = 7, hour = 12, min = 0, sec = 0, isdst = nil })
+    local key = old_schedule.id .. "@" .. tostring(intended)
+    local restored = {
+        schemaVersion = 2,
+        occurrences = {
+            [key] = {
+                key = key,
+                scheduleId = old_schedule.id,
+                profileId = old_schedule.profile,
+                intendedAt = intended,
+                warningsSent = { ["600"] = true, ["300"] = true, ["60"] = true },
+                warningAttempts = {},
+                status = "planned",
+                schedule = old_schedule,
+            },
+        },
+        manualNonce = 0,
+    }
+    local starts = 0
+    local scheduler = Scheduler.new({
+        schedules = { current_schedule },
+        clock = function() return intended end,
+        persist = function() return true end,
+        announce = function() return true end,
+        can_start = function() return true end,
+        start_event = function() starts = starts + 1; return true end,
+    }, restored)
+    scheduler:tick(intended)
+    equal(starts, 0)
+    equal(restored.occurrences[key].status, "cancelled")
+    equal(restored.occurrences[key].reason, "schedule_definition_changed")
 end)
 
 test("scheduled start is missed when a mandatory warning cannot be delivered", function()
@@ -972,6 +1063,7 @@ test("operator-only chat denies users and accepts canonicalized operator UID", f
     config.capabilities.observeCombat = true
     config.capabilities.observeInvasions = true
     config.capabilities.substituteBountyMembers = true
+    config.siegeLeague.chatStartPolicy = "operatorOnly"
     config.operatorUids = json.array({ "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" })
     local store = {
         load_snapshot = function() return nil end,
@@ -1001,6 +1093,232 @@ test("operator-only chat denies users and accepts canonicalized operator UID", f
     director:tick()
     equal(bridge.starts, 1)
     equal(director.state.event.profileId, "jackpot")
+end)
+
+test("bridge reads authoritative Palworld admin state fresh from each controller", function()
+    local bridge = Bridge.new({
+        config = Config.defaults(),
+        logger = { info = function() end, warn = function() end, error = function() end },
+    })
+    local function controller(uid, admin, display_name)
+        return {
+            IsValid = function() return true end,
+            GetPlayerUId = function() return uid end,
+            GetFName = function() return display_name or "Player" end,
+            bAdmin = admin,
+        }
+    end
+    local authenticated = bridge:command_principal(controller("admin-player", true, "Ordinary Name"))
+    equal(authenticated.uid, "admin-player")
+    equal(authenticated.palworldAdminReadable, true)
+    equal(authenticated.palworldAdmin, true)
+
+    local ordinary = bridge:command_principal(controller("ordinary-player", false, "Admin"))
+    equal(ordinary.palworldAdminReadable, true)
+    equal(ordinary.palworldAdmin, false, "an admin-like display name must not authorize")
+
+    local unavailable = bridge:command_principal(controller("unavailable-player", nil, "Admin"))
+    equal(unavailable.palworldAdminReadable, false)
+    truthy(unavailable.palworldAdminError:match("unavailable or ambiguous"))
+
+    local throwing = {
+        IsValid = function() return true end,
+        GetPlayerUId = function() return "throwing-player" end,
+    }
+    setmetatable(throwing, { __index = function(_, key) if key == "bAdmin" then error("reflection unavailable") end end })
+    local failed = bridge:command_principal(throwing)
+    equal(failed.palworldAdminReadable, false)
+    truthy(failed.palworldAdminError:match("access failed"))
+
+    local before_logout = bridge:command_principal(controller("same-player", true))
+    local after_logout = bridge:command_principal(controller("same-player", false))
+    equal(before_logout.palworldAdmin, true)
+    equal(after_logout.palworldAdmin, false, "fresh controller state must revoke stale authority")
+end)
+
+test("combined command policy accepts native admin or configured UID and denies spoofed names", function()
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "operatorOrPalworldAdmin"
+    config.operatorUids = json.array({ "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" })
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local bridge = { announce = function() return true end, active_invasion_count = function() return 0 end }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 24000 end })
+
+    local allowed, _, authority = director:_authorize_chat_command({
+        uid = "native-admin", palworldAdmin = true, palworldAdminReadable = true, displayName = "Nobody",
+    }, "abort")
+    truthy(allowed)
+    equal(authority, "palworld-admin")
+
+    allowed, _, authority = director:_authorize_chat_command({
+        uid = "aaaaaaaabbbbccccddddeeeeeeeeeeee", palworldAdminReadable = false,
+        palworldAdminError = "unavailable", displayName = "Nobody",
+    }, "reset")
+    truthy(allowed)
+    equal(authority, "configured-operator")
+
+    local denied, denial = director:_authorize_chat_command({
+        uid = "ordinary-player", palworldAdmin = false, palworldAdminReadable = true, displayName = "Admin",
+    }, "start")
+    equal(denied, false)
+    truthy(denial:match("authenticated Palworld administrator"))
+
+    denied, denial = director:_authorize_chat_command({
+        uid = "ordinary-player", palworldAdminReadable = false,
+        palworldAdminError = "APalPlayerController.bAdmin access failed", displayName = "Admin",
+    }, "cancel")
+    equal(denied, false)
+    truthy(denial:match("state is unavailable or ambiguous"))
+end)
+
+test("public chat queries do not require readable administrator state", function()
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "palworldAdminOnly"
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local announcements = {}
+    local bridge = {
+        announce = function(_, message) announcements[#announcements + 1] = message; return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 24100 end })
+    local unreadable = {
+        uid = "ordinary",
+        palworldAdminReadable = false,
+        palworldAdminError = "APalPlayerController.bAdmin unavailable",
+    }
+    truthy(director:handle_chat(unreadable, "!siege status"))
+    equal(#announcements, 1)
+    truthy(announcements[1]:match("Pal Event Director"))
+end)
+
+test("any-user policy preserves operator and native-admin authority precedence", function()
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "anyUser"
+    config.operatorUids = json.array({ "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" })
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local bridge = { announce = function() return true end, active_invasion_count = function() return 0 end }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 24200 end })
+    local _, _, operator_authority = director:_authorize_chat_command({
+        uid = "aaaaaaaabbbbccccddddeeeeeeeeeeee", palworldAdmin = false, palworldAdminReadable = true,
+    }, "start")
+    equal(operator_authority, "configured-operator")
+    local _, _, admin_authority = director:_authorize_chat_command({
+        uid = "native-admin", palworldAdmin = true, palworldAdminReadable = true,
+    }, "start")
+    equal(admin_authority, "palworld-admin")
+    local _, _, user_authority = director:_authorize_chat_command({
+        uid = "ordinary", palworldAdmin = false, palworldAdminReadable = true,
+    }, "start")
+    equal(user_authority, "any-user-policy")
+end)
+
+test("ped start shares any-user cooldown and configured-operator bypass", function()
+    local now = 24300
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "anyUser"
+    config.operatorUids = json.array({ "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" })
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local announcements = {}
+    local bridge = {
+        announce = function(_, message) announcements[#announcements + 1] = message; return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    local armed = 0
+    director.arm_start = function() armed = armed + 1; return true, "armed" end
+    local ordinary = { uid = "ordinary", palworldAdmin = false, palworldAdminReadable = true }
+    local operator = { uid = "aaaaaaaabbbbccccddddeeeeeeeeeeee", palworldAdmin = false, palworldAdminReadable = true }
+
+    truthy(director:handle_chat(ordinary, "!ped start native 10"))
+    equal(armed, 1)
+    equal(director.state.lastUserStartAt, now)
+    now = now + 10
+    truthy(director:handle_chat(ordinary, "!ped start native 10"))
+    equal(armed, 1, "ordinary !ped start bypassed cooldown")
+    truthy(announcements[#announcements]:match("cooldown"))
+    now = now + 10
+    truthy(director:handle_chat(operator, "!ped start native 10"))
+    equal(armed, 2, "configured operator did not bypass ordinary-user cooldown")
+end)
+
+test("cancel resolve abort reset and ped commands share fresh admin authorization", function()
+    local now = 24500
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "palworldAdminOnly"
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local announcements = {}
+    local bridge = {
+        announce = function(_, message) announcements[#announcements + 1] = message; return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    local calls = { cancel = 0, resolve = 0, abort = 0, reset = 0, status = 0 }
+    director.scheduler.cancel_manual = function() calls.cancel = calls.cancel + 1; return true, "cancelled" end
+    director.resolve = function() calls.resolve = calls.resolve + 1; return true, "resolved" end
+    director.abort = function() calls.abort = calls.abort + 1; return true, "aborted" end
+    director.reset = function() calls.reset = calls.reset + 1; return true, "reset" end
+    director.status_text = function() calls.status = calls.status + 1; return "status" end
+    local ordinary = { uid = "ordinary", palworldAdmin = false, palworldAdminReadable = true }
+    local admin = { uid = "admin", palworldAdmin = true, palworldAdminReadable = true }
+
+    for _, action in ipairs({ "cancel", "resolve", "abort", "reset" }) do
+        local ok, denial = director:handle_operator_command(action, "chat:ordinary", ordinary)
+        equal(ok, false)
+        truthy(denial:match("administrator required"))
+        equal(calls[action], 0, action .. " ran for an ordinary player")
+        truthy(director:handle_operator_command(action, "chat:admin", admin))
+        equal(calls[action], 1, action .. " did not run for an authenticated admin")
+    end
+    equal(director:handle_chat(ordinary, "!siege abort"), true)
+    equal(calls.abort, 1, "ordinary player reached !siege abort")
+    equal(director:handle_chat(admin, "!siege abort"), true)
+    equal(calls.abort, 2, "authenticated admin did not reach !siege abort")
+    now = now + 3
+    equal(director:handle_chat(ordinary, "!ped status"), true)
+    equal(calls.status, 0, "denied !ped command reached the dispatcher")
+    now = now + 5
+    equal(director:handle_chat(admin, "!ped status"), true)
+    equal(calls.status, 1)
+end)
+
+test("authenticated Palworld admin start arms exactly ten five one warnings", function()
+    local now = 25000
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "palworldAdminOnly"
+    config.capabilities.startAllInvasions = true
+    config.capabilities.observeCombat = true
+    config.capabilities.observeInvasions = true
+    config.capabilities.substituteBountyMembers = true
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local bridge = {
+        announcements = {}, starts = 0,
+        preflight_environment = function() return true end,
+        preflight_start = function() return true end,
+        begin_event_discovery = function() return { "base-a" }, {} end,
+        start_all_invasions = function(self) self.starts = self.starts + 1; return true end,
+        announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    local admin = { uid = "admin-player", palworldAdmin = true, palworldAdminReadable = true }
+    truthy(director:handle_chat(admin, "!siege start all-bounty 10"))
+    now = now + 300; director:tick()
+    now = now + 240; director:tick()
+    now = now + 60; director:tick()
+    local warning_count = 0
+    for _, message in ipairs(bridge.announcements) do
+        if message:match("begins in 10 minutes") or message:match("begins in 5 minutes") or message:match("begins in 1 minute") then
+            warning_count = warning_count + 1
+        end
+    end
+    equal(warning_count, 3)
+    equal(bridge.starts, 1)
 end)
 
 test("manual starts reject invalid countdowns and expose no warning bypass", function()

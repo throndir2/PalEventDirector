@@ -44,7 +44,7 @@
       "jackpot",
       "native"
     ],
-    "chatStartPolicy": "operatorOnly",
+    "chatStartPolicy": "operatorOrPalworldAdmin",
     "userStartCooldownSeconds": 3600,
     "manualCountdownMinutes": 10,
     "allowCrossBaseRoaming": true,

@@ -301,9 +301,9 @@ Health protection should reduce the per-base profile size before it excludes oth
 
 ### Chat activation
 
-Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. It arms a durable countdown rather than attacking immediately and always includes 10-, 5-, and 1-minute notices. The default `operatorOnly` policy resolves the sender's stable player UID against `operatorUids`; display names never authorize a start. An optional `anyUser` policy permits any player to arm one allowlisted profile, subject to a persistent global cooldown plus the ordinary active-event, recovery, compatibility, base-count, and native-concurrency guards.
+Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. It arms a durable countdown rather than attacking immediately and always includes 10-, 5-, and 1-minute notices. The default `operatorOrPalworldAdmin` policy accepts either a stable UID in `operatorUids` or the current server-side `APalPlayerController.bAdmin` result from Palworld's built-in administrator authentication. Display names, passwords, and client claims never authorize a start. Authority is read again for every command and never bypasses active-event, recovery, compatibility, base-count, native-concurrency, or persistence guards.
 
-The recommended live policy is operator-direct start and, later, a separately implemented player vote. `anyUser` is useful for a trusted private server but must retain a substantial cooldown. User text can select only fixed profile IDs and cannot supply character IDs, Unreal paths, levels, item IDs, or function names.
+The recommended live policy is configured-operator-or-native-admin start and, later, a separately implemented player vote. `anyUser` is useful only for a trusted private server because the unified policy also permits other privileged commands. User text can select only fixed profile IDs and cannot supply character IDs, Unreal paths, levels, item IDs, or function names.
 
 The flagship command is:
 

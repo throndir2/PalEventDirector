@@ -36,6 +36,18 @@ local function occurrence_key(schedule, intended_at)
     return schedule.id .. "@" .. tostring(intended_at)
 end
 
+local function values_equal(left, right)
+    if type(left) ~= type(right) then return false end
+    if type(left) ~= "table" then return left == right end
+    for key, value in pairs(left) do
+        if not values_equal(value, right[key]) then return false end
+    end
+    for key in pairs(right) do
+        if left[key] == nil then return false end
+    end
+    return true
+end
+
 function Scheduler.new(options, restored_state)
     options = options or {}
     local state = restored_state or {
@@ -335,8 +347,29 @@ function Scheduler:_process(schedule, occurrence, now)
     end
 end
 
+function Scheduler:_reconcile_recurring_occurrences()
+    local enabled = {}
+    for _, schedule in ipairs(self.schedules) do
+        if schedule.enabled then enabled[schedule.id] = schedule end
+    end
+    for _, occurrence in pairs(self.state.occurrences) do
+        local current = enabled[occurrence.scheduleId]
+        if occurrence.status == "planned" and not occurrence.manual
+            and (not current or not values_equal(occurrence.schedule, current)) then
+            self:_mark_terminal(
+                occurrence,
+                "cancelled",
+                current and "schedule_definition_changed" or "schedule_disabled_or_removed",
+                "schedule_occurrence_cancelled"
+            )
+        end
+    end
+    return enabled
+end
+
 function Scheduler:tick(now)
     now = now or self.clock()
+    local enabled = self:_reconcile_recurring_occurrences()
     for _, schedule in ipairs(self.schedules) do
         if schedule.enabled then
             local intended = self:next_occurrence(schedule, now)
@@ -346,7 +379,8 @@ function Scheduler:tick(now)
         end
     end
     for _, occurrence in pairs(self.state.occurrences) do
-        if occurrence.status == "planned" and occurrence.schedule then
+        if occurrence.status == "planned" and occurrence.schedule
+            and (occurrence.manual or values_equal(occurrence.schedule, enabled[occurrence.scheduleId])) then
             self:_process(occurrence.schedule, occurrence, now)
         end
     end
