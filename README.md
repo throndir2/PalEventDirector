@@ -1,5 +1,7 @@
 # Pal Event Director
 
+> **Native-crash quarantine — diagnostic-only revision.** IMOUTO's `575a9f52` build crashed inside native preflight. Normal starts (including `0`), recurring starts, chat/gameplay hooks, native-all comparison, and automatic polling are disabled. Do not follow the historical gameplay quick start below. Use [the crash-diagnostic runbook](docs/15-preflight-crash-diagnostics.md) for explicitly stepped, read-only console diagnostics. The large settings return is blocked pending exact layout verification.
+
 Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
 > **Project state:** runnable `0.1.0-alpha.3` laboratory build. It adds daily/weekly local-time schedules, durable 10/5/1-minute scheduled notices, 0–60-minute manual starts, online-guild-only base targeting, a global start/late-join roster, operator/chat controls, and audited bounty profiles. All gameplay observation, invasion starts, bounty substitution, chat hooks, schedules, and live item delivery are disabled by default until the disposable-world gates pass.
@@ -8,7 +10,7 @@ Pal Event Director is a server-only event platform for a Palworld dedicated serv
 
 > **Flagship focus:** Siege League—native mandatory invasions, player-plus-active-Pal contribution standings, participation rewards, and first/second/third podium rewards. The broader event catalog remains planned.
 
-## Alpha quick start
+## Historical alpha gameplay quick start (quarantined)
 
 Prerequisite: one Palworld-compatible `UE4SS` package managed by Pocketpair's official loader. Do not install a second runtime.
 
@@ -89,6 +91,7 @@ Read these in order:
 12. [Alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md) — implemented scope, fail-closed switches, installation, and staged live validation.
 13. [Alpha.3 administration and scheduling](docs/13-admin-and-scheduling.md) — all chat/console commands, profiles, schedules, warnings, eligibility, and configuration fields.
 14. [IMOUTO DEV deployment](docs/14-imouto-dev-deployment.md) — continuous stopped-server deployment from MIKO builds, dependency pins, rollback, and manual vanilla-client checks without touching MIKO Production.
+15. [Preflight crash diagnostics](docs/15-preflight-crash-diagnostics.md) — current diagnostic-only quarantine, pinned-source buffer audit, and one-operation console procedure.
 
 ## Feasibility language
 

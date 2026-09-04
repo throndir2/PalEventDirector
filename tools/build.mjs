@@ -7,6 +7,9 @@ import process from 'node:process';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(import.meta.dirname, '..');
+const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+const sourceDirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() !== '';
+if (process.env.REQUIRE_CLEAN_BUILD === '1' && sourceDirty) throw new Error('clean source is required before build');
 const info = JSON.parse(await readFile(path.join(root, 'Info.json'), 'utf8'));
 const outputDirectory = path.join(root, 'dist');
 const archiveName = `${info.PackageName}-${info.Version}.zip`;
@@ -37,11 +40,13 @@ const packageFiles = [
   'Scripts/ped/bounties.lua',
   'Scripts/ped/config.lua',
   'Scripts/ped/director.lua',
+  'Scripts/ped/diagnostic_ingress.lua',
   'Scripts/ped/filesystem.lua',
   'Scripts/ped/json.lua',
   'Scripts/ped/logger.lua',
   'Scripts/ped/palworld.lua',
   'Scripts/ped/path.lua',
+  'Scripts/ped/preflight_diagnostic.lua',
   'Scripts/ped/rewards.lua',
   'Scripts/ped/scheduler.lua',
   'Scripts/ped/scoreboard.lua',
@@ -55,7 +60,8 @@ await rm(stageDirectory, { recursive: true, force: true });
 for (let index = 0; index < files.length; index += 1) {
   const staged = path.join(stageDirectory, packageFiles[index]);
   await mkdir(path.dirname(staged), { recursive: true });
-  await writeFile(staged, await readFile(files[index]));
+  const input = sourceDirty ? await readFile(files[index]) : execFileSync('git', ['show', `${sourceRevision}:${packageFiles[index]}`], { cwd: root, maxBuffer: 4 * 1024 * 1024 });
+  await writeFile(staged, input);
 }
 
 const installedScriptsRoot = path.win32.join(values.ModTarget, 'Scripts');
@@ -97,10 +103,12 @@ try {
 } catch {
   // Build remains usable outside a Git checkout, but the manifest shows unknown provenance.
 }
+if (revision !== sourceRevision || dirty !== sourceDirty) throw new Error('source provenance changed during packaging');
 const manifest = {
   schemaVersion: 1,
   packageName: info.PackageName,
   version: info.Version,
+  deliveryProfile: 'preflight-diagnostic-only',
   sourceRevision: revision,
   sourceDirty: dirty,
   fileCount: files.length,

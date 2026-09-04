@@ -1,5 +1,7 @@
 # Alpha laboratory runbook
 
+> **Superseded for execution by the diagnostic-only quarantine.** Do not run the gameplay gates below on the crashing adapter. See [preflight crash diagnostics](15-preflight-crash-diagnostics.md). Activation now disables every capability; the runtime suppresses hooks and polling even if an older configuration enabled them.
+
 ## Scope
 
 Version `0.1.0-alpha.3` is a runnable, fail-closed UE4SS Lua laboratory build. It is not authorized for the production world. The purpose of this release is to prove current Palworld hook signatures, native invasion behavior, warnings/schedules, online-guild targeting, global roster enrollment, chat authorization, and bounty-member substitution without requiring client files.

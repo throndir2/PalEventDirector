@@ -1,16 +1,22 @@
 # Alpha.3 administration and scheduling
 
+> **Current revision is diagnostic-only after the IMOUTO native crash.** The gameplay commands described below are quarantined, not approved live test instructions. Only server-console `ped status`, `ped diagnose-preflight` preview, and `ped diagnose-preflight confirm-disposable-readonly <expected-step>` are available, plus the fixed local PowerShell ingress. The diagnostic executes one read-only operation per explicit step-bound confirmation and never dispatches an invasion. See [the crash-diagnostic procedure and ABI evidence](15-preflight-crash-diagnostics.md).
+
 ## Scope and safety
 
 Alpha.3 is a laboratory-only release. Its mutation preflight rejects any mode other than `laboratory`, and every capability is disabled in the generated configuration. It never requires a client mod: players connect with normal vanilla clients and use ordinary Palworld chat and server notices.
 
-On IMOUTO, no manual JSON editing is required for the validated gameplay path. While the dedicated server is stopped, run `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` and explicitly confirm it. The command backs up schema-3 configuration, selects `operatorOrPalworldAdmin`, pins build `24575149` and UE4SS API `3.0.1`, enables chat/combat/invasion/start/substitution, disables all schedules, preserves 10/5/1 warnings, leaves `grantItems=false`, and reports that restart is required.
+On IMOUTO, the installed laboratory activation command now prepares **diagnostics only**. While the dedicated server is stopped, it backs up schema-3 configuration, pins build `24575149` and UE4SS API `3.0.1`, disables every gameplay capability and schedule, and preserves recovery evidence. The installed local preflight helper provides preview, explicit one-step submission, and result retrieval without player chat or debug consoles. See [the current procedure](15-preflight-crash-diagnostics.md).
 
 The persistent configuration is `Pal/Saved/PalEventDirector/config.json` below the dedicated-server root, or the directory selected by `PAL_EVENT_DIRECTOR_DATA_DIR`. It is strict JSON, not JSONC. Stop the laboratory server before editing it and restart after every edit; configuration is loaded only at mod startup.
 
 Schema 3 intentionally has no migration from earlier alpha configurations or state. Archive the complete `Pal/Saved/PalEventDirector` directory before an upgrade, start once to generate a safe schema-3 configuration, stop, and reapply reviewed values. Never copy the Production event-state directory into DEV.
 
-## Event boundary
+## Archived gameplay contract — unavailable while quarantined
+
+Everything from Event boundary through the configuration reference below describes the pre-crash design and simulation contract. It is not a live operation checklist. The executable current workflow is exclusively [preflight diagnostics](15-preflight-crash-diagnostics.md).
+
+### Event boundary
 
 A start is mandatory for the eligible target set; it is not a consent vote. At the start boundary the adapter:
 
@@ -150,7 +156,9 @@ Unknown commands print the bounded help form. Chat has a two-second per-UID comm
 
 ## Server-console commands
 
-The UE4SS global console prefix is `ped`:
+Currently permitted: `ped status`, `ped diagnose-preflight`, and `ped diagnose-preflight confirm-disposable-readonly <expected-step>`, or the installed local preflight helper. **All other commands in this archived reference are rejected before reflection**, including starts, reset, and native-all comparison.
+
+Historical UE4SS command contract (not enabled):
 
 | Command | Result |
 |---|---|

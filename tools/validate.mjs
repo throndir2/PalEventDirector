@@ -1,5 +1,6 @@
-import { execFileSync } from 'node:child_process';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { readFile, readdir, stat, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 
@@ -25,6 +26,8 @@ const required = [
   'Scripts/ped/logger.lua',
   'Scripts/ped/palworld.lua',
   'Scripts/ped/path.lua',
+  'Scripts/ped/preflight_diagnostic.lua',
+  'Scripts/ped/diagnostic_ingress.lua',
   'Scripts/ped/rewards.lua',
   'Scripts/ped/scheduler.lua',
   'Scripts/ped/scoreboard.lua',
@@ -40,6 +43,15 @@ const required = [
   'tests/path_contract.lua',
   'tests/imouto-launcher.ps1',
   'tests/imouto-activation.ps1',
+  'tests/imouto-preflight-command.ps1',
+  'tests/imouto-runtime-replacement.ps1',
+  'operations/imouto/Invoke-PalEventDirectorPreflight.ps1',
+  'tools/verify-artifact.mjs',
+  'tests/artifact-provenance.mjs',
+  'tests/preflight-diagnostic.lua',
+  'tests/preflight-failfast.lua',
+  'tests/preflight-failfast.mjs',
+  'docs/15-preflight-crash-diagnostics.md',
   'tools/build-imouto-bundle.mjs',
   'tools/build-imouto-world-seed.mjs',
 ];
@@ -94,14 +106,10 @@ const versionLua = await readFile(path.join(root, 'Scripts/ped/version.lua'), 'u
 if (info && !versionLua.includes(`version = "${info.Version}"`)) failures.push('Lua runtime and Info.json versions differ');
 const palworldAdapter = await readFile(path.join(root, 'Scripts/ped/palworld.lua'), 'utf8');
 for (const requiredGuard of [
-  'GetInvaderManager',
-  'GetAddress',
-  'probe lifecycle is not confirmed',
-  'StartInvaderMarchAll',
-  'confirm-disposable-start-all',
-  'COMPUTERNAME',
-  'SendSystemAnnounce',
-  'SendSystemToPlayerChat',
+  'function Bridge:native_start_guard()',
+  'Native starts are quarantined',
+  'function Bridge:diagnose_preflight',
+  'if not native_enabled then',
   'function(context, return_value, grade, biome, out_members)',
 ]) {
   if (!palworldAdapter.includes(requiredGuard)) failures.push(`Palworld adapter is missing required guard: ${requiredGuard}`);
@@ -115,12 +123,26 @@ for (const requiredGuard of [
 ]) {
   if (!directorSource.includes(requiredGuard)) failures.push(`Director is missing required lifecycle guard: ${requiredGuard}`);
 }
+const diagnosticSource = await readFile(path.join(root, 'Scripts/ped/preflight_diagnostic.lua'), 'utf8');
+for (const requiredGuard of [
+  'confirm-disposable-readonly',
+  'self.getenv("COMPUTERNAME") ~= "IMOUTO"',
+  'CALL_BUFFER_BYTES = 0x200',
+  'self:_record("before"',
+  'self:_record("after"',
+  'GetOptionWorldSettings is blocked',
+]) {
+  if (!diagnosticSource.includes(requiredGuard)) failures.push(`Preflight diagnostic is missing required guard: ${requiredGuard}`);
+}
+if (/:\s*(?:StartInvader\w*|GetOptionWorldSettings|_dispatch_snapshot|list_online_players)\s*\(/.test(diagnosticSource)) {
+  failures.push('Preflight diagnostic may not dispatch, materialize large world settings, or batch legacy preflight helpers');
+}
 
 const sourceFiles = (await walk(root)).filter((file) => !file.includes(`${path.sep}.git${path.sep}`) && !file.includes(`${path.sep}node_modules${path.sep}`) && !file.includes(`${path.sep}dist${path.sep}`));
 if (sourceFiles.some((file) => path.relative(root, file).replaceAll('\\', '/').startsWith('operations/dev/'))) {
   failures.push('obsolete same-box operations/dev files are forbidden; IMOUTO is the only laboratory deployment target');
 }
-const forbiddenExtensions = new Set(['.uasset', '.uexp', '.ubulk', '.pak', '.dll', '.exe']);
+const forbiddenExtensions = new Set(['.uasset', '.uexp', '.ubulk', '.pak', '.dll', '.exe', '.dmp', '.mdmp']);
 const secretPattern = /(adminpassword\s*[=:]|api[_ -]?key\s*[=:]|client[_ -]?secret\s*[=:]|bearer\s+[a-z0-9._-]{16,})/i;
 const protectedMikoPathPattern = /(?:c:\\palserverdev|d:\\scripts\\|startpalworldserver\.(?:cmd|ps1))/i;
 for (const file of sourceFiles) {
@@ -160,7 +182,9 @@ if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
     "version -ne '0.1.0-alpha.3'",
     'function Read-Ue4ssModEntries',
     '$ExistingEntries = @(Read-Ue4ssModEntries -Path $ModsJson)',
-    '$Entries = @(Read-Ue4ssModEntries -Path $ModsJson)',
+    '$ExpectedInstalledRuntime = Get-InstallationInventory',
+    'Assert-InstallationInventory -Root $Ue4ssRoot -Expected $ExpectedInstalledRuntime',
+    'Remove-InstallationTarget -Path $Ue4ssRoot',
     "LauncherSource = Join-Path $PSScriptRoot 'Start-PalEventDirectorImouto.ps1'",
     'launchIntegrationConfigured = $true',
     "launchEnvironmentSource = 'verified-steam-manifest'",
@@ -183,6 +207,10 @@ if (await exists('operations/imouto/Start-PalEventDirectorImouto.ps1')) {
     "EnvironmentScope = 'child-process-only'",
     '$ValidateOnly',
     '$deployment.rootServerExecutableSha256',
+    '$env:PAL_EVENT_DIRECTOR_UE4SS_TAG = $ExpectedRuntimeTag',
+    '$env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = $ExpectedRuntimeApi',
+    'Get-FileHash $RuntimeDll -Algorithm SHA256',
+    "deliveryProfile -ne 'preflight-diagnostic-only'",
     "$deployment.version -ne '0.1.0-alpha.3'",
     "$deployment.ue4ssTag -ne '2281fa31'",
   ]) {
@@ -197,9 +225,12 @@ if (await exists('operations/imouto/Enable-PalEventDirectorLaboratory.ps1')) {
     "ExpectedUe4ssApiVersion = '3.0.1'",
     "ExpectedBuildId = '24575149'",
     "AuthorizationPolicy = 'operatorOrPalworldAdmin'",
-    '$config.capabilities.chatCommands = $true',
-    '$config.capabilities.startAllInvasions = $true',
-    '$config.capabilities.substituteBountyMembers = $true',
+    '$config.capabilities.chatCommands = $false',
+    '$config.capabilities.observeCombat = $false',
+    '$config.capabilities.observeInvasions = $false',
+    '$config.capabilities.startAllInvasions = $false',
+    '$config.capabilities.substituteBountyMembers = $false',
+    "Status = 'PreflightDiagnosticsOnly'",
     '$config.capabilities.grantItems = $false',
     '$schedule.enabled = $false',
     "MandatoryWarnings = '600,300,60'",
@@ -292,6 +323,24 @@ if (process.platform === 'win32') {
   } catch (error) {
     failures.push(`IMOUTO activation contract failed: ${error.stderr?.toString().trim() || error.message}`);
   }
+  try {
+    process.stdout.write(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(root, 'tests', 'imouto-preflight-command.ps1')], { cwd: root, env: windowsPowerShellEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (error) {
+    failures.push(`Local preflight command contract failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
+  try {
+    process.stdout.write(execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(root, 'tests', 'imouto-runtime-replacement.ps1')], { cwd: root, env: windowsPowerShellEnvironment, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (error) {
+    failures.push(`Runtime replacement safety contract failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
+}
+
+try {
+  process.stdout.write(execFileSync(process.execPath, ['tests/artifact-provenance.mjs'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+} catch (error) {
+  failures.push(`Artifact Git-content verification failed: ${error.stderr?.toString().trim() || error.message}`);
 }
 
 const luaRunner = path.join(root, 'node_modules', 'fengari-node-cli', 'src', 'lua-cli.js');
@@ -303,6 +352,25 @@ if (!await exists(path.relative(root, luaRunner))) {
     execFileSync(process.execPath, [luaRunner, 'tests/compile.lua', ...luaFiles], { cwd: root, stdio: 'pipe' });
   } catch (error) {
     failures.push(`Lua syntax validation failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
+  const fixture = await mkdtemp(path.join(tmpdir(), 'ped-preflight-failfast-'));
+  try {
+    const breadcrumbPath = path.join(fixture, 'breadcrumbs.ndjson');
+    const child = spawnSync(process.execPath, ['tests/preflight-failfast.mjs', breadcrumbPath], { cwd: root, encoding: 'utf8' });
+    if (child.status !== 86 || child.error) {
+      throw new Error(`simulated fail-fast did not exit at its requested boundary (exit ${child.status}): ${child.stderr || child.stdout || child.error?.message || 'no child output'}`);
+    }
+    const lines = (await readFile(breadcrumbPath, 'utf8')).trim().split(/\r?\n/);
+    const record = JSON.parse(lines[0]);
+    if (lines.length !== 1 || !record.step.endsWith('.before') || record.buildId !== '24575149' ||
+        typeof record.objectValid !== 'boolean' || Object.keys(record).sort().join(',') !== 'buildId,objectValid,step') {
+      throw new Error('fail-fast breadcrumb was absent, unredacted, or incorrectly contained an after-marker');
+    }
+    console.log('PASS flushed preflight before-marker survives abrupt simulated process exit; no native game calls executed');
+  } catch (error) {
+    failures.push(`Preflight fail-fast log contract failed: ${error.message}`);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
   }
 }
 

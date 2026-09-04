@@ -1,5 +1,7 @@
 local util = require("ped.util")
 local bounties = require("ped.bounties")
+local PreflightDiagnostic = require("ped.preflight_diagnostic")
+local DiagnosticIngress = require("ped.diagnostic_ingress")
 
 local Bridge = {}
 Bridge.__index = Bridge
@@ -236,6 +238,7 @@ function Bridge.new(options)
         utility = nil,
         loop_handle = nil,
         registered = false,
+        diagnostic_command_directory = options.diagnostic_command_directory,
     }, Bridge)
 end
 
@@ -243,7 +246,29 @@ function Bridge:attach_director(director)
     self.director = director
 end
 
+function Bridge:native_start_guard()
+    -- Deliberately not a configuration switch. A new reviewed revision must lift this.
+    return false, "Native starts are quarantined after the IMOUTO preflight crash; use console diagnose-preflight only."
+end
+
+function Bridge:diagnose_preflight(confirmation, expected_step)
+    if not self.registered or (self.diagnostic_ingress and (self.diagnostic_ingress.blocked or not self.diagnostic_ingress.active)) then
+        return false, "Diagnostic startup is blocked or incomplete; preserve evidence before a new session."
+    end
+    if not self.preflight_diagnostic then
+        self.preflight_diagnostic = PreflightDiagnostic.new({
+            config = self.config,
+            record = function(step, build_id, object_valid)
+                return self.logger:preflight_breadcrumb(step, build_id, object_valid)
+            end,
+        })
+    end
+    return self.preflight_diagnostic:run(confirmation, expected_step)
+end
+
 function Bridge:begin_event_discovery(profile_id, occurrence_id)
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return nil, nil, reason end
     self.event_open = true
     self.discovery_open = true
     self.selection_open = false
@@ -1125,11 +1150,12 @@ function Bridge:register()
         return true
     end
     local required = {}
-    if self.config.capabilities.observeCombat then
+    local native_enabled = self:native_start_guard()
+    if native_enabled and self.config.capabilities.observeCombat then
         required[#required + 1] = { "damage", HOOKS.damage, function(_, parameter) self:_on_damage(parameter) end }
         required[#required + 1] = { "death", HOOKS.death, function(_, parameter) self:_on_death(parameter) end }
     end
-    if self.config.capabilities.observeInvasions then
+    if native_enabled and self.config.capabilities.observeInvasions then
         required[#required + 1] = { "invasion_declaration", HOOKS.invasion_declaration, function(context)
             local scope = self:_manager_hook_scope(context)
             if scope then
@@ -1202,12 +1228,12 @@ function Bridge:register()
             if self:_manager_hook_scope(context) == "event" and self.director then self.director:on_invasion_cancel() end
         end }
     end
-    if self.config.capabilities.substituteBountyMembers then
+    if native_enabled and self.config.capabilities.substituteBountyMembers then
         required[#required + 1] = { "select_invaders", HOOKS.select_invaders, function(context, return_value, grade, biome, out_members)
             self:_on_select_invaders_post(context, return_value, grade, biome, out_members)
         end }
     end
-    if self.config.capabilities.chatCommands then
+    if native_enabled and self.config.capabilities.chatCommands then
         required[#required + 1] = { "chat", HOOKS.chat, function(context, message)
             if not self.director then return end
             local controller = unwrap(context)
@@ -1229,8 +1255,35 @@ function Bridge:register()
     end
 
     local register_console = global("RegisterConsoleCommandGlobalHandler")
+    if not native_enabled and type(register_console) ~= "function" then
+        return false, "Diagnostic-only build requires a server console command handler"
+    end
+    if not native_enabled and self.diagnostic_command_directory then
+        local loop_async, execute_game_thread = global("LoopAsync"), global("ExecuteInGameThread")
+        if type(loop_async) ~= "function" or type(execute_game_thread) ~= "function" then
+            return false, "Local diagnostic ingress requires LoopAsync and ExecuteInGameThread"
+        end
+        self.diagnostic_ingress = DiagnosticIngress.new({
+            directory = self.diagnostic_command_directory,
+            execute = function(token, step) return self:diagnose_preflight(token, step) end,
+            enqueue = execute_game_thread,
+        })
+        if self.diagnostic_ingress.blocked then
+            return false, "A prior diagnostic request is pending/in-flight; preserve and archive the command directory while stopped before a new run"
+        end
+        local ingress = self.diagnostic_ingress
+        local loop_ok = pcall(loop_async, 1000, function()
+            if not ingress.active then return true end
+            if not self.registered then return false end
+            local polled = pcall(function() ingress:poll() end)
+            if not polled then ingress.blocked = true end
+            return false
+        end)
+        if not loop_ok then ingress.active = false; return false, "Local diagnostic ingress initialization failed" end
+    end
     if type(register_console) == "function" then
-        pcall(register_console, "ped", function(command, parts)
+        local console_ok = pcall(register_console, "ped", function(command, parts, output)
+            if not self.registered then return true end
             local arguments = {}
             if type(parts) == "table" then
                 for index = 1, #parts do
@@ -1241,9 +1294,20 @@ function Bridge:register()
                 arguments[1] = text:match("^%S+%s+(.+)$") or "status"
             end
             local ok, result = self.director:handle_operator_command(table.concat(arguments, " "), "console")
+            if output then pcall(function() output:Log(tostring(result or "ok")) end) end
             self.logger:info(ok and "Console command completed" or "Console command failed", { result = result })
             return true
         end)
+        if not console_ok and not native_enabled then
+            if self.diagnostic_ingress then self.diagnostic_ingress.active = false end
+            return false, "Preflight diagnostic console registration failed"
+        end
+    end
+
+    if not native_enabled then
+        self.registered = true
+        self.logger:warn("Diagnostic-only build: no gameplay hooks or automatic native steps; local file ingress accepts one explicit operator request at a time")
+        return true
     end
 
     local poll = function()
@@ -1281,6 +1345,7 @@ function Bridge:register()
 end
 
 function Bridge:unregister()
+    if self.diagnostic_ingress then self.diagnostic_ingress.active = false end
     local unregister = global("UnregisterHook")
     if type(unregister) == "function" then
         for _, registration in pairs(self.hook_ids) do
@@ -1354,6 +1419,8 @@ function Bridge:preflight_environment()
 end
 
 function Bridge:preflight_start(profile_id)
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return false, reason end
     self.pending_expected_bases = {}
     self.pending_native_base_ids = {}
     self.pending_base_guilds = {}
@@ -1548,6 +1615,8 @@ function Bridge:_log_dispatch_snapshot(diagnostic)
 end
 
 function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return { baseId = base_id, status = "dispatch_quarantined", error = reason } end
     local manager = self.event_manager
     if not valid(manager) then
         return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = "pinned world invasion manager is unavailable" }
@@ -1607,6 +1676,8 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
 end
 
 function Bridge:start_all_invasions()
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return false, reason end
     if not valid(self.event_manager) then
         return false, "pinned world invasion manager became unavailable before dispatch"
     end
@@ -1632,6 +1703,8 @@ function Bridge:start_all_invasions()
 end
 
 function Bridge:continue_invasion_dispatch()
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return false, reason end
     if not self.probe_confirmed then return false, "probe lifecycle is not confirmed" end
     if self.fanout_dispatched then return true, { requested = 0, requests = {}, phase = "already_dispatched" } end
     self.fanout_dispatched = true
@@ -1651,6 +1724,8 @@ function Bridge:continue_invasion_dispatch()
 end
 
 function Bridge:diagnose_native_start_all(confirmation)
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return false, reason end
     self.native_all_diagnostic_until = 0
     self.native_all_diagnostic_manager = nil
     self.native_all_diagnostic_world = nil

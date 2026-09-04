@@ -79,6 +79,8 @@ Until that matrix is complete, documentation and player messaging may say “nat
 
 ## Native invasion controls
 
+> **Execution quarantined after the IMOUTO preflight stack-cookie crash.** The controls below describe the design, not permission to retest the crashing build. Use [the diagnostic-only procedure](15-preflight-crash-diagnostics.md); native-all fallback and normal starts are disabled.
+
 ### Scope
 
 `UPalInvaderManager` exposes:

@@ -33,6 +33,7 @@ $RuntimeFiles = [ordered]@{
 $InstallerSource = $MyInvocation.MyCommand.Path
 $LauncherSource = Join-Path $PSScriptRoot 'Start-PalEventDirectorImouto.ps1'
 $ActivationSource = Join-Path $PSScriptRoot 'Enable-PalEventDirectorLaboratory.ps1'
+$PreflightSource = Join-Path $PSScriptRoot 'Invoke-PalEventDirectorPreflight.ps1'
 $BundleManifestPath = Join-Path $PSScriptRoot 'bundle.json'
 
 function Get-ProcessesUnderRoot {
@@ -136,6 +137,36 @@ function Set-Ue4ssSafetySettings {
     [IO.File]::WriteAllText($Path, $text, [Text.UTF8Encoding]::new($false))
 }
 
+function Remove-InstallationTarget {
+    param([Parameter(Mandatory)][string]$Path)
+    if (Test-Path -LiteralPath $Path) {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+    }
+    if (Test-Path -LiteralPath $Path) { throw 'Existing installation target could not be removed completely.' }
+}
+
+function Get-InstallationInventory {
+    param([Parameter(Mandatory)][string]$Root)
+    Assert-NoReparseTree -Path $Root
+    $inventory = @{}
+    foreach ($file in @(Get-ChildItem -LiteralPath $Root -File -Recurse -Force -ErrorAction Stop)) {
+        $relative = $file.FullName.Substring($Root.Length + 1).Replace('\', '/')
+        $inventory[$relative] = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+    }
+    return $inventory
+}
+
+function Assert-InstallationInventory {
+    param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][hashtable]$Expected)
+    $actual = Get-InstallationInventory -Root $Root
+    if ($actual.Count -ne $Expected.Count) { throw 'Installed runtime inventory differs from the immutable staged runtime.' }
+    foreach ($name in $Expected.Keys) {
+        if (-not $actual.ContainsKey($name) -or $actual[$name] -ine $Expected[$name]) {
+            throw 'Installed runtime bytes differ from the immutable staged runtime.'
+        }
+    }
+}
+
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot).TrimEnd('\')
 $SyntheticRoot = [IO.Path]::GetFullPath('C:\PED-Imouto-Installer-Test').TrimEnd('\')
 if ($SyntheticTestFixture -and -not $ServerRoot.StartsWith($SyntheticRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
@@ -169,6 +200,7 @@ $DeployRoot = Join-Path $ServerRoot 'PalEventDirectorDeployments'
 $DeployRecord = Join-Path $DeployRoot 'deployment.json'
 $LauncherTarget = Join-Path $DeployRoot 'Start-PalEventDirectorImouto.ps1'
 $ActivationTarget = Join-Path $DeployRoot 'Enable-PalEventDirectorLaboratory.ps1'
+$PreflightTarget = Join-Path $DeployRoot 'Invoke-PalEventDirectorPreflight.ps1'
 
 if ($ServerRoot -ieq $ClientRoot -or $ServerRoot.StartsWith($ClientRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Refusing to install into the Palworld client.'
@@ -227,18 +259,27 @@ if ([string]$BuildManifest.packageName -ne 'PalEventDirector' -or
 if ([string]$BuildManifest.version -ne '0.1.0-alpha.3') {
     throw 'This installer requires the alpha.3 package; stale alpha artifacts are rejected.'
 }
+if ([string]$BuildManifest.deliveryProfile -ne 'preflight-diagnostic-only') {
+    throw 'This installer requires the quarantined preflight diagnostic build.'
+}
+if ([string]$BuildManifest.sourceRevision -eq '575a9f521977069dcfcb244994f6c017044e9604') {
+    throw 'This source revision is revoked after a confirmed IMOUTO native preflight crash.'
+}
 if ($ExpectedSourceRevision) {
     if ($ExpectedSourceRevision -notmatch '^[a-fA-F0-9]{40}$' -or [string]$BuildManifest.sourceRevision -ine $ExpectedSourceRevision) {
         throw 'The clean-build source revision does not match ExpectedSourceRevision.'
     }
 }
-foreach ($required in @($InstallerSource, $LauncherSource, $ActivationSource, $BundleManifestPath)) {
+foreach ($required in @($InstallerSource, $LauncherSource, $ActivationSource, $PreflightSource, $BundleManifestPath)) {
     if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "The deployment bundle is incomplete: $required"
     }
 }
 $BundleManifest = Get-Content -LiteralPath $BundleManifestPath -Raw | ConvertFrom-Json
 if ($BundleManifest.schemaVersion -ne 1 -or [string]$BundleManifest.packageName -ne 'PalEventDirector' -or
+    [string]$BundleManifest.deliveryProfile -ne 'preflight-diagnostic-only' -or
+    [string]$BundleManifest.preflightCommand -ne (Split-Path $PreflightSource -Leaf) -or
+    [string]$BundleManifest.preflightCommandSha256 -ine (Get-FileHash $PreflightSource -Algorithm SHA256).Hash -or
     [string]$BundleManifest.version -ne [string]$BuildManifest.version -or
     [string]$BundleManifest.sourceRevision -ne [string]$BuildManifest.sourceRevision -or
     [string]$BundleManifest.artifact -ne (Split-Path $ArtifactPath -Leaf) -or
@@ -275,7 +316,12 @@ if ($RuntimeMatches) {
     }
 }
 
-if (-not $PSCmdlet.ShouldProcess($ServerRoot, "deploy PalEventDirector $($BuildManifest.version) and pinned UE4SS $RuntimeTag")) { return }
+if ($RuntimeExists -and -not $ReplaceExistingUe4ss) {
+    throw 'Diagnostic reproducibility requires a fresh pinned runtime. Review the backup/replacement and pass -ReplaceExistingUe4ss.'
+}
+# Never bless unknown existing settings, signature scripts, shared Lua, or DLLs.
+$RuntimeMatches = $false
+if (-not $PSCmdlet.ShouldProcess($ServerRoot, "back up and deploy PalEventDirector $($BuildManifest.version) with a FRESH pinned UE4SS $RuntimeTag runtime")) { return }
 
 $Mutex = [Threading.Mutex]::new($false, 'Global\PalEventDirectorImoutoLifecycle')
 $HasMutex = $false
@@ -285,6 +331,7 @@ $LocalBuildManifest = Join-Path $Stage 'manifest.json'
 $LocalBundleManifest = Join-Path $Stage 'bundle.json'
 $LocalLauncher = Join-Path $Stage 'Start-PalEventDirectorImouto.ps1'
 $LocalActivation = Join-Path $Stage 'Enable-PalEventDirectorLaboratory.ps1'
+$LocalPreflight = Join-Path $Stage 'Invoke-PalEventDirectorPreflight.ps1'
 $ArtifactStage = Join-Path $Stage 'artifact'
 $RuntimeStage = Join-Path $Stage 'runtime'
 $Backup = Join-Path $ServerRoot ('PalEventDirectorInstallerBackups\' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N'))
@@ -293,8 +340,10 @@ $HadProxy = $false
 $HadDeployRecord = $false
 $HadLauncher = $false
 $HadActivation = $false
+$HadPreflight = $false
 $LauncherIncoming = "$LauncherTarget.incoming"
 $ActivationIncoming = "$ActivationTarget.incoming"
+$PreflightIncoming = "$PreflightTarget.incoming"
 $MutationStarted = $false
 
 try {
@@ -306,18 +355,21 @@ try {
     $HadDeployRecord = Test-Path -LiteralPath $DeployRecord
     $HadLauncher = Test-Path -LiteralPath $LauncherTarget
     $HadActivation = Test-Path -LiteralPath $ActivationTarget
+    $HadPreflight = Test-Path -LiteralPath $PreflightTarget
     New-Item -ItemType Directory -Path $Stage -ErrorAction Stop | Out-Null
     Copy-Item -LiteralPath $ArtifactPath -Destination $LocalArtifact -ErrorAction Stop
     Copy-Item -LiteralPath $BuildManifestPath -Destination $LocalBuildManifest -ErrorAction Stop
     Copy-Item -LiteralPath $BundleManifestPath -Destination $LocalBundleManifest -ErrorAction Stop
     Copy-Item -LiteralPath $LauncherSource -Destination $LocalLauncher -ErrorAction Stop
     Copy-Item -LiteralPath $ActivationSource -Destination $LocalActivation -ErrorAction Stop
+    Copy-Item -LiteralPath $PreflightSource -Destination $LocalPreflight -ErrorAction Stop
     $LocalManifest = Get-Content -LiteralPath $LocalBuildManifest -Raw | ConvertFrom-Json
     if ((Get-FileHash -LiteralPath $LocalArtifact -Algorithm SHA256).Hash -ine $ArtifactHash -or
         [string]$LocalManifest.sha256 -ine $ArtifactHash -or [string]$LocalManifest.sourceRevision -ine [string]$BuildManifest.sourceRevision -or
         (Get-FileHash $LocalBundleManifest -Algorithm SHA256).Hash -ine (Get-FileHash $BundleManifestPath -Algorithm SHA256).Hash -or
         (Get-FileHash $LocalLauncher -Algorithm SHA256).Hash -ine [string]$BundleManifest.launcherSha256 -or
-        (Get-FileHash $LocalActivation -Algorithm SHA256).Hash -ine [string]$BundleManifest.activationSha256) {
+        (Get-FileHash $LocalActivation -Algorithm SHA256).Hash -ine [string]$BundleManifest.activationSha256 -or
+        (Get-FileHash $LocalPreflight -Algorithm SHA256).Hash -ine [string]$BundleManifest.preflightCommandSha256) {
         throw 'The local immutable artifact snapshot differs from the validated MIKO source.'
     }
     New-Item -ItemType Directory -Path $ArtifactStage -Force | Out-Null
@@ -356,48 +408,52 @@ try {
                 throw "Staged UE4SS file failed verification: $($entry.Key)"
             }
         }
+        # Only PED and the pinned shared libraries belong in the crash-isolation stack.
+        Get-ChildItem -LiteralPath (Join-Path $RuntimeStage 'ue4ss\Mods') -Directory | Where-Object { $_.Name -ne 'shared' } | ForEach-Object {
+            Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction Stop
+        }
     }
+
+    # Finish all reviewed transformations BEFORE computing the intended installation.
+    $StagedUe4ssRoot = Join-Path $RuntimeStage 'ue4ss'
+    $StagedModsRoot = Join-Path $StagedUe4ssRoot 'Mods'
+    $StagedModTarget = Join-Path $StagedModsRoot 'PalEventDirector'
+    if (Test-Path -LiteralPath $StagedModTarget) { throw 'Pinned runtime unexpectedly contains a PED package.' }
+    Move-Item -LiteralPath $ArtifactStage -Destination $StagedModTarget -ErrorAction Stop
+    Set-Ue4ssSafetySettings (Join-Path $StagedUe4ssRoot 'UE4SS-settings.ini')
+    $Entries = @(Read-Ue4ssModEntries -Path (Join-Path $StagedModsRoot 'mods.json'))
+    foreach ($entry in $Entries) { $entry.mod_enabled = $false }
+    $PedEntries = @($Entries | Where-Object { $_.mod_name -eq 'PalEventDirector' })
+    if ($PedEntries.Count -gt 1) { throw 'Duplicate PalEventDirector entries exist in pinned mods.json.' }
+    if ($PedEntries.Count -eq 0) { $Entries += [pscustomobject]@{ mod_name = 'PalEventDirector'; mod_enabled = $true } }
+    else { $PedEntries[0].mod_enabled = $true }
+    $Enabled = @($Entries | Where-Object { $_.mod_enabled })
+    if ($Enabled.Count -ne 1 -or $Enabled[0].mod_name -ne 'PalEventDirector') { throw 'Final UE4SS state must enable exactly PalEventDirector.' }
+    $Utf8 = [Text.UTF8Encoding]::new($false)
+    [IO.File]::WriteAllText((Join-Path $StagedModsRoot 'mods.json'), ((ConvertTo-Json -InputObject $Entries -Depth 5) + [Environment]::NewLine), $Utf8)
+    $ModsText = (($Entries | ForEach-Object { '{0} : {1}' -f $_.mod_name, $(if ($_.mod_enabled) { 1 } else { 0 }) }) -join [Environment]::NewLine) + [Environment]::NewLine
+    [IO.File]::WriteAllText((Join-Path $StagedModsRoot 'mods.txt'), $ModsText, $Utf8)
+    $ExpectedInstalledRuntime = Get-InstallationInventory -Root $StagedUe4ssRoot
 
     New-Item -ItemType Directory -Path $Backup -ErrorAction Stop | Out-Null
     $BackupMetadata = [ordered]@{ schemaVersion = 1; hadUe4ss = $HadUe4ss; hadProxy = $HadProxy; hadDeploymentRecord = $HadDeployRecord; hadLauncher = $HadLauncher; hadActivation = $HadActivation }
+    $BackupMetadata.hadPreflight = $HadPreflight
     [IO.File]::WriteAllText((Join-Path $Backup 'backup.json'), (($BackupMetadata | ConvertTo-Json) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
     if ($HadUe4ss) { Copy-Item -LiteralPath $Ue4ssRoot -Destination (Join-Path $Backup 'ue4ss') -Recurse -Force }
     if ($HadProxy) { Copy-Item -LiteralPath (Join-Path $Win64Root 'dwmapi.dll') -Destination (Join-Path $Backup 'dwmapi.dll') -Force }
     if ($HadDeployRecord) { Copy-Item -LiteralPath $DeployRecord -Destination (Join-Path $Backup 'deployment.json') -Force }
     if ($HadLauncher) { Copy-Item -LiteralPath $LauncherTarget -Destination (Join-Path $Backup 'Start-PalEventDirectorImouto.ps1') -Force }
     if ($HadActivation) { Copy-Item -LiteralPath $ActivationTarget -Destination (Join-Path $Backup 'Enable-PalEventDirectorLaboratory.ps1') -Force }
+    if ($HadPreflight) { Copy-Item -LiteralPath $PreflightTarget -Destination (Join-Path $Backup 'Invoke-PalEventDirectorPreflight.ps1') -Force }
 
     $MutationStarted = $true
     Assert-ServerStopped -Root $ServerRoot
-    if (-not $RuntimeMatches) {
-        Remove-Item -LiteralPath $Ue4ssRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -LiteralPath (Join-Path $Win64Root 'dwmapi.dll') -Force -ErrorAction SilentlyContinue
-        Move-Item -LiteralPath (Join-Path $RuntimeStage 'ue4ss') -Destination $Ue4ssRoot
-        Move-Item -LiteralPath (Join-Path $RuntimeStage 'dwmapi.dll') -Destination (Join-Path $Win64Root 'dwmapi.dll')
-    }
-
-    New-Item -ItemType Directory -Path $ModsRoot -Force | Out-Null
-    Remove-Item -LiteralPath $ModTarget -Recurse -Force -ErrorAction SilentlyContinue
-    Move-Item -LiteralPath $ArtifactStage -Destination $ModTarget
-    Set-Ue4ssSafetySettings (Join-Path $Ue4ssRoot 'UE4SS-settings.ini')
-
-    $ModsJson = Join-Path $ModsRoot 'mods.json'
-    $Entries = @(Read-Ue4ssModEntries -Path $ModsJson)
-    foreach ($entry in $Entries) {
-        if (-not $RuntimeMatches -or $DisableOtherUe4ssMods -or $entry.mod_name -eq 'PalEventDirector') { $entry.mod_enabled = $false }
-    }
-    $PedEntries = @($Entries | Where-Object { $_.mod_name -eq 'PalEventDirector' })
-    if ($PedEntries.Count -gt 1) { throw 'Duplicate PalEventDirector entries exist in mods.json.' }
-    if ($PedEntries.Count -eq 0) { $Entries += [pscustomobject]@{ mod_name = 'PalEventDirector'; mod_enabled = $true } }
-    else { $PedEntries[0].mod_enabled = $true }
-    $Enabled = @($Entries | Where-Object { $_.mod_enabled })
-    if ($Enabled.Count -ne 1 -or $Enabled[0].mod_name -ne 'PalEventDirector') { throw 'Final UE4SS state must enable exactly PalEventDirector.' }
-
-    $Utf8 = [Text.UTF8Encoding]::new($false)
-    [IO.File]::WriteAllText($ModsJson, (($Entries | ConvertTo-Json -Depth 5) + [Environment]::NewLine), $Utf8)
-    $ModsText = (($Entries | ForEach-Object { '{0} : {1}' -f $_.mod_name, $(if ($_.mod_enabled) { 1 } else { 0 }) }) -join [Environment]::NewLine) + [Environment]::NewLine
-    [IO.File]::WriteAllText((Join-Path $ModsRoot 'mods.txt'), $ModsText, $Utf8)
-
+    Remove-InstallationTarget -Path $Ue4ssRoot
+    Remove-InstallationTarget -Path (Join-Path $Win64Root 'dwmapi.dll')
+    if (Test-Path -LiteralPath $ModTarget) { throw 'Existing PED target survived runtime removal.' }
+    Move-Item -LiteralPath $StagedUe4ssRoot -Destination $Ue4ssRoot -ErrorAction Stop
+    Move-Item -LiteralPath (Join-Path $RuntimeStage 'dwmapi.dll') -Destination (Join-Path $Win64Root 'dwmapi.dll') -ErrorAction Stop
+    Assert-InstallationInventory -Root $Ue4ssRoot -Expected $ExpectedInstalledRuntime
     if (-not (Test-PinnedRuntime $Win64Root)) { throw 'Installed UE4SS failed final verification.' }
     New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
     Remove-Item -LiteralPath $LauncherIncoming -Force -ErrorAction SilentlyContinue
@@ -412,10 +468,23 @@ try {
         throw 'Staged IMOUTO laboratory activation command failed final verification.'
     }
     Move-Item -LiteralPath $ActivationIncoming -Destination $ActivationTarget -Force -ErrorAction Stop
+    Copy-Item -LiteralPath $LocalPreflight -Destination $PreflightIncoming -Force -ErrorAction Stop
+    if ((Get-FileHash $PreflightIncoming -Algorithm SHA256).Hash -ine [string]$BundleManifest.preflightCommandSha256) {
+        throw 'Staged local preflight command failed final verification.'
+    }
+    Move-Item -LiteralPath $PreflightIncoming -Destination $PreflightTarget -Force -ErrorAction Stop
+    $StartupPaths = @((Join-Path $Win64Root 'dwmapi.dll'), $LauncherTarget, $ActivationTarget, $PreflightTarget) + @(
+        Get-ChildItem -LiteralPath $Ue4ssRoot -File -Recurse | Where-Object { $_.Extension -notin @('.log', '.pdb') } | Select-Object -ExpandProperty FullName
+    )
+    $StartupFiles = @($StartupPaths | Sort-Object -Unique | ForEach-Object {
+        [ordered]@{ path = $_.Substring($ServerRoot.Length + 1).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() }
+    })
     $Record = [ordered]@{
         schemaVersion = 1
         packageName = 'PalEventDirector'
         version = [string]$BuildManifest.version
+        deliveryProfile = 'preflight-diagnostic-only'
+        startupFiles = $StartupFiles
         sourceRevision = ([string]$BuildManifest.sourceRevision).ToLowerInvariant()
         artifactSha256 = $ArtifactHash.ToLowerInvariant()
         ue4ssTag = $RuntimeTag
@@ -431,6 +500,8 @@ try {
         launcherSha256 = ([string]$BundleManifest.launcherSha256).ToLowerInvariant()
         activationPath = $ActivationTarget
         activationSha256 = ([string]$BundleManifest.activationSha256).ToLowerInvariant()
+        preflightCommandPath = $PreflightTarget
+        preflightCommandSha256 = ([string]$BundleManifest.preflightCommandSha256).ToLowerInvariant()
         laboratoryActivationConfigured = $true
         launchIntegrationConfigured = $true
         launchEnvironmentSource = 'verified-steam-manifest'
@@ -459,6 +530,8 @@ try {
 
     [pscustomobject]@{
         Status = 'Installed'
+        DeliveryProfile = 'preflight-diagnostic-only'
+        NativeStartsQuarantined = $true
         ServerRoot = $ServerRoot
         ClientRootUntouched = $ClientRoot
         Version = $Record.version
@@ -469,6 +542,7 @@ try {
         LauncherPath = $LauncherTarget
         LaboratoryActivationConfigured = $true
         ActivationPath = $ActivationTarget
+        PreflightCommandPath = $PreflightTarget
         PersistentCapabilitiesConfigured = $PersistentCapabilitiesConfigured
         CapabilitiesValidatedForThisDeployment = $false
         CapabilityStatus = $CapabilityStatus
@@ -489,6 +563,7 @@ try {
             if (Test-Path -LiteralPath $DeployRecord) { Remove-Item -LiteralPath $DeployRecord -Force -ErrorAction Stop }
             if (Test-Path -LiteralPath $LauncherTarget) { Remove-Item -LiteralPath $LauncherTarget -Force -ErrorAction Stop }
             if (Test-Path -LiteralPath $ActivationTarget) { Remove-Item -LiteralPath $ActivationTarget -Force -ErrorAction Stop }
+            if (Test-Path -LiteralPath $PreflightTarget) { Remove-Item -LiteralPath $PreflightTarget -Force -ErrorAction Stop }
             if ($HadDeployRecord -and (Test-Path -LiteralPath (Join-Path $Backup 'deployment.json'))) {
                 New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $Backup 'deployment.json') -Destination $DeployRecord -ErrorAction Stop
@@ -501,6 +576,9 @@ try {
                 New-Item -ItemType Directory -Path $DeployRoot -Force | Out-Null
                 Copy-Item -LiteralPath (Join-Path $Backup 'Enable-PalEventDirectorLaboratory.ps1') -Destination $ActivationTarget -ErrorAction Stop
             }
+            if ($HadPreflight -and (Test-Path -LiteralPath (Join-Path $Backup 'Invoke-PalEventDirectorPreflight.ps1'))) {
+                Copy-Item -LiteralPath (Join-Path $Backup 'Invoke-PalEventDirectorPreflight.ps1') -Destination $PreflightTarget -ErrorAction Stop
+            }
         } catch {
             throw "Installation failed ($($OriginalError.Exception.Message)) and rollback also failed ($($_.Exception.Message)). Keep the server stopped and recover from $Backup."
         }
@@ -510,6 +588,7 @@ try {
     Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
     if ($HasMutex) { Remove-Item -LiteralPath $LauncherIncoming -Force -ErrorAction SilentlyContinue }
     if ($HasMutex) { Remove-Item -LiteralPath $ActivationIncoming -Force -ErrorAction SilentlyContinue }
+    if ($HasMutex) { Remove-Item -LiteralPath $PreflightIncoming -Force -ErrorAction SilentlyContinue }
     if ($HasMutex) { $Mutex.ReleaseMutex() }
     $Mutex.Dispose()
 }

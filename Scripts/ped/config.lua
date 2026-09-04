@@ -270,6 +270,16 @@ function M.validate(config)
     return ok, ok and nil or tostring(message)
 end
 
+function M.diagnostic_session(config)
+    -- In-memory safety overlay; never discard or rewrite the operator's existing config.
+    local effective = util.deep_copy(config)
+    for name in pairs(effective.capabilities) do effective.capabilities[name] = false end
+    for _, schedule in ipairs(effective.schedules) do schedule.enabled = false end
+    effective.diagnostics.traceHooks = false
+    effective.diagnostics.observationProbe = false
+    return effective
+end
+
 function M.load(file_path, logger)
     local defaults = M.defaults()
     local file = io.open(file_path, "rb")

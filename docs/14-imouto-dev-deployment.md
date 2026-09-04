@@ -1,5 +1,7 @@
 # IMOUTO DEV deployment
 
+> **Diagnostic-only override:** the current bundle follows [the preflight crash runbook](15-preflight-crash-diagnostics.md). Normal siege and native-all tests below are suspended. Installation preserves recovery evidence; activation prepares all capabilities/schedules disabled; launch validates the exact UE4SS DLL and exports child-only diagnostic pins. No automatic native operations run at startup.
+
 ## Host roles
 
 The laboratory is intentionally split across two Windows machines:
@@ -55,8 +57,8 @@ For each revision:
 7. From a PowerShell session on IMOUTO, invoke the installer through the MIKO share.
 8. Review the reported version, source revision, artifact SHA-256, and backup path.
 9. Run `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` after every install and confirm the configuration validation/mutation. Persistent capability values may survive an upgrade, but the installer deliberately reports them as requiring reactivation against the new deployment.
-10. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch to start the dedicated server. Do not use Steam Play for PED mutation tests because Steam does not supply the required process-local environment.
-11. Perform the manual vanilla-client checks on IMOUTO.
+10. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch to start only the diagnostic build. Do not use Steam Play; diagnostics require launcher-supplied build/runtime pins.
+11. Use the installed local preflight helper as described in [the diagnostic runbook](15-preflight-crash-diagnostics.md). Do not issue siege or native-all commands.
 
 The normal invocation needs no arguments when the repository is reached through the script path:
 
@@ -68,7 +70,7 @@ If PowerShell marks network scripts as remote, invoke the same file from a trust
 
 The installer and generated launcher support the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
 
-## Explicit laboratory activation
+## Diagnostic-only laboratory preparation
 
 Ordinary installation does not auto-enable server mutation. To make the private IMOUTO laboratory work without hand-editing JSON, stop the server and run:
 
@@ -76,7 +78,7 @@ Ordinary installation does not auto-enable server mutation. To make the private 
 & 'D:\SteamLibrary\steamapps\common\PalServer\PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1'
 ```
 
-The command requires explicit confirmation. It validates dedicated build `24575149`, the pinned UE4SS DLL/API `3.0.1`, deployment provenance, configuration schema 3, laboratory mode, command policy, and every mandatory warning offset. It creates a timestamped configuration backup and enables:
+The command requires explicit confirmation. It validates dedicated build `24575149`, the pinned UE4SS DLL/API `3.0.1`, deployment provenance, configuration schema 3, laboratory mode, command policy, and every mandatory warning offset. It creates a timestamped configuration backup and **disables**:
 
 - `chatCommands`;
 - `observeCombat`;
@@ -84,11 +86,11 @@ The command requires explicit confirmation. It validates dedicated build `245751
 - `startAllInvasions`; and
 - `substituteBountyMembers`.
 
-It sets the recommended `operatorOrPalworldAdmin` policy by default, pins the verified build/runtime allowlists, disables every recurring schedule, leaves the 10/5/1 warning sequence intact, and forcibly leaves `grantItems=false`. Its result reports `RestartRequired=True`. Optional `AuthorizationPolicy` values are `operatorOnly`, `palworldAdminOnly`, and `operatorOrPalworldAdmin`; `anyUser` is intentionally unavailable through this convenience command.
+It preserves an approved future command policy, pins the verified build/runtime allowlists, disables every recurring schedule and diagnostic tracing hook, and leaves `grantItems=false`. Its result is `PreflightDiagnosticsOnly` with `NativeStartsQuarantined=True`. No JSON setting can re-enable starts in this revision.
 
 The activation validator accepts `siegeLeague.manualCountdownMinutes` from 0 through 60. Zero is an explicit immediate manual start; it does not alter the mandatory warning offsets retained on recurring schedules.
 
-After restart through the generated launcher, authenticate with Palworld's built-in admin mechanism and run `!siege status`. PED reads the resulting server-side `APalPlayerController.bAdmin` Boolean fresh for each privileged command. It does not inspect the password or authorize by display name.
+After restart through the generated launcher, use the trusted local preflight helper. Player/chat commands are disabled; no admin password is requested by the diagnostic.
 
 `StartInvaderMarchForBaseCamp` is a native `void` function. A normal Lua return means only that UE4SS completed the invocation. PED first calls one deterministic selected probe base, records masked native state immediately before and after it, and waits for a correlated `BroadcastInvaderStart`. Only that callback produces `RAID STARTED` and permits fanout. If no probe callback arrives before `startDiscoverySeconds`, PED records `event_start_failed`, skips the remaining calls, and emits no rankings, normal results, or rewards.
 
@@ -195,31 +197,15 @@ Before enabling invasion mutation, record the exact value returned by `UE4SS.Get
 
 Item grants remain validator-blocked in alpha.3.
 
-## Manual test loop on IMOUTO
+## Current diagnostic loop on IMOUTO
 
-The Palworld client remains completely vanilla. For each meaningful revision:
+1. Preserve the original crash dump and evidence directory unchanged.
+2. Install the clean diagnostic-profile bundle and prepare all capabilities off.
+3. Validate and launch through the installed launcher.
+4. Use the local preflight helper to preview the next step, explicitly submit that step, and read its result.
+5. Inspect each flushed after-marker before proceeding. Stop on any missing after-marker, invalid object, signature mismatch, or settings-size block.
 
-- verify one UE4SS load and one Pal Event Director load;
-- verify the client connects without a mod requirement or missing-content error;
-- verify event red banners contain only short titles and the matching details arrive in Palworld system chat;
-- verify the 10-, 5-, and 1-minute notices;
-- verify `!siege start native 0` reaches dispatch without a countdown, while still enforcing every normal preflight and authorization gate;
-- verify only bases belonging to guilds with an online member at the start boundary are requested;
-- verify every online player and late joiner enters one global leaderboard regardless of guild;
-- verify unrelated native incidents never score;
-- verify cross-base contribution and final-hit tie-breaking;
-- verify shutdown/restart recovery; and
-- preserve logs, state, deployment record, and backup when a failure occurs.
-
-For the selected-base versus native-all comparison, use two independent runs from the same disposable world snapshot:
-
-1. In the first copy, run `!siege start native 0`. Preserve the PED journal/log and note the probe's masked pre/post `Selected-base native invasion state` records plus any declaration, selection, start, or arrival callbacks.
-2. Stop IMOUTO and restore the same pre-test disposable snapshot. Do not reuse the mutated first-run world.
-3. Start through the generated launcher, leave PED idle, and run `ped diagnose-native-all confirm-disposable-start-all` in the server console.
-4. Preserve the resulting masked `native-all-before`, `native-all-after`, declaration, selection, start, and arrival records.
-5. Compare map/flag transitions and callbacks. A normal return from either native function is not acceptance.
-
-The native-all command is console-only, requires the exact confirmation token, creates no PED event or score, and must never be used as automatic fallback. It may target bases outside the online-guild policy.
+The full [diagnostic runbook](15-preflight-crash-diagnostics.md) supersedes the former selected-base/native-all comparison. No gameplay mutation or comparison is permitted until the native ABI is understood and a separate revision is validated.
 
 Running the local client and dedicated server concurrently increases IMOUTO's CPU/GPU/RAM load. That load is isolated from MIKO Production, but performance observations should distinguish client contention from server/mod behavior.
 

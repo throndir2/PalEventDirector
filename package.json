@@ -14,6 +14,7 @@
   },
   "devDependencies": {
     "archiver": "8.0.0",
-    "fengari-node-cli": "0.1.0"
+    "fengari-node-cli": "0.1.0",
+    "yauzl": "3.4.0"
   }
 }

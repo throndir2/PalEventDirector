@@ -1032,6 +1032,8 @@ test("selected-base dispatch probes one base before confirmed fanout and records
         clock = function() return 1000 end,
     })
     bridge.utility = utility
+    -- Historical dispatch simulation only. The shipped Bridge guard is tested separately.
+    bridge.native_start_guard = function() return true end
     bridge.event_manager = manager
     bridge.event_world = world
     bridge.expected_bases = { ["base-alpha"] = true, ["base-bravo"] = true }
@@ -2243,6 +2245,8 @@ test("reward grant never runs when durable intent fails", function()
     equal(calls, 0)
     truthy(process_error:match("disk full"))
 end)
+
+dofile(join(root, "tests", "preflight-diagnostic.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)

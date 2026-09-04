@@ -1,4 +1,6 @@
 local util = require("ped.util")
+local json = require("ped.json")
+local filesystem = require("ped.filesystem")
 
 local Logger = {}
 Logger.__index = Logger
@@ -10,6 +12,8 @@ function Logger.new(options)
     return setmetatable({
         level = LEVELS[options.level] or LEVELS.info,
         file_path = options.file_path,
+        breadcrumb_file_path = options.breadcrumb_file_path,
+        filesystem = options.filesystem or filesystem,
         prefix = options.prefix or "PalEventDirector",
     }, Logger)
 end
@@ -37,6 +41,21 @@ function Logger:write(level, message, fields)
             file:close()
         end
     end
+end
+
+function Logger:preflight_breadcrumb(step, build_id, object_valid)
+    -- Never stringify a native object/error or serialize a returned settings struct.
+    if type(step) ~= "string" or not step:match("^%d+%-%d+%-[a-z0-9%-]+%.%a+$")
+        or (not step:match("%.before$") and not step:match("%.after$"))
+        or build_id ~= "24575149" or type(object_valid) ~= "boolean"
+        or type(self.breadcrumb_file_path) ~= "string" then
+        return false
+    end
+    return self.filesystem.append(self.breadcrumb_file_path, json.encode({
+        step = step,
+        buildId = build_id,
+        objectValid = object_valid,
+    }) .. "\n")
 end
 
 for _, level in ipairs({ "debug", "info", "warn", "error" }) do

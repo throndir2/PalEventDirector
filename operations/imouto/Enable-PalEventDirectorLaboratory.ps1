@@ -236,6 +236,7 @@ if ($VerifiedBuildId -ne $ExpectedBuildId) { throw "Laboratory activation requir
 
 $deployment = Get-Content $DeploymentPath -Raw | ConvertFrom-Json
 if ($deployment.schemaVersion -ne 1 -or [string]$deployment.packageName -ne 'PalEventDirector' -or
+    [string]$deployment.deliveryProfile -ne 'preflight-diagnostic-only' -or
     [string]$deployment.serverBuildId -ne $VerifiedBuildId -or [string]$deployment.ue4ssApiVersion -ne $ExpectedUe4ssApiVersion -or
     [string]$deployment.ue4ssDllSha256 -ine $ExpectedUe4ssDllSha256 -or
     (Get-FileHash $Ue4ssDllPath -Algorithm SHA256).Hash -ine $ExpectedUe4ssDllSha256) {
@@ -263,7 +264,7 @@ if ([string]$config.mode -ne 'laboratory') { throw 'Laboratory activation requir
 
 if (-not $PSCmdlet.ShouldProcess(
         $ConfigPath,
-        "enable validated laboratory capabilities with $AuthorizationPolicy authorization; keep rewards and schedules disabled")) {
+    "prepare read-only preflight diagnostics; disable every gameplay capability and recurring schedule")) {
     return
 }
 
@@ -278,12 +279,14 @@ if (-not $PSCmdlet.ShouldProcess(
     $config.compatibility.allowedServerBuildIds = @($VerifiedBuildId)
     $config.compatibility.allowedUe4ssVersions = @($ExpectedUe4ssApiVersion)
     $config.siegeLeague.chatStartPolicy = $AuthorizationPolicy
-    $config.capabilities.chatCommands = $true
-    $config.capabilities.observeCombat = $true
-    $config.capabilities.observeInvasions = $true
-    $config.capabilities.startAllInvasions = $true
-    $config.capabilities.substituteBountyMembers = $true
+    $config.capabilities.chatCommands = $false
+    $config.capabilities.observeCombat = $false
+    $config.capabilities.observeInvasions = $false
+    $config.capabilities.startAllInvasions = $false
+    $config.capabilities.substituteBountyMembers = $false
     $config.capabilities.grantItems = $false
+    $config.diagnostics.traceHooks = $false
+    $config.diagnostics.observationProbe = $false
     foreach ($schedule in (ConvertTo-FlatArray $config.schedules)) { $schedule.enabled = $false }
 
     $temporary = "$ConfigPath.activation.tmp"
@@ -291,9 +294,9 @@ if (-not $PSCmdlet.ShouldProcess(
         [IO.File]::WriteAllText($temporary, (($config | ConvertTo-Json -Depth 30) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         $verified = Get-Content $temporary -Raw | ConvertFrom-Json
         Assert-PedConfigSchema3 -Config $verified
-        $enabledCapabilities = @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')
-        foreach ($capability in $enabledCapabilities) {
-            if ($verified.capabilities.$capability -ne $true) { throw "Activation failed to enable $capability." }
+        $disabledCapabilities = @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers', 'grantItems')
+        foreach ($capability in $disabledCapabilities) {
+            if ($verified.capabilities.$capability -ne $false) { throw "Diagnostic preparation failed to disable $capability." }
         }
         if ($verified.capabilities.grantItems -ne $false) { throw 'Activation must leave grantItems disabled.' }
         if (@(ConvertTo-FlatArray $verified.schedules | Where-Object { $_.enabled }).Count -ne 0) { throw 'Activation must leave all schedules disabled.' }
@@ -305,12 +308,14 @@ if (-not $PSCmdlet.ShouldProcess(
     }
 
     [pscustomobject]@{
-        Status = 'LaboratoryCapabilitiesEnabled'
+        Status = 'PreflightDiagnosticsOnly'
         ServerBuildId = $VerifiedBuildId
         Ue4ssApiVersion = $ExpectedUe4ssApiVersion
         ConfigSchema = 3
         AuthorizationPolicy = $AuthorizationPolicy
-        EnabledCapabilities = 'chatCommands,observeCombat,observeInvasions,startAllInvasions,substituteBountyMembers'
+        EnabledCapabilities = ''
+        NativeStartsQuarantined = $true
+        DiagnosticCommand = 'ped diagnose-preflight; then confirm-disposable-readonly with the exact previewed step'
         GrantItems = $false
         EnabledSchedules = 0
         MandatoryWarnings = '600,300,60'

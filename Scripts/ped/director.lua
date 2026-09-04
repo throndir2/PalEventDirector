@@ -12,6 +12,11 @@ Director.__index = Director
 local MICRO = 1000000
 local BANNER_MAX_LENGTH = 80
 
+local function native_start_guard(bridge)
+    if type(bridge.native_start_guard) == "function" then return bridge:native_start_guard() end
+    return true -- Pure-Lua simulation bridges have no native adapter.
+end
+
 local function warning_sets_match(actual, expected)
     if type(actual) ~= "table" or #actual ~= #expected then return false end
     local remaining = {}
@@ -99,6 +104,12 @@ function Director.new(options)
             return self:_persist(kind, data)
         end,
     }, restored and restored.rewards or nil)
+    local scheduler_interrupted = false
+    for _, occurrence in pairs(restored and restored.scheduler.occurrences or {}) do
+        if occurrence.status == "starting" or occurrence.status == "awaiting_confirmation" then
+            scheduler_interrupted = true
+        end
+    end
     self.scheduler = Scheduler.new({
         schedules = self.config.schedules,
         clock = self.clock,
@@ -121,9 +132,15 @@ function Director.new(options)
         self.state.event.interruptedStatus = self.state.status
         self.state.status = "recovery_required"
         self.logger:warn("Interrupted Siege League requires operator resolution before another start", { occurrence = self.state.event.id })
-        self:_persist("recovery_required", { occurrenceId = self.state.event.id })
+        if not self:_persist("recovery_required", { occurrenceId = self.state.event.id }) then
+            error("Unable to persist interrupted-event recovery; diagnostic startup blocked")
+        end
+    elseif scheduler_interrupted then
+        if not self:_persist("scheduler_recovery_required", { reason = "interrupted_native_preflight_or_start" }) then
+            error("Unable to persist interrupted-preflight recovery; diagnostic startup blocked")
+        end
     elseif recovered_from_journal then
-        self:_checkpoint("journal_tail_recovered")
+        if not self:_checkpoint("journal_tail_recovered") then error("Unable to checkpoint journal recovery; diagnostic startup blocked") end
     end
     return self
 end
@@ -232,6 +249,8 @@ function Director:_profile_allowed(profile_id)
 end
 
 function Director:arm_start(source, requested_profile, countdown_minutes)
+    local allowed, reason = native_start_guard(self.bridge)
+    if not allowed then return false, reason end
     if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
         return false, "director is " .. self.state.status
     end
@@ -286,6 +305,8 @@ function Director:_apply_dispatch_results(result)
 end
 
 function Director:start(source, requested_profile, scheduler_token, scheduler_occurrence_key)
+    local allowed, reason = native_start_guard(self.bridge)
+    if not allowed then return false, reason end
     if scheduler_token ~= self.scheduler_start_token or type(scheduler_occurrence_key) ~= "string" then
         return false, "direct invasion start denied; use a scheduled or manual start"
     end
@@ -763,6 +784,8 @@ function Director:_fail_unconfirmed_start(reason)
 end
 
 function Director:_dispatch_confirmed_fanout()
+    local allowed, reason = native_start_guard(self.bridge)
+    if not allowed then return false, reason end
     local event = self.state.event
     if not event or not event.startConfirmedAt or event.fanoutDispatched then return true end
     event.fanoutIntentAt = self.clock()
@@ -880,6 +903,8 @@ function Director:_classify_unresolved_bases(reason)
 end
 
 function Director:resolve(reason)
+    local allowed, quarantine_reason = native_start_guard(self.bridge)
+    if not allowed then return false, quarantine_reason end
     if self.state.status ~= "active" and self.state.status ~= "starting" and self.state.status ~= "recovery_required" then
         return false, "nothing to resolve"
     end
@@ -938,6 +963,8 @@ function Director:resolve(reason)
 end
 
 function Director:abort(reason)
+    local allowed, quarantine_reason = native_start_guard(self.bridge)
+    if not allowed then return false, quarantine_reason end
     if not self.state.event or self.state.status == "idle" then
         return false, "nothing to abort"
     end
@@ -972,6 +999,8 @@ function Director:abort(reason)
 end
 
 function Director:reset()
+    local allowed, reason = native_start_guard(self.bridge)
+    if not allowed then return false, reason end
     if self.state.status ~= "completed" and self.state.status ~= "aborted" and self.state.status ~= "recovery_required" then
         return false, "reset is allowed only after completion, abort, or recovery-required state"
     end
@@ -1196,6 +1225,7 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
 end
 
 function Director:handle_chat(principal, message)
+    if not native_start_guard(self.bridge) then return false end
     principal = self:_normalize_chat_principal(principal)
     if not principal then return false end
     local uid = principal.uid
@@ -1257,6 +1287,19 @@ end
 function Director:handle_operator_command(command, source, principal)
     local words = util.split_words(command)
     local action = (words[1] or "status"):lower()
+    if action == "diagnose-preflight" then
+        if source ~= "console" then return false, "diagnose-preflight is server-console-only" end
+        if #words > 3 or (#words > 1 and #words ~= 3) then return false, "use diagnose-preflight, then diagnose-preflight confirm-disposable-readonly <expected-step>" end
+        if type(self.bridge.diagnose_preflight) ~= "function" then return false, "preflight diagnostic is unavailable" end
+        return self.bridge:diagnose_preflight(words[2], words[3])
+    end
+    local allowed, quarantine_reason = native_start_guard(self.bridge)
+    if not allowed then
+        if action == "status" and source == "console" then
+            return true, quarantine_reason .. " " .. self:status_text()
+        end
+        return false, quarantine_reason
+    end
     if source and source:match("^chat:") then
         local authorized, denial = self:_authorize_chat_command(principal, action)
         if not authorized then
@@ -1309,6 +1352,7 @@ function Director:handle_operator_command(command, source, principal)
 end
 
 function Director:tick()
+    if not native_start_guard(self.bridge) then return end
     local now = self.clock()
     if self.scheduler then self.scheduler:tick(now) end
     local event = self:_active_event()

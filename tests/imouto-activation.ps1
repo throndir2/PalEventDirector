@@ -30,6 +30,7 @@ try {
         (@{
             schemaVersion = 1
             packageName = 'PalEventDirector'
+            deliveryProfile = 'preflight-diagnostic-only'
             serverBuildId = '24575149'
             ue4ssApiVersion = '3.0.1'
             ue4ssDllSha256 = $ue4ssHash
@@ -76,6 +77,11 @@ try {
     Copy-Item $DefaultConfig $ConfigPath -Force
     $zeroCountdown = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     $zeroCountdown.siegeLeague.manualCountdownMinutes = 0
+    $zeroCountdown.compatibility.allowedUe4ssVersions = @('3.0.1')
+    foreach ($capability in @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')) {
+        $zeroCountdown.capabilities.$capability = $true
+    }
+    foreach ($schedule in @($zeroCountdown.schedules | ForEach-Object { $_ })) { $schedule.enabled = $true }
     [IO.File]::WriteAllText($ConfigPath, ($zeroCountdown | ConvertTo-Json -Depth 30))
 
     $result = & $Activation `
@@ -87,7 +93,10 @@ try {
 
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     foreach ($capability in @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')) {
-        if ($config.capabilities.$capability -ne $true) { throw "Activation did not enable $capability." }
+        if ($config.capabilities.$capability -ne $false) { throw "Diagnostic preparation did not disable $capability." }
+    }
+    if ($result.Status -ne 'PreflightDiagnosticsOnly' -or $result.NativeStartsQuarantined -ne $true) {
+        throw 'Activation did not report the native-start quarantine.'
     }
     if ($config.capabilities.grantItems -ne $false) { throw 'Activation enabled grantItems.' }
     if (@($config.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count -ne 0) { throw 'Activation enabled a schedule.' }
@@ -108,7 +117,7 @@ try {
         throw 'Activation did not report restart/backup requirements.'
     }
 
-    Write-Output 'PASS IMOUTO activation enables validated gameplay capabilities while preserving warnings and disabling grants/schedules'
+    Write-Output 'PASS IMOUTO diagnostic preparation disables all gameplay and schedules while preserving configuration backup and warnings'
 } finally {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
