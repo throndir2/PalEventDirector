@@ -67,6 +67,25 @@ function Test-PinnedRuntime {
     $true
 }
 
+function Read-Ue4ssModEntries {
+    param([Parameter(Mandatory)][string]$Path)
+    $decoded = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+    $entries = @()
+    foreach ($entry in @($decoded)) {
+        if ($null -eq $entry -or $null -eq $entry.PSObject.Properties['mod_name']) {
+            throw "UE4SS mod-control file contains an entry without mod_name: $Path"
+        }
+        if ($null -eq $entry.PSObject.Properties['mod_enabled']) {
+            throw "UE4SS mod-control entry $($entry.mod_name) has no mod_enabled property: $Path"
+        }
+        if ($entry.mod_enabled -isnot [bool]) {
+            throw "UE4SS mod-control entry $($entry.mod_name) has a non-Boolean mod_enabled property: $Path"
+        }
+        $entries += $entry
+    }
+    $entries
+}
+
 function Assert-NoReparsePoint {
     param([string]$Root, [string]$Path)
     $current = [IO.Path]::GetFullPath($Path)
@@ -218,7 +237,7 @@ if ($RuntimeExists -and -not $RuntimeMatches -and $ExistingOtherModDirectories.C
 if ($RuntimeMatches) {
     $ModsJson = Join-Path $ModsRoot 'mods.json'
     if (-not (Test-Path -LiteralPath $ModsJson -PathType Leaf)) { throw 'Pinned UE4SS exists but mods.json is missing.' }
-    $ExistingEntries = @(Get-Content -LiteralPath $ModsJson -Raw | ConvertFrom-Json)
+    $ExistingEntries = @(Read-Ue4ssModEntries -Path $ModsJson)
     $EnabledOthers = @($ExistingEntries | Where-Object { $_.mod_enabled -and $_.mod_name -ne 'PalEventDirector' })
     if ($EnabledOthers.Count -gt 0 -and -not $DisableOtherUe4ssMods) {
         throw "Other UE4SS mods are enabled: $($EnabledOthers.mod_name -join ', '). Use a clean test server or explicitly pass -DisableOtherUe4ssMods."
@@ -312,7 +331,7 @@ try {
     Set-Ue4ssSafetySettings (Join-Path $Ue4ssRoot 'UE4SS-settings.ini')
 
     $ModsJson = Join-Path $ModsRoot 'mods.json'
-    $Entries = @(Get-Content -LiteralPath $ModsJson -Raw | ConvertFrom-Json)
+    $Entries = @(Read-Ue4ssModEntries -Path $ModsJson)
     foreach ($entry in $Entries) {
         if (-not $RuntimeMatches -or $DisableOtherUe4ssMods -or $entry.mod_name -eq 'PalEventDirector') { $entry.mod_enabled = $false }
     }

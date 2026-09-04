@@ -65,6 +65,8 @@ The normal invocation needs no arguments when the repository is reached through 
 
 If PowerShell marks network scripts as remote, invoke the same file from a trusted PowerShell session with the appropriate local execution policy. Do not weaken machine-wide execution policy solely for this installer.
 
+The installer supports the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
+
 Optional parameters:
 
 | Parameter | Purpose |

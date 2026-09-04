@@ -120,6 +120,9 @@ if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
     "Global\\PalEventDirectorImoutoInstaller",
     'sourceDirty',
     "version -ne '0.1.0-alpha.3'",
+    'function Read-Ue4ssModEntries',
+    '$ExistingEntries = @(Read-Ue4ssModEntries -Path $ModsJson)',
+    '$Entries = @(Read-Ue4ssModEntries -Path $ModsJson)',
   ]) {
     if (!installer.includes(requiredGuard)) failures.push(`IMOUTO installer is missing required guard: ${requiredGuard}`);
   }
