@@ -19,21 +19,31 @@ A start is mandatory for the eligible target set; it is not a consent vote. At t
 3. selects only available, idle invasion observers whose base belongs to one of those online guilds;
 4. rejects the start if any native invasion/visitor slot, eligible observer, required reflected function, runtime version, or configured bound is unsafe;
 5. enrolls the same online-player snapshot in one server-wide leaderboard, regardless of guild; and
-6. issues one selected-base native request per eligible base.
+6. issues one selected-base native probe request, then requests the remaining eligible bases only after a correlated native start callback confirms the probe.
 
 A guild with no online member at that boundary is not attacked. Every online player is enrolled even if that player's guild has no selected base. Players who join while the event is active are enrolled globally on the next poll and before their first accepted score record. An attribution that cannot be tied to an enrolled online player consumes the target's damage budget but receives no score or final hit.
 
-The start API returns no success value. A base is considered started only after a matching native lifecycle callback. Synchronous call failures, missing callbacks, composition failures, timeouts, and completions remain separate per-base outcomes.
+The selected-base start API returns no success value. A normal Lua return is recorded only as `probe_call_returned` or `fanout_call_returned`; a base is considered started only after a matching native lifecycle callback. The adapter resolves the active manager from an online player's world and pins it for the occurrence. Immediately before and after each call it records masked observer key/target/model GUID agreement, invasion/path/cooldown flags, base availability/ignore/state/level, incident membership/state, start-location and saved-state membership, global manager pointers, and the world invasion switch.
 
-## Mandatory warnings
+PED does not display `RAID STARTED` until the first correlated callback is durably recorded. If the probe has no callback before `startDiscoverySeconds`, remaining bases are not called, the event persists `event_start_failed`, and the player sees a specific `START FAILED` notice. That terminal creates no rankings, normal results, or reward obligations. After a confirmed probe, fanout gets a fresh discovery window; a missing callback for an individual fanout base remains a technical `native_start_missing` outcome while confirmed bases continue normally.
 
-Every external start uses a countdown. There is no `start-now` command.
+## Countdown and notification behavior
 
-- Manual starts accept an integer from 10 through 60 minutes and always announce at 10, 5, and 1 minute.
+Manual starts accept an integer from 0 through 60 minutes. Passing `0` starts immediately; no separate `start-now` alias exists.
+
+- A positive manual start announces its selected duration immediately, then announces the 10-, 5-, and 1-minute milestones that fit before the start without duplicating equal offsets. For example, seven minutes produces 7/5/1 notices, while one minute produces one notice.
+- A zero-minute manual start emits no fabricated countdown notice and proceeds directly through the normal environment, authority, eligibility, concurrency, persistence, and dispatch gates.
 - Daily and weekly schedules must contain warning offsets `600`, `300`, and `60` seconds. Extra offsets are allowed.
-- The poll interval is limited to 250–5000 ms. A failed announcement is retried only inside a small poll-derived delivery window.
+- The poll interval is limited to 250–5000 ms. Before the first visible side effect, PED durably marks warning delivery in progress. Once that intent exists, delivery is never repeated after a failure or restart because the external banner/chat outcome may be ambiguous.
 - If any configured warning cannot be durably recorded and broadcast near its required boundary, that occurrence is marked missed and does not mutate Palworld.
 - `lateStartToleranceSeconds` permits a previously warned occurrence to start slightly late; it never excuses a missing warning.
+
+Every event notification uses two vanilla-client channels:
+
+- the red server-notice banner contains only a short title, capped at 80 bytes, such as `SIEGE LEAGUE - 5 MINUTES` or `SIEGE LEAGUE - RAID STARTED`; and
+- Palworld system chat carries the profile, timing, target rule, objective, results, or safety details.
+
+Countdown and lifecycle details use `UPalUtility.SendSystemAnnounce`. Query results, help, cooldowns, and command errors use `UPalUtility.SendSystemToPlayerChat` with the requesting player's existing server-side UID and do not consume the red banner. Both exact delivery shapes remain part of the IMOUTO vanilla-client gate.
 
 Warning, occurrence, event-intent, dispatch, and periodic checkpoint records carry a complete recoverable state in the checksummed journal. Score, roster, and ordinary lifecycle changes are marked dirty and enter that state at the configured checkpoint interval. An interrupted snapshot checkpoint can recover from a state-bearing journal tail. Restart during a native start or active event still enters a fail-closed recovery state because native side effects cannot be inferred safely.
 
@@ -97,7 +107,7 @@ On restart, a restored recurring occurrence is retained only when its complete e
 
 ## Chat commands
 
-Chat handling is available only when `capabilities.chatCommands=true`. Queries are rate-limited per player and globally to avoid announcement spam.
+Chat handling is available only when `capabilities.chatCommands=true`. Requester-targeted queries are rate-limited per player without suppressing another player's reply.
 
 Public forms:
 
@@ -111,7 +121,7 @@ Public forms:
 | `!siege schedule` | Up to five upcoming manual/recurring starts in host-local time. |
 | `!siege score` | Caller score. |
 | `!siege leaderboard` | Global standings. |
-| `!siege start <profile> [minutes]` | Arms a 10–60-minute warning countdown when policy permits. Omitted minutes use `manualCountdownMinutes`. |
+| `!siege start <profile> [minutes]` | Starts immediately at `0`, or arms a 1–60-minute countdown when policy permits. Omitted minutes use `manualCountdownMinutes`. |
 
 `chatStartPolicy` is the unified policy for every privileged chat command:
 
@@ -136,7 +146,7 @@ Privileged chat forms:
 | `!siege reset` | Returns completed/aborted/recovery state to idle only when no native invasion is active. |
 | `!ped <operator command>` | Runs the corresponding console command below after the same fresh policy decision. |
 
-Unknown commands print the bounded help form. Chat has a two-second per-UID command limit, public queries share a five-second announcement limit, and start attempts have an additional ten-second process-local limit.
+Unknown commands print the bounded help form. Chat has a two-second per-UID command limit, and start attempts have an additional ten-second process-local limit.
 
 ## Server-console commands
 
@@ -144,7 +154,7 @@ The UE4SS global console prefix is `ped`:
 
 | Command | Result |
 |---|---|
-| `ped start [profile] [minutes]` | Arms the mandatory manual countdown. The configured default profile and countdown are used when omitted. |
+| `ped start [profile] [minutes]` | Starts immediately at `0`, or arms a positive manual countdown. The configured default profile and countdown are used when omitted. |
 | `ped cancel` | Cancels a planned manual countdown. |
 | `ped status` | Displays director status. |
 | `ped profiles` | Lists enabled profiles. |
@@ -153,9 +163,10 @@ The UE4SS global console prefix is `ped`:
 | `ped resolve` | Resolves the current event. |
 | `ped abort` | Stops director scoring without destroying native actors. |
 | `ped reset` | Clears a terminal/recovery director state after native incidents finish. |
+| `ped diagnose-native-all confirm-disposable-start-all` | Console-only, explicit native `StartInvaderMarchAll()` comparison. Use only on a separately restored disposable IMOUTO world; it is never an event fallback. |
 | `ped rewards` | Processes pending grants only when `grantItems` is available. Alpha.3 validation requires `grantItems=false`, so this command fails closed. |
 
-There is intentionally no immediate-start command and no command that force-stops an unknown native invasion.
+There is no separate `start-now` alias and no command that force-stops an unknown native invasion; use a zero-minute `start` explicitly. The native-all diagnostic may include offline-guild bases and is intentionally excluded from chat, scoring, bounty substitution, and automatic recovery. Never run selected-base and native-all comparisons in the same world state: restore the same disposable snapshot between runs and compare the masked logs.
 
 ## Built-in profiles
 
@@ -207,13 +218,13 @@ Profiles never resize Palworld's native member array. A transformation failure l
 | `limits.maxTargets` | 1–4096 ranked target identities. |
 | `limits.maxPlayers` | 1–1024 globally enrolled players; a larger start roster blocks the event. |
 | `limits.maxDamageRecords` | 100–1,000,000 records. |
-| `limits.maxAnnouncementLength` | 40–1000 bytes after sanitization. |
+| `limits.maxAnnouncementLength` | 40–1000 bytes after sanitization for detailed chat; red banner titles have an additional hard cap of 80 bytes. |
 | `siegeLeague.name` | Event label. |
 | `siegeLeague.defaultProfile` | Canonical enabled profile used when omitted. |
 | `siegeLeague.allowedProfiles` | Array of unique canonical profile IDs. Arbitrary character IDs/functions are never accepted. |
 | `siegeLeague.chatStartPolicy` | `operatorOnly`, `palworldAdminOnly`, `operatorOrPalworldAdmin`, or `anyUser`; applies to all privileged chat commands. |
 | `siegeLeague.userStartCooldownSeconds` | 60–604800, global and persistent for non-operator starts. |
-| `siegeLeague.manualCountdownMinutes` | 10–60. |
+| `siegeLeague.manualCountdownMinutes` | 0–60; zero starts immediately. |
 | `siegeLeague.allowCrossBaseRoaming` | Must be `true` in alpha.3; all eligible-base contribution accumulates globally. |
 | `siegeLeague.targetPoints` | 1–1,000,000 points budgeted across each target's immutable maximum HP. |
 | `siegeLeague.minimumParticipationPoints` | 0 through `targetPoints * maxTargets`. |

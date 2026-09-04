@@ -116,7 +116,7 @@ function Assert-PedConfigSchema3 {
     $siege = $Config.siegeLeague
     if ([string]$siege.chatStartPolicy -notin @('operatorOnly', 'palworldAdminOnly', 'operatorOrPalworldAdmin', 'anyUser')) { throw 'siegeLeague.chatStartPolicy is invalid.' }
     Assert-IntegerRange $siege.userStartCooldownSeconds 'siegeLeague.userStartCooldownSeconds' 60 604800
-    Assert-IntegerRange $siege.manualCountdownMinutes 'siegeLeague.manualCountdownMinutes' 10 60
+    Assert-IntegerRange $siege.manualCountdownMinutes 'siegeLeague.manualCountdownMinutes' 0 60
     Assert-BooleanValue $siege.allowCrossBaseRoaming 'siegeLeague.allowCrossBaseRoaming'
     if (-not $siege.allowCrossBaseRoaming) { throw 'alpha.3 requires cross-base roaming.' }
     Assert-IntegerRange $siege.targetPoints 'siegeLeague.targetPoints' 1 1000000

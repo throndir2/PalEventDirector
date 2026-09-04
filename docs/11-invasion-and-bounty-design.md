@@ -87,7 +87,9 @@ Until that matrix is complete, documentation and player messaging may say “nat
 - `StartInvaderMarchForBaseCamp(FGuid campID)`;
 - `StartInvaderMarchAll()`.
 
-The manager owns a base-ID-to-observer map and a base-ID-to-incident map. `StartInvaderMarchAll()` remains a useful native-scope research control, but it cannot enforce the online-guild predicate. Alpha.3 therefore snapshots and filters observers first, then calls `StartInvaderMarchForBaseCamp()` for each eligible base.
+The manager owns a base-ID-to-observer map and a base-ID-to-incident map. `StartInvaderMarchAll()` remains a useful native-scope research control, but it cannot enforce the online-guild predicate. Alpha.3 therefore snapshots and filters observers first, calls `StartInvaderMarchForBaseCamp()` for one deterministic probe base, and fans out to the remaining selected bases only after a correlated native start callback confirms that probe.
+
+Live IMOUTO evidence from build `24575149` proved that ten selected-base `void` calls can all return through UE4SS without creating an incident, selection, lifecycle callback, target, or damage event. A normal call return therefore proves invocation only, never native acceptance. Current diagnostics capture observer key/target/model GUID agreement, base/observer rejection flags, manager maps and pointers, and the world switch before and after every call. `RAID STARTED`, scoring, and results require lifecycle confirmation.
 
 The word “all” still needs runtime confirmation. The generated Modding Kit implementation is a stub and cannot show whether Palworld internally excludes cooldown, unloaded, obstructed, or already-invaded bases.
 
@@ -221,10 +223,11 @@ This is the preferred first bounty-siege spike because it avoids a custom DataTa
 3. Register an always-present but normally inert hook around `UPalInvaderIncidentBase.SelectInvaders()`.
 4. Let Palworld select a valid stock row for each base's biome and invasion grade.
 5. In the post-hook, and only for occurrence-targeted base incidents, replace each `FPalInvaderSpawnCharacterParameter` in `OutInvaderMember` before `SpawnMemberCharacters()` runs. Set `CharacterID` to an allowlisted bounty `BOSS_*` ID, preserve or replace `Level` according to the event's bounded level policy, and set an existing companion Pal ID in `Otomo` where desired. Preserve the array length unless a bounded count transform has been tested separately.
-6. Open one bounded request window per target and call `StartInvaderMarchForBaseCamp()` for that base. Accept success only from group-correlated lifecycle callbacks.
-7. Keep the transform armed until every targeted native incident has selected its members; do not assume selection is synchronous.
-8. Track each base and incident through native lifecycle delegates.
-9. Disarm the transform and release the lease only after every incident resolves or is classified for recovery.
+6. Open one bounded request window and call `StartInvaderMarchForBaseCamp()` for one deterministic probe base. Persist its pre/post native state and accept success only from a group-correlated lifecycle callback.
+7. After that confirmation, open bounded windows and call the remaining selected bases. If the probe never confirms, skip fanout and terminalize the occurrence as `event_start_failed` without rankings or rewards.
+8. Keep the transform armed until every targeted native incident has selected its members; do not assume selection is synchronous.
+9. Track each base and incident through native lifecycle delegates.
+10. Disarm the transform and release the lease only after every incident resolves or is classified for recovery.
 
 Advantages:
 
@@ -301,7 +304,7 @@ Health protection should reduce the per-base profile size before it excludes oth
 
 ### Chat activation
 
-Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. It arms a durable countdown rather than attacking immediately and always includes 10-, 5-, and 1-minute notices. The default `operatorOrPalworldAdmin` policy accepts either a stable UID in `operatorUids` or the current server-side `APalPlayerController.bAdmin` result from Palworld's built-in administrator authentication. Display names, passwords, and client claims never authorize a start. Authority is read again for every command and never bypasses active-event, recovery, compatibility, base-count, native-concurrency, or persistence guards.
+Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. Zero dispatches the selected-base probe immediately. A positive value arms a durable countdown with its selected-duration notice and every 10/5/1-minute milestone that fits; recurring schedules retain all three mandatory offsets. The default `operatorOrPalworldAdmin` policy accepts either a stable UID in `operatorUids` or the current server-side `APalPlayerController.bAdmin` result from Palworld's built-in administrator authentication. Display names, passwords, and client claims never authorize a start. Authority is read again for every command and never bypasses active-event, recovery, compatibility, base-count, native-concurrency, lifecycle-confirmation, or persistence guards.
 
 The recommended live policy is configured-operator-or-native-admin start and, later, a separately implemented player vote. `anyUser` is useful only for a trusted private server because the unified policy also permits other privileged commands. User text can select only fixed profile IDs and cannot supply character IDs, Unreal paths, levels, item IDs, or function names.
 
@@ -453,26 +456,27 @@ before any game modifiers affecting drops or butchering. Event preview should di
 
 ## Required proof before enabling
 
-1. Snapshot several online/offline guilds, issue `StartInvaderMarchForBaseCamp()` for every eligible observer, and record every request, incident, exclusion, and failure. Use `StartInvaderMarchAll()` only as a native research comparison.
-2. Call `Debug_InvaderMarch()` with a known stock `GroupName` and confirm whether it targets all bases; compare `Debug_InvaderMarchForNearCamp()`.
-3. Confirm `bSkipInvaderDeclaration=true` bypasses declaration and the Negotiator rather than only hiding UI.
-4. Hook `SelectInvaders()` observationally and verify timing, context, output-array meaning, and invocation count.
-5. Replace one output member with `BOSS_Hunter_Rifle` before spawn.
-6. Connect a completely unmodified remote client and verify name, model, AI, combat, token drop, and reconnect.
-7. Test death, capture, and later butchering independently.
-8. Verify captured actors count as removed so a wave cannot stall.
-9. Verify the stock invasion completion reward and Event Director rewards do not duplicate unexpectedly.
-10. Revisit the original overworld bounty and verify its map marker, respawn state, and first-clear state are unchanged.
-11. Restart during declaration, every wave, and cleanup.
-12. Scale through 2, 4, 8, and the actual maximum base count while recording FPS, frame time, actor count, pathfinding failures, and cleanup.
-13. Repeat the final test with each client platform for which vanilla compatibility is claimed.
-14. With two same-guild bases whose assigned Work Pals have deliberately different levels, prove native grade and final levels are evaluated independently per base.
-15. Run the controlled workforce matrix and classify the native aggregation formula only if the observations distinguish it conclusively.
-16. Verify `native`, `fixed`, and positive/negative bounded `relative` policies from selected member through initialized actor level, including every wave and restart boundary.
-17. Compare identical scripted damage splits and final-hit orderings; prove that changing only the finishing attacker does not change the primary contribution ranking.
-18. Test direct player, active Pal, ridden Pal, base-worker Pal, automated defense, environmental damage, unresolved damage, overkill, capture, and duplicate callbacks against the target health budget.
-19. Simulate ties and verify exact contribution, final-hit tie-break, deterministic final fallback, and first/second/third reward settlement.
-20. Compare low- and high-grade bases with different native actor counts and prove the configured per-base target-value budget prevents raw-HP opportunity from deciding the global leaderboard.
+1. Snapshot several online/offline guilds, issue `StartInvaderMarchForBaseCamp()` for one eligible probe observer, and record every pre/post flag, map transition, callback, exclusion, and failure before permitting fanout.
+2. Restore the same disposable snapshot, then run `ped diagnose-native-all confirm-disposable-start-all` separately. Compare its masked `StartInvaderMarchAll()` diagnostics to the selected-base probe. Never use native-all as fallback or in the same world state; it can target offline-guild bases.
+3. Call `Debug_InvaderMarch()` with a known stock `GroupName` and confirm whether it targets all bases; compare `Debug_InvaderMarchForNearCamp()`.
+4. Confirm `bSkipInvaderDeclaration=true` bypasses declaration and the Negotiator rather than only hiding UI.
+5. Hook `SelectInvaders()` observationally and verify timing, context, output-array meaning, and invocation count.
+6. Replace one output member with `BOSS_Hunter_Rifle` before spawn.
+7. Connect a completely unmodified remote client and verify name, model, AI, combat, token drop, and reconnect.
+8. Test death, capture, and later butchering independently.
+9. Verify captured actors count as removed so a wave cannot stall.
+10. Verify the stock invasion completion reward and Event Director rewards do not duplicate unexpectedly.
+11. Revisit the original overworld bounty and verify its map marker, respawn state, and first-clear state are unchanged.
+12. Restart during declaration, every wave, and cleanup.
+13. Scale through 2, 4, 8, and the actual maximum base count while recording FPS, frame time, actor count, pathfinding failures, and cleanup.
+14. Repeat the final test with each client platform for which vanilla compatibility is claimed.
+15. With two same-guild bases whose assigned Work Pals have deliberately different levels, prove native grade and final levels are evaluated independently per base.
+16. Run the controlled workforce matrix and classify the native aggregation formula only if the observations distinguish it conclusively.
+17. Verify `native`, `fixed`, and positive/negative bounded `relative` policies from selected member through initialized actor level, including every wave and restart boundary.
+18. Compare identical scripted damage splits and final-hit orderings; prove that changing only the finishing attacker does not change the primary contribution ranking.
+19. Test direct player, active Pal, ridden Pal, base-worker Pal, automated defense, environmental damage, unresolved damage, overkill, capture, and duplicate callbacks against the target health budget.
+20. Simulate ties and verify exact contribution, final-hit tie-break, deterministic final fallback, and first/second/third reward settlement.
+21. Compare low- and high-grade bases with different native actor counts and prove the configured per-base target-value budget prevents raw-HP opportunity from deciding the global leaderboard.
 21. Move players through several event bases during staggered starts; verify all owned event groups score once, unrelated/natural incidents never score, and per-target/base/runtime ceilings bound the intended roaming advantage.
 22. Vary capture timing and capturer identity; prove the first ranked profile is noncapturable and later capture policies cannot deny or fabricate ranked points.
 23. Inject shields, regeneration, maximum-HP mismatch, duplicate/out-of-order callbacks, and ledger/HP divergence; verify the target becomes unranked rather than exceeding its immutable budget.

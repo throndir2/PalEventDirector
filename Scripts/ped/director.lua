@@ -10,6 +10,18 @@ local Director = {}
 Director.__index = Director
 
 local MICRO = 1000000
+local BANNER_MAX_LENGTH = 80
+
+local function warning_sets_match(actual, expected)
+    if type(actual) ~= "table" or #actual ~= #expected then return false end
+    local remaining = {}
+    for _, seconds in ipairs(expected) do remaining[seconds] = true end
+    for _, seconds in ipairs(actual) do
+        if not util.is_integer(seconds) or not remaining[seconds] then return false end
+        remaining[seconds] = nil
+    end
+    return next(remaining) == nil
+end
 
 local function new_state()
     return {
@@ -66,7 +78,6 @@ function Director.new(options)
         last_checkpoint = 0,
         next_reward_retry = 0,
         command_times = {},
-        last_public_command = 0,
         last_start_attempt = 0,
         scheduler_start_token = scheduler_start_token,
     }, Director)
@@ -94,7 +105,7 @@ function Director.new(options)
         persist = function(kind, data)
             return self:_persist(kind, data)
         end,
-        announce = function(message) return self:_announce(message) end,
+        notify = function(title, detail) return self:_notify(title, detail) end,
         start_event = function(source, profile, token, occurrence_key) return self:start(source, profile, token, occurrence_key) end,
         can_start = function()
             return self.state.status == "idle" or self.state.status == "completed" or self.state.status == "aborted",
@@ -176,8 +187,28 @@ function Director:_mark_dirty()
     self.dirty = true
 end
 
-function Director:_announce(message)
-    return self.bridge:announce(util.sanitize_text(message, self.config.limits.maxAnnouncementLength))
+function Director:_banner(message)
+    local maximum = math.min(BANNER_MAX_LENGTH, self.config.limits.maxAnnouncementLength)
+    return self.bridge:announce(util.sanitize_text(message, maximum))
+end
+
+function Director:_chat(message, recipient_uid)
+    message = util.sanitize_text(message, self.config.limits.maxAnnouncementLength)
+    if type(self.bridge.send_chat) == "function" then
+        return self.bridge:send_chat(message, recipient_uid)
+    end
+    return false, "system chat transport is unavailable"
+end
+
+function Director:_notify(title, detail)
+    local announced, announce_error = self:_banner(title)
+    if not announced then return false, announce_error, false end
+    local chatted, chat_error = self:_chat(detail)
+    if not chatted then
+        self.logger:warn("Detailed system chat could not be delivered", { error = chat_error, title = title })
+        return false, chat_error, true
+    end
+    return true
 end
 
 function Director:_active_event()
@@ -223,32 +254,60 @@ function Director:arm_start(source, requested_profile, countdown_minutes)
     else
         countdown_minutes = tonumber(countdown_minutes)
         if countdown_minutes == nil then
-            return false, "countdown must be an integer from 10 through 60 minutes"
+            return false, "countdown must be an integer from 0 through 60 minutes"
         end
     end
-    if not util.is_integer(countdown_minutes) or countdown_minutes < 10 or countdown_minutes > 60 then
-        return false, "countdown must be an integer from 10 through 60 minutes"
+    if not util.is_integer(countdown_minutes) or countdown_minutes < 0 or countdown_minutes > 60 then
+        return false, "countdown must be an integer from 0 through 60 minutes"
     end
     local armed, result = self.scheduler:arm_manual(profile_id, source or "operator", countdown_minutes * 60, bounties.profile(profile_id).name)
     if not armed then return false, result end
-    if not self:_checkpoint("manual_countdown") then
-        self.scheduler:cancel_manual("checkpoint_failed")
-        return false, "unable to checkpoint manual countdown"
-    end
     return true, result.key
+end
+
+function Director:_apply_dispatch_results(result)
+    local event = self.state.event
+    if not event or type(result) ~= "table" or type(result.requests) ~= "table" then return end
+    local now = self.clock()
+    for _, request in ipairs(result.requests) do
+        local base = event.bases[request.baseId]
+        if base then
+            base.dispatchPhase = request.phase
+            base.dispatchStatus = request.status
+            base.dispatchError = request.error
+            base.dispatchBefore = request.before
+            base.dispatchAfter = request.after
+            if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then
+                base.status = request.status
+                base.endedAt = now
+            end
+        end
+    end
 end
 
 function Director:start(source, requested_profile, scheduler_token, scheduler_occurrence_key)
     if scheduler_token ~= self.scheduler_start_token or type(scheduler_occurrence_key) ~= "string" then
-        return false, "direct invasion start denied; arm a warning countdown"
+        return false, "direct invasion start denied; use a scheduled or manual start"
     end
     local scheduler_occurrence = self.scheduler and self.scheduler.state.occurrences[scheduler_occurrence_key] or nil
     if not scheduler_occurrence or scheduler_occurrence.status ~= "starting" or scheduler_occurrence.profileId ~= requested_profile then
         return false, "scheduler start authorization is invalid"
     end
-    for _, seconds in ipairs({ 600, 300, 60 }) do
+    local required_warnings = { 600, 300, 60 }
+    if scheduler_occurrence.manual then
+        local countdown_seconds = scheduler_occurrence.countdownSeconds
+        local expected_warnings = Scheduler.manual_warning_seconds(countdown_seconds)
+        local schedule = scheduler_occurrence.schedule
+        if not expected_warnings or not schedule
+            or scheduler_occurrence.intendedAt - scheduler_occurrence.plannedAt ~= countdown_seconds
+            or not warning_sets_match(schedule.warningSeconds, expected_warnings) then
+            return false, "manual scheduler start authorization is invalid"
+        end
+        required_warnings = expected_warnings
+    end
+    for _, seconds in ipairs(required_warnings) do
         if not scheduler_occurrence.warningsSent[tostring(seconds)] then
-            return false, "scheduler start authorization lacks mandatory warnings"
+            return false, "scheduler start authorization lacks a required warning"
         end
     end
     if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
@@ -280,7 +339,12 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         profileName = bounties.profile(profile_id).name,
         status = "starting",
         source = source or "operator",
+        schedulerOccurrenceKey = scheduler_occurrence_key,
         startedAt = now,
+        startConfirmationDeadline = now + self.config.siegeLeague.startDiscoverySeconds,
+        startConfirmedAt = nil,
+        confirmedBaseCount = 0,
+        fanoutDispatched = false,
         startedAtUtc = util.utc_now(),
         lastLifecycleAt = now,
         bases = {},
@@ -290,9 +354,16 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     }
     self.state.status = "starting"
     self.scoreboard = Scoreboard.new(self:_scoreboard_options(occurrence_id))
-    local expected_bases, start_roster = {}, nil
+    local expected_bases, start_roster, discovery_error = {}, nil, nil
     if self.bridge.begin_event_discovery then
-        expected_bases, start_roster = self.bridge:begin_event_discovery(profile_id, occurrence_id)
+        expected_bases, start_roster, discovery_error = self.bridge:begin_event_discovery(profile_id, occurrence_id)
+    end
+    if discovery_error then
+        if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
+        self.state.event = nil
+        self.state.status = previous_status
+        self.scoreboard = nil
+        return false, discovery_error
     end
     expected_bases = expected_bases or {}
     if start_roster == nil then
@@ -349,39 +420,33 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
 
     local started, start_result = self.bridge:start_all_invasions(profile_id)
     if not started then
-        if type(start_result) == "table" and type(start_result.requests) == "table" then
-            for _, request in ipairs(start_result.requests) do
-                local base = self.state.event.bases[request.baseId]
-                if base then
-                    base.dispatchStatus = request.status
-                    base.dispatchError = request.error
-                    base.status = "dispatch_call_failed"
-                    base.endedAt = now
-                end
-            end
-        end
+        self:_apply_dispatch_results(start_result)
         if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
         self.state.status = "aborted"
         self.state.event.status = "aborted"
         self.state.event.abortReason = type(start_result) == "table" and start_result.error or start_result
-        self:_persist("event_start_failed", { occurrenceId = occurrence_id, result = start_result })
-        return false, self.state.event.abortReason
-    end
-    if type(start_result) == "table" and type(start_result.requests) == "table" then
-        for _, request in ipairs(start_result.requests) do
-            local base = self.state.event.bases[request.baseId]
-            if base then
-                base.dispatchStatus = request.status
-                base.dispatchError = request.error
-                if request.status == "dispatch_call_failed" and base.status == "pending" then
-                    base.status = "dispatch_call_failed"
-                    base.endedAt = now
-                end
+        for _, base in pairs(self.state.event.bases) do
+            if base.status == "pending" and base.dispatchStatus == "awaiting_probe_confirmation" then
+                base.status = "dispatch_skipped_probe_failed"
+                base.dispatchStatus = "dispatch_skipped_probe_failed"
+                base.endedAt = now
             end
         end
+        self.scoreboard = nil
+        local failure_persisted, failure_error = self:_persist("event_start_failed", { occurrenceId = occurrence_id, result = start_result })
+        if not failure_persisted then
+            self.state.status = "recovery_required"
+            self.state.event.status = "recovery_required"
+            self.state.event.recoveryReason = "unable to persist selected-base probe failure: " .. tostring(failure_error)
+            return false, self.state.event.recoveryReason
+        end
+        self:_notify("SIEGE LEAGUE - START FAILED", "The selected-base probe call failed before any native invasion could be confirmed: " .. tostring(self.state.event.abortReason))
+        return false, self.state.event.abortReason
     end
+    self:_apply_dispatch_results(start_result)
     local dispatch_persisted, dispatch_error = self:_persist("event_dispatch_results", {
         occurrenceId = occurrence_id,
+        phase = "probe",
         result = start_result,
     })
     if not dispatch_persisted then
@@ -389,9 +454,12 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         self.state.event.status = "recovery_required"
         return false, "unable to persist selected-base dispatch results: " .. tostring(dispatch_error)
     end
-    self:_announce("SIEGE LEAGUE - " .. bounties.profile(profile_id).name .. ": Every eligible online-guild base is under attack. Move between bases, protect everything, and rack up contribution and final hits!")
-    self.logger:info("Requested filtered-base Siege League", { occurrence = occurrence_id, profile = profile_id })
-    return true, occurrence_id
+    self.logger:info("Selected-base Siege League probe call returned; awaiting native lifecycle confirmation", {
+        occurrence = occurrence_id,
+        profile = profile_id,
+        expectedBases = util.count(self.state.event.bases),
+    })
+    return true, occurrence_id, self.state.status == "active"
 end
 
 function Director:reconcile_online_players()
@@ -433,6 +501,7 @@ function Director:on_invasion_start(base_id, group_id)
     elseif event.bases[base_id].status == "pending" then
         event.bases[base_id].groupId = group_id
         event.bases[base_id].status = "active"
+        event.bases[base_id].dispatchStatus = "lifecycle_confirmed"
         event.bases[base_id].startedAt = self.clock()
         event.bases[base_id].ranked = event.profileId == "native" or (event.compositions[base_id] and not event.compositions[base_id].failed)
     elseif event.bases[base_id].status == "active" and event.bases[base_id].groupId == group_id then
@@ -440,10 +509,43 @@ function Director:on_invasion_start(base_id, group_id)
     else
         return false
     end
-    event.lastLifecycleAt = self.clock()
+    local now = self.clock()
+    local first_confirmation = event.startConfirmedAt == nil
+    event.lastLifecycleAt = now
+    event.confirmedBaseCount = (event.confirmedBaseCount or 0) + 1
+    if first_confirmation then event.startConfirmedAt = now end
     event.status = "active"
     self.state.status = "active"
-    self:_mark_dirty()
+    local scheduler_confirmed, scheduler_error = self.scheduler:confirm_start(event.schedulerOccurrenceKey, event.id, now)
+    if not scheduler_confirmed then
+        event.status = "recovery_required"
+        event.recoveryReason = "unable to confirm scheduler start: " .. tostring(scheduler_error)
+        self.state.status = "recovery_required"
+        self.logger:error("Native invasion started but scheduler confirmation failed", { base = util.mask_uid(base_id), error = scheduler_error })
+        return true
+    end
+    local persisted, persist_error = self:_persist(first_confirmation and "event_start_confirmed" or "event_base_start_confirmed", {
+        occurrenceId = event.id,
+        base = util.mask_uid(base_id),
+        group = util.mask_uid(group_id),
+        confirmedBases = event.confirmedBaseCount,
+    })
+    if not persisted then
+        event.status = "recovery_required"
+        event.recoveryReason = "unable to persist native start confirmation: " .. tostring(persist_error)
+        self.state.status = "recovery_required"
+        self.logger:error("Native invasion started but confirmation could not be persisted", { base = util.mask_uid(base_id), error = persist_error })
+        return true
+    end
+    if first_confirmation then
+        local notified, notification_error = self:_notify(
+            "SIEGE LEAGUE - RAID STARTED",
+            bounties.profile(event.profileId).name .. ": A native invasion is confirmed. The remaining eligible online-guild bases will now be requested; move between bases, protect everything, and rack up contribution and final hits!"
+        )
+        if not notified then
+            self.logger:warn("Confirmed raid start notification was incomplete", { error = notification_error })
+        end
+    end
     self.logger:info("Invasion joined Siege League", { base = util.mask_uid(base_id), occurrence = event.id })
     return true
 end
@@ -611,6 +713,100 @@ local function all_bases_closed(event)
     return found
 end
 
+function Director:_fail_unconfirmed_start(reason)
+    local event = self.state.event
+    if not event or event.startConfirmedAt then return false, "start already confirmed" end
+    local now = self.clock()
+    for _, base in pairs(event.bases) do
+        if base.status == "pending" then
+            if base.dispatchStatus == "probe_call_returned" or base.dispatchStatus == "lifecycle_confirmed" then
+                base.status = "native_start_missing"
+            else
+                base.status = "dispatch_skipped_probe_unconfirmed"
+            end
+            base.endedAt = now
+        end
+    end
+    event.status = "aborted"
+    event.abortReason = reason or "no correlated native invasion lifecycle confirmed before start discovery timeout"
+    event.endedAt = now
+    event.endedAtUtc = util.utc_now()
+    event.finalRankings = nil
+    event.scoreStats = nil
+    self.state.status = "aborted"
+    self.scoreboard = nil
+    local scheduler_failed, scheduler_error = self.scheduler:fail_start(event.schedulerOccurrenceKey, event.abortReason)
+    if not scheduler_failed then
+        event.status = "recovery_required"
+        event.recoveryReason = "unable to fail scheduler start: " .. tostring(scheduler_error)
+        self.state.status = "recovery_required"
+        return false, event.recoveryReason
+    end
+    local persisted, persist_error = self:_persist("event_start_failed", {
+        occurrenceId = event.id,
+        reason = event.abortReason,
+        expectedBases = util.count(event.bases),
+        confirmedBases = 0,
+    })
+    if not persisted then
+        event.status = "recovery_required"
+        event.recoveryReason = "unable to persist unconfirmed start failure: " .. tostring(persist_error)
+        self.state.status = "recovery_required"
+        return false, event.recoveryReason
+    end
+    if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
+    self:_notify(
+        "SIEGE LEAGUE - START FAILED",
+        "No selected-base native invasion lifecycle was confirmed before the discovery timeout. No Siege League results or rewards were created; review the masked dispatch diagnostics before retrying."
+    )
+    return true, event.abortReason
+end
+
+function Director:_dispatch_confirmed_fanout()
+    local event = self.state.event
+    if not event or not event.startConfirmedAt or event.fanoutDispatched then return true end
+    event.fanoutIntentAt = self.clock()
+    local intent_persisted, intent_error = self:_persist("event_fanout_intent", {
+        occurrenceId = event.id,
+        confirmedProbe = true,
+    })
+    if not intent_persisted then
+        event.status = "recovery_required"
+        event.recoveryReason = "unable to persist fanout intent: " .. tostring(intent_error)
+        self.state.status = "recovery_required"
+        return false, event.recoveryReason
+    end
+    local dispatched, result = self.bridge:continue_invasion_dispatch()
+    event.fanoutDispatched = true
+    event.fanoutDispatchedAt = self.clock()
+    event.discoveryDeadline = event.fanoutDispatchedAt + self.config.siegeLeague.startDiscoverySeconds
+    if dispatched then
+        self:_apply_dispatch_results(result)
+    else
+        event.fanoutError = tostring(result)
+        for _, base in pairs(event.bases) do
+            if base.status == "pending" and base.dispatchStatus == "awaiting_probe_confirmation" then
+                base.status = "dispatch_call_failed"
+                base.dispatchStatus = "dispatch_call_failed"
+                base.dispatchError = event.fanoutError
+                base.endedAt = self.clock()
+            end
+        end
+    end
+    local persisted, persist_error = self:_persist("event_fanout_dispatch_results", {
+        occurrenceId = event.id,
+        dispatched = dispatched,
+        result = result,
+    })
+    if not persisted then
+        event.status = "recovery_required"
+        event.recoveryReason = "unable to persist fanout dispatch results: " .. tostring(persist_error)
+        self.state.status = "recovery_required"
+        return false, event.recoveryReason
+    end
+    return dispatched, result
+end
+
 function Director:_create_rewards(rankings)
     local event = self.state.event
     local minimum_micro = self.config.siegeLeague.minimumParticipationPoints * MICRO
@@ -688,6 +884,9 @@ function Director:resolve(reason)
         return false, "nothing to resolve"
     end
     local event = self.state.event
+    if not event.startConfirmedAt then
+        return self:_fail_unconfirmed_start("resolve requested before any native invasion lifecycle was confirmed")
+    end
     self:_classify_unresolved_bases(reason or "completed")
     self.state.status = "resolving"
     event.status = "resolving"
@@ -734,13 +933,25 @@ function Director:resolve(reason)
     if self.config.capabilities.grantItems then
         self.rewards:process(self.bridge, 32, function() return self:_checkpoint("reward") end)
     end
-    self:_announce(self:leaderboard_text(3))
+    self:_notify("SIEGE LEAGUE - RESULTS", self:leaderboard_text(3))
     return true
 end
 
 function Director:abort(reason)
     if not self.state.event or self.state.status == "idle" then
         return false, "nothing to abort"
+    end
+    if not self.state.event.startConfirmedAt then
+        local scheduler_failed, scheduler_error = self.scheduler:fail_start(
+            self.state.event.schedulerOccurrenceKey,
+            "operator aborted before native start confirmation"
+        )
+        if not scheduler_failed then
+            self.state.status = "recovery_required"
+            self.state.event.status = "recovery_required"
+            self.state.event.recoveryReason = "unable to settle scheduler during abort: " .. tostring(scheduler_error)
+            return false, self.state.event.recoveryReason
+        end
     end
     self.state.status = "aborted"
     self.state.event.status = "aborted"
@@ -753,7 +964,10 @@ function Director:abort(reason)
         return false, "abort persistence failed: " .. tostring(persist_error)
     end
     if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
-    self:_announce("Siege League scoring stopped. Native invasions were left to Palworld's normal lifecycle for safety.")
+    self:_notify(
+        "SIEGE LEAGUE - SCORING STOPPED",
+        "Siege League scoring stopped. Native invasions were left to Palworld's normal lifecycle for safety."
+    )
     return true
 end
 
@@ -929,7 +1143,7 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
     local uid = principal.uid
     local authorized, denial, authority = self:_authorize_chat_command(principal, "start")
     if not authorized then
-        self:_announce("Siege League start denied: " .. tostring(denial) .. ".")
+        self:_chat("Siege League start denied: " .. tostring(denial) .. ".", uid)
         return true
     end
     local ordinary_user = authority == "any-user-policy"
@@ -937,22 +1151,22 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
         local last_start = self.state.lastUserStartAt or 0
         local remaining = last_start > 0 and (self.config.siegeLeague.userStartCooldownSeconds - (now - last_start)) or 0
         if remaining > 0 then
-            self:_announce("Siege League user-start cooldown: " .. math.ceil(remaining / 60) .. " minute(s) remaining.")
+            self:_chat("Siege League user-start cooldown: " .. math.ceil(remaining / 60) .. " minute(s) remaining.", uid)
             return true
         end
     end
     if now - self.last_start_attempt < 10 then
-        self:_announce("Siege League start requests are temporarily rate-limited.")
+        self:_chat("Siege League start requests are temporarily rate-limited.", uid)
         return true
     end
     self.last_start_attempt = now
     local profile_id, profile_error = self:_profile_allowed(requested_profile)
     if not profile_id then
-        self:_announce("Siege League start failed: " .. tostring(profile_error))
+        self:_chat("Siege League start failed: " .. tostring(profile_error), uid)
         return true
     end
     if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
-        self:_announce("Siege League start failed: director is " .. self.state.status)
+        self:_chat("Siege League start failed: director is " .. self.state.status, uid)
         return true
     end
     local previous_user_start = self.state.lastUserStartAt or 0
@@ -964,7 +1178,7 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
         })
         if not persisted then
             self.state.lastUserStartAt = previous_user_start
-            self:_announce("Siege League start failed: unable to persist user cooldown: " .. tostring(persist_error))
+            self:_chat("Siege League start failed: unable to persist user cooldown: " .. tostring(persist_error), uid)
             return true
         end
     end
@@ -977,7 +1191,7 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
         })
         if not rollback_ok then self.state.status = "recovery_required" end
     end
-    if not ok then self:_announce("Siege League start failed: " .. tostring(result)) end
+    if not ok then self:_chat("Siege League start failed: " .. tostring(result), uid) end
     return true
 end
 
@@ -995,30 +1209,23 @@ function Director:handle_chat(principal, message)
         return true
     end
     local words = util.split_words(lowered)
-    local public_query = lowered == "!event" or lowered == "!score" or lowered == "!leaderboard"
-        or (words[1] == "!siege" and ({ status = true, profiles = true, schedule = true, score = true, leaderboard = true })[words[2] or "status"])
-        or (words[1] == "!ped" and ({ status = true, profiles = true, schedule = true, leaderboard = true })[words[2] or "status"])
-    if public_query and now - self.last_public_command < 5 then
-        return true
-    end
     self.command_times[uid] = now
-    if public_query then self.last_public_command = now end
     if words[1] == "!siege" then
         local action = words[2] or "status"
         if action == "status" then
-            self:_announce(self:status_text())
+            self:_chat(self:status_text(), uid)
             return true
         elseif action == "profiles" then
-            self:_announce(self:profiles_text())
+            self:_chat(self:profiles_text(), uid)
             return true
         elseif action == "schedule" then
-            self:_announce(self:schedule_text())
+            self:_chat(self:schedule_text(), uid)
             return true
         elseif action == "score" then
-            self:_announce(self:player_text(uid))
+            self:_chat(self:player_text(uid), uid)
             return true
         elseif action == "leaderboard" then
-            self:_announce(self:leaderboard_text())
+            self:_chat(self:leaderboard_text(), uid)
             return true
         elseif action == "start" then
             return self:_handle_chat_start(principal, words[3], words[4], now)
@@ -1026,16 +1233,16 @@ function Director:handle_chat(principal, message)
             self:handle_operator_command(action, "chat:" .. util.mask_uid(uid), principal)
             return true
         end
-        self:_announce("Siege commands: !siege status|profiles|schedule|score|leaderboard|start <profile> [10-60 minutes].")
+        self:_chat("Siege commands: !siege status|profiles|schedule|score|leaderboard|start <profile> [0-60 minutes].", uid)
         return true
     elseif lowered == "!event" then
-        self:_announce(self:status_text())
+        self:_chat(self:status_text(), uid)
         return true
     elseif lowered == "!score" then
-        self:_announce(self:player_text(uid))
+        self:_chat(self:player_text(uid), uid)
         return true
     elseif lowered == "!leaderboard" then
-        self:_announce(self:leaderboard_text())
+        self:_chat(self:leaderboard_text(), uid)
         return true
     elseif util.starts_with(lowered, "!ped ") then
         if words[2] == "start" then
@@ -1053,7 +1260,7 @@ function Director:handle_operator_command(command, source, principal)
     if source and source:match("^chat:") then
         local authorized, denial = self:_authorize_chat_command(principal, action)
         if not authorized then
-            self:_announce("PED ERROR: command denied: " .. tostring(denial) .. ".")
+            self:_chat("PED ERROR: command denied: " .. tostring(denial) .. ".", principal and principal.uid)
             return false, denial
         end
     end
@@ -1077,6 +1284,14 @@ function Director:handle_operator_command(command, source, principal)
         ok, result = self:abort("operator")
     elseif action == "reset" then
         ok, result = self:reset()
+    elseif action == "diagnose-native-all" then
+        if source ~= "console" then
+            ok, result = false, "diagnose-native-all is server-console-only"
+        elseif type(self.bridge.diagnose_native_start_all) ~= "function" then
+            ok, result = false, "native all-base diagnostic is unavailable"
+        else
+            ok, result = self.bridge:diagnose_native_start_all(words[2])
+        end
     elseif action == "rewards" then
         if not self.config.capabilities.grantItems then
             ok, result = false, "capabilities.grantItems is disabled"
@@ -1085,10 +1300,10 @@ function Director:handle_operator_command(command, source, principal)
             ok, result = true, "processed " .. count .. " pending reward obligations"
         end
     else
-        ok, result = false, "unknown command; use start [profile] [minutes], cancel, status, profiles, schedule, leaderboard, resolve, abort, reset, or rewards"
+        ok, result = false, "unknown command; use start [profile] [minutes], cancel, status, profiles, schedule, leaderboard, resolve, abort, reset, diagnose-native-all, or rewards"
     end
     if source and source:match("^chat:") then
-        self:_announce((ok and "PED: " or "PED ERROR: ") .. tostring(result or "ok"))
+        self:_chat((ok and "PED: " or "PED ERROR: ") .. tostring(result or "ok"), principal and principal.uid)
     end
     return ok, result
 end
@@ -1099,14 +1314,24 @@ function Director:tick()
     local event = self:_active_event()
     if event then
         self:reconcile_online_players()
-        if not event.discoveryClosed and now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds then
+        if not event.startConfirmedAt and now >= event.startConfirmationDeadline then
+            self:_fail_unconfirmed_start("no correlated native invasion lifecycle confirmed before start discovery timeout")
+            event = nil
+        elseif event.startConfirmedAt and not event.fanoutDispatched then
+            self:_dispatch_confirmed_fanout()
+            event = self:_active_event()
+        end
+    end
+    if event then
+        local discovery_deadline = event.discoveryDeadline or event.startConfirmationDeadline
+        if not event.discoveryClosed and event.fanoutDispatched and now >= discovery_deadline then
             if self.bridge.close_event_discovery then self.bridge:close_event_discovery() end
             event.discoveryClosed = true
             self:_mark_dirty()
         end
         if now - event.startedAt >= self.config.siegeLeague.maxRuntimeSeconds then
             self:resolve("maximum runtime")
-        elseif now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds then
+        elseif event.fanoutDispatched and now >= discovery_deadline then
             local active_count = 0
             for _, base in pairs(event.bases) do
                 if base.status == "pending" then
@@ -1118,7 +1343,11 @@ function Director:tick()
                 end
             end
             if active_count == 0 and all_bases_closed(event) and now - event.lastLifecycleAt >= self.config.siegeLeague.settleDelaySeconds then
-                self:resolve("all expected bases classified")
+                if (event.confirmedBaseCount or 0) > 0 then
+                    self:resolve("all expected bases classified")
+                else
+                    self:_fail_unconfirmed_start("all selected-base calls completed without a correlated native lifecycle")
+                end
             end
         end
     end

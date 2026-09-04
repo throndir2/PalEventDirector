@@ -124,6 +124,22 @@ test("command authorization policies validate and combined policy is the default
     truthy(validation_error:match("chatStartPolicy"))
 end)
 
+test("manual countdown configuration accepts zero through sixty minutes", function()
+    for _, minutes in ipairs({ 0, 1, 9, 10, 60 }) do
+        local config = Config.defaults()
+        config.siegeLeague.manualCountdownMinutes = minutes
+        local valid, validation_error = Config.validate(config)
+        truthy(valid, validation_error)
+    end
+    for _, minutes in ipairs({ -1, 61, 1.5 }) do
+        local config = Config.defaults()
+        config.siegeLeague.manualCountdownMinutes = minutes
+        local valid, validation_error = Config.validate(config)
+        equal(valid, false)
+        truthy(validation_error:match("manualCountdownMinutes"))
+    end
+end)
+
 test("invasion mutation requires an explicit UE4SS version allowlist", function()
     local config = Config.defaults()
     config.capabilities.observeCombat = true
@@ -266,7 +282,7 @@ test("weekly scheduler emits ten five one warnings and starts once", function()
         clock = function() return intended end,
         persist = function() return true end,
         announce = function(message) warnings[#warnings + 1] = message; return true end,
-        start_event = function(_, profile) starts = starts + 1; equal(profile, "all-bounty"); return true, "occurrence" end,
+        start_event = function(_, profile) starts = starts + 1; equal(profile, "all-bounty"); return true, "occurrence", true end,
         can_start = function() return true end,
     })
     scheduler:tick(intended - 600)
@@ -279,6 +295,45 @@ test("weekly scheduler emits ten five one warnings and starts once", function()
     truthy(warnings[2]:match("5 minutes"))
     truthy(warnings[3]:match("1 minute"))
     equal(starts, 1)
+end)
+
+test("manual seven-minute countdown announces selected five and one-minute milestones", function()
+    local now = 1000
+    local notifications = {}
+    local starts = 0
+    local scheduler = Scheduler.new({
+        clock = function() return now end,
+        persist = function() return true end,
+        notify = function(title, detail)
+            notifications[#notifications + 1] = { title = title, detail = detail }
+            return true
+        end,
+        start_event = function(_, profile)
+            starts = starts + 1
+            equal(profile, "native")
+            return true, "manual-event", true
+        end,
+        can_start = function() return true end,
+    })
+    local armed, occurrence = scheduler:arm_manual("native", "test", 420, "Seven Minute Test")
+    truthy(armed, occurrence)
+    equal(#occurrence.schedule.warningSeconds, 3)
+    equal(occurrence.schedule.warningSeconds[1], 420)
+    equal(occurrence.schedule.warningSeconds[2], 300)
+    equal(occurrence.schedule.warningSeconds[3], 60)
+    equal(notifications[1].title, "SIEGE LEAGUE - 7 MINUTES")
+    truthy(notifications[1].detail:match("Seven Minute Test begins in 7 minutes"))
+    now = now + 120
+    scheduler:tick(now)
+    now = now + 240
+    scheduler:tick(now)
+    now = now + 60
+    scheduler:tick(now)
+    equal(#notifications, 3)
+    equal(notifications[2].title, "SIEGE LEAGUE - 5 MINUTES")
+    equal(notifications[3].title, "SIEGE LEAGUE - 1 MINUTE")
+    equal(starts, 1)
+    equal(occurrence.status, "started")
 end)
 
 test("scheduler marks occurrence missed beyond late tolerance", function()
@@ -355,7 +410,7 @@ test("restored scheduled occurrence is processed after its calendar date changes
         persist = function() return true end,
         announce = function() return true end,
         can_start = function() return true end,
-        start_event = function() starts = starts + 1; return true, "restored-event" end,
+        start_event = function() starts = starts + 1; return true, "restored-event", true end,
     }, restored)
     scheduler:tick(restarted_at)
     equal(starts, 1)
@@ -462,6 +517,121 @@ test("scheduled start is missed when a mandatory warning cannot be delivered", f
     equal(occurrence.status, "missed")
     equal(occurrence.reason, "mandatory_warning_missed_600")
     equal(starts, 0)
+end)
+
+test("partially delivered warning enters recovery without duplicate notification", function()
+    local schedule = util.deep_copy(Config.defaults().schedules[1])
+    schedule.enabled = true
+    schedule.frequency = "daily"
+    schedule.hour = 12
+    schedule.minute = 0
+    local intended = os.time({ year = 2026, month = 9, day = 7, hour = 12, min = 0, sec = 0, isdst = nil })
+    local notifications = 0
+    local starts = 0
+    local scheduler = Scheduler.new({
+        schedules = { schedule },
+        persist = function() return true end,
+        notify = function()
+            notifications = notifications + 1
+            return false, "detail chat unavailable", true
+        end,
+        start_event = function() starts = starts + 1; return true end,
+    })
+    scheduler:tick(intended - 600)
+    scheduler:tick(intended - 599)
+    local occurrence = scheduler:to_state().occurrences[schedule.id .. "@" .. tostring(intended)]
+    equal(occurrence.status, "recovery_required")
+    truthy(occurrence.reason:match("partially_delivered"))
+    equal(notifications, 1)
+    equal(starts, 0)
+end)
+
+test("delivered warning with failed sent record enters recovery without rebroadcast", function()
+    local schedule = util.deep_copy(Config.defaults().schedules[1])
+    schedule.enabled = true
+    schedule.frequency = "daily"
+    schedule.hour = 12
+    schedule.minute = 0
+    local intended = os.time({ year = 2026, month = 9, day = 7, hour = 12, min = 0, sec = 0, isdst = nil })
+    local notifications = 0
+    local scheduler = Scheduler.new({
+        schedules = { schedule },
+        persist = function(kind) return kind ~= "schedule_warning_sent", "injected sent-record failure" end,
+        notify = function() notifications = notifications + 1; return true end,
+    })
+    scheduler:tick(intended - 600)
+    scheduler:tick(intended - 599)
+    local occurrence = scheduler:to_state().occurrences[schedule.id .. "@" .. tostring(intended)]
+    equal(occurrence.status, "recovery_required")
+    truthy(occurrence.reason:match("not_persisted"))
+    equal(notifications, 1)
+end)
+
+test("restored warning delivery intent never rebroadcasts after restart", function()
+    local schedule = util.deep_copy(Config.defaults().schedules[1])
+    schedule.enabled = true
+    schedule.frequency = "daily"
+    schedule.hour = 12
+    schedule.minute = 0
+    local intended = os.time({ year = 2026, month = 9, day = 7, hour = 12, min = 0, sec = 0, isdst = nil })
+    local key = schedule.id .. "@" .. tostring(intended)
+    local restored = {
+        schemaVersion = 2,
+        occurrences = {
+            [key] = {
+                key = key,
+                scheduleId = schedule.id,
+                profileId = schedule.profile,
+                intendedAt = intended,
+                warningsSent = {},
+                warningAttempts = { ["600"] = 1 },
+                status = "recovery_required",
+                reason = "warning_delivery_in_progress_600",
+                schedule = schedule,
+            },
+        },
+        manualNonce = 0,
+    }
+    local notifications = 0
+    local starts = 0
+    local scheduler = Scheduler.new({
+        schedules = { schedule },
+        persist = function() return true end,
+        notify = function() notifications = notifications + 1; return true end,
+        start_event = function() starts = starts + 1; return true end,
+    }, restored)
+    scheduler:tick(intended - 599)
+    scheduler:tick(intended)
+    equal(restored.occurrences[key].status, "recovery_required")
+    equal(notifications, 0)
+    equal(starts, 0)
+end)
+
+test("restored scheduler request awaiting native confirmation requires recovery", function()
+    local schedule = util.deep_copy(Config.defaults().schedules[1])
+    schedule.enabled = true
+    local intended = os.time({ year = 2026, month = 9, day = 7, hour = 12, min = 0, sec = 0, isdst = nil })
+    local key = schedule.id .. "@" .. tostring(intended)
+    local restored = {
+        schemaVersion = 2,
+        occurrences = {
+            [key] = {
+                key = key,
+                scheduleId = schedule.id,
+                profileId = schedule.profile,
+                intendedAt = intended,
+                warningsSent = { ["600"] = true, ["300"] = true, ["60"] = true },
+                warningAttempts = {},
+                status = "awaiting_confirmation",
+                occurrenceId = "probe-request",
+                schedule = schedule,
+            },
+        },
+        manualNonce = 0,
+    }
+    Scheduler.new({ schedules = { schedule } }, restored)
+    equal(restored.occurrences[key].status, "recovery_required")
+    equal(restored.occurrences[key].reason, "server_restarted_during_start")
 end)
 
 test("all-bounty profile cycles the complete audited roster", function()
@@ -661,6 +831,22 @@ test("second native group at the same pending base is never substituted", functi
     equal(bridge.owned_groups["broadcast-b"], nil)
 end)
 
+test("SelectInvaders post hook forwards the output array after return grade and biome", function()
+    local bridge = Bridge.new({ config = Config.defaults(), logger = { info = function() end, warn = function() end, error = function() end } })
+    local captured_context
+    local captured_members
+    bridge._selection_hook_scope = function() return "event" end
+    bridge._on_select_invaders = function(_, context, out_members)
+        captured_context = context
+        captured_members = out_members
+    end
+    local context = { marker = "incident" }
+    local out_members = { marker = "out-members" }
+    bridge:_on_select_invaders_post(context, true, 4, 2, out_members)
+    equal(captured_context, context)
+    equal(captured_members, out_members)
+end)
+
 test("eligible target filter includes only guilds with an online member", function()
     local previous_find_all = _G.FindAllOf
     local world = { IsValid = function() return true end }
@@ -684,10 +870,11 @@ test("eligible target filter includes only guilds with an online member", functi
             IsAvailable = function() return true end,
             GetId = function() return id end,
             GetGroupIdBelongTo = function() return guild_id end,
+            bIgnoreInvader = false,
         }
     end
-    local observer_online = { TargetBaseCamp = base("base-online", "guild-online"), bIsInvading = false, bIsInvaderPathSearching = false }
-    local observer_offline = { TargetBaseCamp = base("base-offline", "guild-offline"), bIsInvading = false, bIsInvaderPathSearching = false }
+    local observer_online = { TargetBaseCamp = base("base-online", "guild-online"), TargetBaseCampID = "base-online", bIsInvading = false, bIsInvaderPathSearching = false, bIsCoolTime = false }
+    local observer_offline = { TargetBaseCamp = base("base-offline", "guild-offline"), TargetBaseCampID = "base-offline", bIsInvading = false, bIsInvaderPathSearching = false, bIsCoolTime = false }
     local observers = {
         ForEach = function(_, callback)
             callback("base-online", observer_online)
@@ -751,9 +938,10 @@ test("eligibility fails when an online guild base observer is busy", function()
         IsAvailable = function() return true end,
         GetId = function() return "base-a" end,
         GetGroupIdBelongTo = function() return "guild-a" end,
+        bIgnoreInvader = false,
     }
     local manager = {
-        Observers = { ForEach = function(_, callback) callback("base-a", { TargetBaseCamp = base, bIsInvading = true, bIsInvaderPathSearching = false }) end },
+        Observers = { ForEach = function(_, callback) callback("base-a", { TargetBaseCamp = base, TargetBaseCampID = "base-a", bIsInvading = true, bIsInvaderPathSearching = false, bIsCoolTime = false }) end },
     }
     local bridge = Bridge.new({ config = Config.defaults(), logger = { info = function() end, warn = function() end, error = function() end } })
     bridge.utility = utility
@@ -772,6 +960,149 @@ test("registered-base inspection rejects any occupied native incident slot", fun
     local ids, registration_error = bridge:_registered_base_ids(manager)
     equal(ids, nil)
     truthy(registration_error:match("occupy base slots"))
+end)
+
+test("selected-base dispatch probes one base before confirmed fanout and records masked state", function()
+    local calls = {}
+    local logs = {}
+    local world = { IsValid = function() return true end }
+    local function base(id)
+        return {
+            IsValid = function() return true end,
+            IsAvailable = function() return true end,
+            GetId = function() return id end,
+            CurrentState = 1,
+            Level_InGuildProperty = 20,
+            bTemporary = false,
+            bIgnoreInvader = false,
+        }
+    end
+    local base_a = base("base-alpha")
+    local base_b = base("base-bravo")
+    local observers_by_id = {
+        ["base-alpha"] = {
+            IsValid = function() return true end,
+            TargetBaseCamp = base_a,
+            TargetBaseCampID = "base-alpha",
+            bIsInvading = false,
+            bIsInvaderPathSearching = false,
+            bIsCoolTime = false,
+            CoolTimeFinish = 0,
+            CoolTimeElapsed = 0,
+            PlayerInBaseCampTimer = 5,
+            PlayerHandlesCache = {},
+        },
+        ["base-bravo"] = {
+            IsValid = function() return true end,
+            TargetBaseCamp = base_b,
+            TargetBaseCampID = "base-bravo",
+            bIsInvading = false,
+            bIsInvaderPathSearching = false,
+            bIsCoolTime = false,
+            CoolTimeFinish = 0,
+            CoolTimeElapsed = 0,
+            PlayerInBaseCampTimer = 5,
+            PlayerHandlesCache = {},
+        },
+    }
+    local manager = {
+        IsValid = function() return true end,
+        GetFullName = function() return "PalInvaderManager /Game/Test" end,
+        Observers = { ForEach = function(_, callback)
+            callback("base-alpha", observers_by_id["base-alpha"])
+            callback("base-bravo", observers_by_id["base-bravo"])
+        end },
+        Incidents = { ForEach = function() end },
+        StartInvaderMarchForBaseCamp = function(_, native_id)
+            calls[#calls + 1] = native_id
+            observers_by_id[native_id].bIsInvaderPathSearching = true
+        end,
+    }
+    local utility = {
+        IsValid = function() return true end,
+        GetOptionWorldSettings = function() return { bEnableInvaderEnemy = true } end,
+    }
+    local bridge = Bridge.new({
+        config = Config.defaults(),
+        logger = {
+            info = function(_, message, fields) logs[#logs + 1] = { message = message, fields = util.deep_copy(fields) } end,
+            warn = function() end,
+            error = function() end,
+        },
+        clock = function() return 1000 end,
+    })
+    bridge.utility = utility
+    bridge.event_manager = manager
+    bridge.event_world = world
+    bridge.expected_bases = { ["base-alpha"] = true, ["base-bravo"] = true }
+
+    local started, probe = bridge:start_all_invasions()
+    truthy(started, probe)
+    equal(#calls, 1)
+    equal(calls[1], "base-alpha")
+    equal(probe.requests[1].status, "probe_call_returned")
+    equal(probe.requests[2].status, "awaiting_probe_confirmation")
+    equal(probe.requests[1].before.observerPathSearching, false)
+    equal(probe.requests[1].after.observerPathSearching, true)
+    equal(probe.requests[1].before.guidSourcesMatch, true)
+    local continued, continue_error = bridge:continue_invasion_dispatch()
+    equal(continued, false)
+    truthy(continue_error:match("not confirmed"))
+    equal(#calls, 1)
+
+    bridge.probe_confirmed = true
+    local fanned, fanout = bridge:continue_invasion_dispatch()
+    truthy(fanned, fanout)
+    equal(#calls, 2)
+    equal(calls[2], "base-bravo")
+    equal(fanout.requests[1].status, "fanout_call_returned")
+    truthy(#logs >= 4)
+    equal(logs[1].fields.base, "base…lpha")
+    equal(logs[1].fields.modelId, "base…lpha")
+end)
+
+test("lifecycle and selection scopes reject a second manager in another world", function()
+    local function world(address)
+        return { IsValid = function() return true end, GetAddress = function() return address end }
+    end
+    local event_world = world(100)
+    local other_world = world(200)
+    local function manager(address, owner_world)
+        return {
+            IsValid = function() return true end,
+            GetAddress = function() return address end,
+            GetWorld = function() return owner_world end,
+            GetFullName = function() return "PalInvaderManager /Game/SameVisibleName" end,
+        }
+    end
+    local event_manager = manager(1000, event_world)
+    local same_name_other_manager = manager(2000, other_world)
+    local bridge = Bridge.new({
+        config = Config.defaults(),
+        logger = { info = function() end, warn = function() end, error = function() end },
+        clock = function() return 1000 end,
+    })
+    bridge.event_open = true
+    bridge.event_manager = event_manager
+    bridge.event_world = event_world
+    bridge.event_manager_address = "1000"
+    bridge.event_world_address = "100"
+    equal(bridge:_manager_hook_scope(event_manager), "event")
+    equal(bridge:_manager_hook_scope(same_name_other_manager), nil)
+    local event_incident = {
+        IsValid = function() return true end,
+        GetWorld = function() return event_world end,
+    }
+    local other_incident = {
+        IsValid = function() return true end,
+        GetWorld = function() return other_world end,
+    }
+    equal(bridge:_selection_hook_scope(event_incident), "event")
+    equal(bridge:_selection_hook_scope(other_incident), nil)
+    bridge.event_manager_address = nil
+    bridge.event_world_address = nil
+    equal(bridge:_manager_hook_scope(event_manager), nil)
+    equal(bridge:_selection_hook_scope(event_incident), nil)
 end)
 
 test("journal and atomic snapshot survive reload", function()
@@ -1025,19 +1356,20 @@ test("user chat can start the all-bounty alarm only under configured policy and 
         save_snapshot = function() return true end,
     }
     local bridge = {
-        announcements = {}, starts = 0,
+        announcements = {}, chats = {}, starts = 0,
         preflight_start = function(self, profile) self.preflightProfile = profile; return true end,
         begin_event_discovery = function(self, profile) self.discoveryProfile = profile; return { "base-a" } end,
         end_event_tracking = function() end,
         start_all_invasions = function(self, profile) self.starts = self.starts + 1; self.startProfile = profile; return true end,
         announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
+        send_chat = function(self, message, recipient) self.chats[#self.chats + 1] = { message = message, recipient = recipient }; return true end,
         active_invasion_count = function() return 0 end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
     local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
     truthy(director:handle_chat("11111111-1111-1111-1111-111111111111", "!siege start bounty"))
     equal(bridge.starts, 0)
-    truthy(bridge.announcements[#bridge.announcements]:match("10 minutes"))
+    truthy(bridge.chats[#bridge.chats].message:match("10 minutes"))
     now = now + 300
     director:tick()
     now = now + 240
@@ -1053,7 +1385,7 @@ test("user chat can start the all-bounty alarm only under configured policy and 
     now = now + 10
     truthy(director:handle_chat("11111111-1111-1111-1111-111111111111", "!siege start patrol"))
     equal(bridge.starts, 1)
-    truthy(bridge.announcements[#bridge.announcements]:match("cooldown"))
+    truthy(bridge.chats[#bridge.chats].message:match("cooldown"))
 end)
 
 test("operator-only chat denies users and accepts canonicalized operator UID", function()
@@ -1071,11 +1403,12 @@ test("operator-only chat denies users and accepts canonicalized operator UID", f
         save_snapshot = function() return true end,
     }
     local bridge = {
-        announcements = {}, starts = 0,
+        announcements = {}, chats = {}, starts = 0,
         preflight_start = function() return true end,
         begin_event_discovery = function() return { "base-a" } end,
         start_all_invasions = function(self) self.starts = self.starts + 1; return true end,
         announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
+        send_chat = function(self, message, recipient) self.chats[#self.chats + 1] = { message = message, recipient = recipient }; return true end,
         active_invasion_count = function() return 0 end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
@@ -1136,6 +1469,54 @@ test("bridge reads authoritative Palworld admin state fresh from each controller
     equal(after_logout.palworldAdmin, false, "fresh controller state must revoke stale authority")
 end)
 
+test("bridge sends detailed system chat globally or to one player", function()
+    local previous_fstring = _G.FString
+    local checked, failure = xpcall(function()
+        local calls = {}
+        local game_state = { IsValid = function() return true end }
+        local utility = {
+            IsValid = function() return true end,
+            SendSystemAnnounce = function(_, world, message)
+                calls[#calls + 1] = { kind = "global", world = world, message = message }
+            end,
+            SendSystemToPlayerChat = function(_, world, message, receivers)
+                calls[#calls + 1] = { kind = "private", world = world, message = message, receivers = util.deep_copy(receivers) }
+            end,
+        }
+        local bridge = Bridge.new({
+            config = Config.defaults(),
+            logger = { info = function() end, warn = function() end, error = function() end },
+        })
+        bridge.utility = utility
+        bridge._find_first = function(_, class_name)
+            equal(class_name, "PalGameStateInGame")
+            return game_state
+        end
+        bridge.list_online_players = function()
+            return {
+                { uid = "player-a", guid = "guid-a" },
+                { uid = "player-b", guid = "guid-b" },
+            }
+        end
+        _G.FString = function(value) return "fstring:" .. value end
+
+        truthy(bridge:send_chat("global details"))
+        equal(calls[1].kind, "global")
+        equal(calls[1].world, game_state)
+        equal(calls[1].message, "fstring:global details")
+
+        truthy(bridge:send_chat("private details", "player-b"))
+        equal(calls[2].kind, "private")
+        equal(#calls[2].receivers, 1)
+        equal(calls[2].receivers[1], "guid-b")
+        local sent, send_error = bridge:send_chat("missing", "player-c")
+        equal(sent, false)
+        truthy(send_error:match("no longer online"))
+    end, debug.traceback)
+    _G.FString = previous_fstring
+    if not checked then error(failure) end
+end)
+
 test("combined command policy accepts native admin or configured UID and denies spoofed names", function()
     local config = Config.defaults()
     config.siegeLeague.chatStartPolicy = "operatorOrPalworldAdmin"
@@ -1177,8 +1558,13 @@ test("public chat queries do not require readable administrator state", function
     config.siegeLeague.chatStartPolicy = "palworldAdminOnly"
     local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
     local announcements = {}
+    local chats = {}
     local bridge = {
         announce = function(_, message) announcements[#announcements + 1] = message; return true end,
+        send_chat = function(_, message, recipient)
+            chats[#chats + 1] = { message = message, recipient = recipient }
+            return true
+        end,
         active_invasion_count = function() return 0 end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
@@ -1189,8 +1575,32 @@ test("public chat queries do not require readable administrator state", function
         palworldAdminError = "APalPlayerController.bAdmin unavailable",
     }
     truthy(director:handle_chat(unreadable, "!siege status"))
-    equal(#announcements, 1)
-    truthy(announcements[1]:match("Pal Event Director"))
+    equal(#announcements, 0)
+    equal(#chats, 1)
+    equal(chats[1].recipient, "ordinary")
+    truthy(chats[1].message:match("Pal Event Director"))
+end)
+
+test("requester-targeted queries do not throttle other players globally", function()
+    local now = 24150
+    local config = Config.defaults()
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local chats = {}
+    local bridge = {
+        announce = function() error("query used the server banner") end,
+        send_chat = function(_, message, recipient)
+            chats[#chats + 1] = { message = message, recipient = recipient }
+            return true
+        end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    truthy(director:handle_chat({ uid = "player-a", palworldAdminReadable = false }, "!siege status"))
+    truthy(director:handle_chat({ uid = "player-b", palworldAdminReadable = false }, "!siege status"))
+    equal(#chats, 2)
+    equal(chats[1].recipient, "player-a")
+    equal(chats[2].recipient, "player-b")
 end)
 
 test("any-user policy preserves operator and native-admin authority precedence", function()
@@ -1221,9 +1631,10 @@ test("ped start shares any-user cooldown and configured-operator bypass", functi
     config.siegeLeague.chatStartPolicy = "anyUser"
     config.operatorUids = json.array({ "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" })
     local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
-    local announcements = {}
+    local chats = {}
     local bridge = {
-        announce = function(_, message) announcements[#announcements + 1] = message; return true end,
+        announce = function() return true end,
+        send_chat = function(_, message, recipient) chats[#chats + 1] = { message = message, recipient = recipient }; return true end,
         active_invasion_count = function() return 0 end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
@@ -1239,7 +1650,7 @@ test("ped start shares any-user cooldown and configured-operator bypass", functi
     now = now + 10
     truthy(director:handle_chat(ordinary, "!ped start native 10"))
     equal(armed, 1, "ordinary !ped start bypassed cooldown")
-    truthy(announcements[#announcements]:match("cooldown"))
+    truthy(chats[#chats].message:match("cooldown"))
     now = now + 10
     truthy(director:handle_chat(operator, "!ped start native 10"))
     equal(armed, 2, "configured operator did not bypass ordinary-user cooldown")
@@ -1286,6 +1697,35 @@ test("cancel resolve abort reset and ped commands share fresh admin authorizatio
     equal(calls.status, 1)
 end)
 
+test("native all-base comparison is console-only and confirmation-gated", function()
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "palworldAdminOnly"
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local calls = 0
+    local bridge = {
+        announce = function() return true end,
+        send_chat = function() return true end,
+        active_invasion_count = function() return 0 end,
+        diagnose_native_start_all = function(_, token)
+            calls = calls + 1
+            equal(token, "confirm-disposable-start-all")
+            return true, "diagnostic returned"
+        end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 24900 end })
+    local admin = { uid = "admin", palworldAdmin = true, palworldAdminReadable = true }
+    local chat_ok, chat_error = director:handle_operator_command(
+        "diagnose-native-all confirm-disposable-start-all", "chat:admin", admin)
+    equal(chat_ok, false)
+    truthy(chat_error:match("console%-only"))
+    equal(calls, 0)
+    local console_ok = director:handle_operator_command(
+        "diagnose-native-all confirm-disposable-start-all", "console")
+    truthy(console_ok)
+    equal(calls, 1)
+end)
+
 test("authenticated Palworld admin start arms exactly ten five one warnings", function()
     local now = 25000
     local config = Config.defaults()
@@ -1296,12 +1736,16 @@ test("authenticated Palworld admin start arms exactly ten five one warnings", fu
     config.capabilities.substituteBountyMembers = true
     local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
     local bridge = {
-        announcements = {}, starts = 0,
+        announcements = {}, chats = {}, starts = 0,
         preflight_environment = function() return true end,
         preflight_start = function() return true end,
         begin_event_discovery = function() return { "base-a" }, {} end,
         start_all_invasions = function(self) self.starts = self.starts + 1; return true end,
         announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
+        send_chat = function(self, message, recipient)
+            self.chats[#self.chats + 1] = { message = message, recipient = recipient }
+            return true
+        end,
         active_invasion_count = function() return 0 end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
@@ -1311,17 +1755,97 @@ test("authenticated Palworld admin start arms exactly ten five one warnings", fu
     now = now + 300; director:tick()
     now = now + 240; director:tick()
     now = now + 60; director:tick()
+    equal(bridge.starts, 1)
+    equal(#bridge.announcements, 3, "void dispatch return was announced as a started raid")
+    truthy(director:on_invasion_start("base-a", "group-a"))
     local warning_count = 0
-    for _, message in ipairs(bridge.announcements) do
-        if message:match("begins in 10 minutes") or message:match("begins in 5 minutes") or message:match("begins in 1 minute") then
+    for _, chat in ipairs(bridge.chats) do
+        if chat.message:match("begins in 10 minutes") or chat.message:match("begins in 5 minutes") or chat.message:match("begins in 1 minute") then
             warning_count = warning_count + 1
         end
     end
     equal(warning_count, 3)
+    equal(bridge.announcements[1], "SIEGE LEAGUE - 10 MINUTES")
+    equal(bridge.announcements[2], "SIEGE LEAGUE - 5 MINUTES")
+    equal(bridge.announcements[3], "SIEGE LEAGUE - 1 MINUTE")
+    equal(bridge.announcements[4], "SIEGE LEAGUE - RAID STARTED")
+    for _, title in ipairs(bridge.announcements) do truthy(#title <= 80, "banner title is too long") end
     equal(bridge.starts, 1)
 end)
 
-test("manual starts reject invalid countdowns and expose no warning bypass", function()
+test("authenticated zero-minute start runs immediately without countdown warnings", function()
+    local now = 25200
+    local config = Config.defaults()
+    config.siegeLeague.chatStartPolicy = "palworldAdminOnly"
+    config.capabilities.startAllInvasions = true
+    config.capabilities.observeCombat = true
+    config.capabilities.observeInvasions = true
+    config.capabilities.substituteBountyMembers = true
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local bridge = {
+        announcements = {}, chats = {}, starts = 0,
+        preflight_environment = function() return true end,
+        preflight_start = function() return true end,
+        begin_event_discovery = function() return { "base-a" }, {} end,
+        start_all_invasions = function(self) self.starts = self.starts + 1; return true end,
+        announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
+        send_chat = function(self, message, recipient)
+            self.chats[#self.chats + 1] = { message = message, recipient = recipient }
+            return true
+        end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    local admin = { uid = "admin-player", palworldAdmin = true, palworldAdminReadable = true }
+    truthy(director:handle_chat(admin, "!siege start all-bounty 0"))
+    equal(bridge.starts, 1)
+    equal(#bridge.announcements, 0, "zero-minute void call was announced as a started raid")
+    local occurrence
+    for _, candidate in pairs(director.scheduler.state.occurrences) do occurrence = candidate end
+    equal(occurrence.status, "awaiting_confirmation")
+    truthy(director:on_invasion_start("base-a", "group-a"))
+    equal(#bridge.announcements, 1)
+    equal(bridge.announcements[1], "SIEGE LEAGUE - RAID STARTED")
+    equal(#bridge.chats, 1)
+    truthy(bridge.chats[1].message:match("A native invasion is confirmed"))
+    equal(director.state.event.profileId, "all-bounty")
+    equal(occurrence.countdownSeconds, 0)
+    equal(#occurrence.schedule.warningSeconds, 0)
+    equal(occurrence.status, "started")
+end)
+
+test("zero-minute start remains successful when journaled snapshots defer", function()
+    local config = Config.defaults()
+    config.capabilities.startAllInvasions = true
+    config.capabilities.observeCombat = true
+    config.capabilities.observeInvasions = true
+    local store = {
+        load_snapshot = function() return nil end,
+        append = function() return true end,
+        save_snapshot = function() return false, "injected snapshot failure" end,
+    }
+    local calls = 0
+    local bridge = {
+        preflight_environment = function() return true end,
+        preflight_start = function() return true end,
+        begin_event_discovery = function() return { "base-a" }, {} end,
+        start_all_invasions = function() calls = calls + 1; return true, { requested = 1, requests = {
+            { baseId = "base-a", phase = "probe", status = "probe_call_returned" },
+        } } end,
+        announce = function() return true end,
+        send_chat = function() return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 25300 end })
+    local armed, arm_error = director:arm_start("test", "native", 0)
+    truthy(armed, arm_error)
+    equal(calls, 1)
+    equal(director.state.status, "starting")
+end)
+
+test("manual starts reject countdowns outside zero through sixty and direct bypasses", function()
     local config = Config.defaults()
     config.capabilities.startAllInvasions = true
     config.capabilities.observeCombat = true
@@ -1333,15 +1857,21 @@ test("manual starts reject invalid countdowns and expose no warning bypass", fun
     local armed, arm_error = director:arm_start("test", "native", "banana")
     equal(armed, false)
     truthy(arm_error:match("integer"))
+    for _, countdown in ipairs({ -1, 61, 1.5 }) do
+        local accepted, countdown_error = director:arm_start("test", "native", countdown)
+        equal(accepted, false)
+        truthy(countdown_error:match("0 through 60"))
+    end
     local bypassed, bypass_error = director:handle_operator_command("start-now native", "console")
     equal(bypassed, false)
     truthy(bypass_error:match("unknown command"))
     local direct, direct_error = director:start("direct", "native")
     equal(direct, false)
-    truthy(direct_error:match("warning countdown"))
+    truthy(direct_error:match("scheduled or manual start"))
 end)
 
 test("partial selected-base dispatch records the synchronous failure", function()
+    local now = 26000
     local config = Config.defaults()
     config.capabilities.startAllInvasions = true
     config.capabilities.observeCombat = true
@@ -1356,18 +1886,28 @@ test("partial selected-base dispatch records the synchronous failure", function(
             return true, {
                 requested = 1,
                 requests = {
-                    { baseId = "base-a", status = "request_issued" },
-                    { baseId = "base-b", status = "dispatch_call_failed", error = "injected failure" },
+                    { baseId = "base-a", phase = "probe", status = "probe_call_returned" },
+                    { baseId = "base-b", phase = "fanout", status = "awaiting_probe_confirmation" },
                 },
             }
         end,
+        continue_invasion_dispatch = function()
+            return true, { requested = 0, requests = {
+                { baseId = "base-b", phase = "fanout", status = "dispatch_call_failed", error = "injected failure" },
+            } }
+        end,
         announce = function() return true end,
+        send_chat = function() return true end,
         active_invasion_count = function() return 0 end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
-    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return 26000 end })
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
     truthy(authorized_start(director, "test", "native"))
-    equal(director.state.event.bases["base-a"].dispatchStatus, "request_issued")
+    equal(director.state.event.bases["base-a"].dispatchStatus, "probe_call_returned")
+    equal(director.state.event.bases["base-b"].dispatchStatus, "awaiting_probe_confirmation")
+    truthy(director:on_invasion_start("base-a", "group-a"))
+    now = now + 1
+    director:tick()
     equal(director.state.event.bases["base-b"].status, "dispatch_call_failed")
     equal(director.state.event.bases["base-b"].dispatchError, "injected failure")
 end)
@@ -1383,8 +1923,8 @@ test("zero-success selected-base dispatch classifies every base", function()
         begin_event_discovery = function() return { "base-a", "base-b" }, {} end,
         start_all_invasions = function()
             return false, { requested = 0, error = "none requested", requests = {
-                { baseId = "base-a", status = "dispatch_call_failed", error = "failure-a" },
-                { baseId = "base-b", status = "dispatch_call_failed", error = "failure-b" },
+                { baseId = "base-a", phase = "probe", status = "dispatch_call_failed", error = "failure-a" },
+                { baseId = "base-b", phase = "fanout", status = "awaiting_probe_confirmation" },
             } }
         end,
         end_event_tracking = function() end,
@@ -1397,7 +1937,99 @@ test("zero-success selected-base dispatch classifies every base", function()
     equal(started, false)
     equal(director.state.status, "aborted")
     equal(director.state.event.bases["base-a"].status, "dispatch_call_failed")
-    equal(director.state.event.bases["base-b"].dispatchError, "failure-b")
+    equal(director.state.event.bases["base-b"].status, "dispatch_skipped_probe_failed")
+end)
+
+test("all returned void calls without lifecycle abort as start failure without results", function()
+    local now = 27500
+    local config = Config.defaults()
+    config.capabilities.startAllInvasions = true
+    config.capabilities.observeCombat = true
+    config.capabilities.observeInvasions = true
+    local store = {
+        records = {},
+        load_snapshot = function() return nil end,
+        append = function(self, kind, data) self.records[#self.records + 1] = { kind = kind, data = data }; return true end,
+        save_snapshot = function() return true end,
+    }
+    local bridge = {
+        announcements = {}, chats = {}, ended = false,
+        preflight_start = function() return true end,
+        begin_event_discovery = function() return { "base-a", "base-b" }, {} end,
+        start_all_invasions = function()
+            return true, { requested = 1, phase = "probe", requests = {
+                { baseId = "base-a", phase = "probe", status = "probe_call_returned" },
+                { baseId = "base-b", phase = "fanout", status = "awaiting_probe_confirmation" },
+            } }
+        end,
+        continue_invasion_dispatch = function() error("fanout ran without probe confirmation") end,
+        end_event_tracking = function(self) self.ended = true end,
+        announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
+        send_chat = function(self, message) self.chats[#self.chats + 1] = message; return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    truthy(director:arm_start("test", "native", 0))
+    equal(director.state.status, "starting")
+    local scheduler_occurrence
+    for _, candidate in pairs(director.scheduler.state.occurrences) do scheduler_occurrence = candidate end
+    equal(scheduler_occurrence.status, "awaiting_confirmation")
+    equal(#bridge.announcements, 0)
+    now = now + config.siegeLeague.startDiscoverySeconds
+    director:tick()
+    equal(director.state.status, "aborted")
+    equal(scheduler_occurrence.status, "failed")
+    equal(director.state.event.status, "aborted")
+    equal(director.state.event.bases["base-a"].status, "native_start_missing")
+    equal(director.state.event.bases["base-b"].status, "dispatch_skipped_probe_unconfirmed")
+    equal(director.state.event.finalRankings, nil)
+    equal(director.state.lastEvent, nil)
+    equal(director.scoreboard, nil)
+    equal(director.rewards:summary().pending, 0)
+    equal(bridge.ended, true)
+    equal(#bridge.announcements, 1)
+    equal(bridge.announcements[1], "SIEGE LEAGUE - START FAILED")
+    truthy(bridge.chats[1]:match("No Siege League results or rewards"))
+    local start_failed = 0
+    local completed = 0
+    for _, record in ipairs(store.records) do
+        if record.kind == "event_start_failed" then start_failed = start_failed + 1 end
+        if record.kind == "event_completed" then completed = completed + 1 end
+    end
+    equal(start_failed, 1)
+    equal(completed, 0)
+end)
+
+test("operator abort while awaiting probe confirmation settles scheduler occurrence", function()
+    local now = 27700
+    local config = Config.defaults()
+    config.capabilities.startAllInvasions = true
+    config.capabilities.observeCombat = true
+    config.capabilities.observeInvasions = true
+    local store = { load_snapshot = function() return nil end, append = function() return true end, save_snapshot = function() return true end }
+    local bridge = {
+        preflight_environment = function() return true end,
+        preflight_start = function() return true end,
+        begin_event_discovery = function() return { "base-a" }, {} end,
+        start_all_invasions = function() return true, { requested = 1, requests = {
+            { baseId = "base-a", phase = "probe", status = "probe_call_returned" },
+        } } end,
+        end_event_tracking = function() end,
+        announce = function() return true end,
+        send_chat = function() return true end,
+        active_invasion_count = function() return 0 end,
+    }
+    local logger = { info = function() end, warn = function() end, error = function() end }
+    local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
+    truthy(director:arm_start("test", "native", 0))
+    local occurrence
+    for _, candidate in pairs(director.scheduler.state.occurrences) do occurrence = candidate end
+    equal(occurrence.status, "awaiting_confirmation")
+    truthy(director:abort("operator"))
+    equal(director.state.status, "aborted")
+    equal(occurrence.status, "failed")
+    truthy(occurrence.reason:match("operator aborted"))
 end)
 
 test("maximum runtime terminalizes unresolved base states", function()
@@ -1412,6 +2044,9 @@ test("maximum runtime terminalizes unresolved base states", function()
         preflight_start = function() return true end,
         begin_event_discovery = function() return { "base-active", "base-pending" }, {} end,
         start_all_invasions = function() return true end,
+        continue_invasion_dispatch = function() return true, { requested = 1, requests = {
+            { baseId = "base-pending", phase = "fanout", status = "fanout_call_returned" },
+        } } end,
         announce = function() return true end,
         active_invasion_count = function() return 0 end,
         end_event_tracking = function() end,
@@ -1444,6 +2079,9 @@ test("full two-base Siege League resolves and creates unique reward channels", f
         preflight_start = function() return true end,
         begin_event_discovery = function() return { "base-a", "base-b" } end,
         start_all_invasions = function(self) self.starts = self.starts + 1; return true end,
+        continue_invasion_dispatch = function() return true, { requested = 1, requests = {
+            { baseId = "base-b", phase = "fanout", status = "lifecycle_confirmed" },
+        } } end,
         announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
         active_invasion_count = function() return 0 end,
         list_online_players = function() return { { uid = "player-1", name = "Alice" } } end,
@@ -1453,6 +2091,8 @@ test("full two-base Siege League resolves and creates unique reward channels", f
     local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
     truthy(authorized_start(director, "test", "native"))
     director:on_invasion_start("base-a", "group-a")
+    now = now + 1
+    director:tick()
     director:on_invasion_start("base-b", "group-b")
     director:on_damage({ record_sequence = 1, target_id = "target-a", base_id = "base-a", group_id = "group-a", health_budget = 100, actual_damage = 100, source_kind = "direct_player", player_uid = "player-1", player_name = "Alice" })
     director:on_death({ target_id = "target-a", base_id = "base-a", group_id = "group-a", source_kind = "direct_player", player_uid = "player-1" })
@@ -1485,6 +2125,7 @@ test("global leaderboard enrolls start roster and late joins regardless of guild
         preflight_start = function() return true end,
         begin_event_discovery = function() return { "base-a" } end,
         start_all_invasions = function() return true end,
+        continue_invasion_dispatch = function() return true, { requested = 0, requests = {} } end,
         announce = function() return true end,
         active_invasion_count = function() return 0 end,
         list_online_players = function()

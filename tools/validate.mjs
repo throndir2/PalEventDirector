@@ -92,6 +92,29 @@ const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), '
 if (info && packageJson.version !== info.Version) failures.push('package.json and Info.json versions differ');
 const versionLua = await readFile(path.join(root, 'Scripts/ped/version.lua'), 'utf8');
 if (info && !versionLua.includes(`version = "${info.Version}"`)) failures.push('Lua runtime and Info.json versions differ');
+const palworldAdapter = await readFile(path.join(root, 'Scripts/ped/palworld.lua'), 'utf8');
+for (const requiredGuard of [
+  'GetInvaderManager',
+  'GetAddress',
+  'probe lifecycle is not confirmed',
+  'StartInvaderMarchAll',
+  'confirm-disposable-start-all',
+  'COMPUTERNAME',
+  'SendSystemAnnounce',
+  'SendSystemToPlayerChat',
+  'function(context, return_value, grade, biome, out_members)',
+]) {
+  if (!palworldAdapter.includes(requiredGuard)) failures.push(`Palworld adapter is missing required guard: ${requiredGuard}`);
+}
+const directorSource = await readFile(path.join(root, 'Scripts/ped/director.lua'), 'utf8');
+for (const requiredGuard of [
+  'event_start_confirmed',
+  'event_start_failed',
+  'START FAILED',
+  'confirmedBaseCount = 0',
+]) {
+  if (!directorSource.includes(requiredGuard)) failures.push(`Director is missing required lifecycle guard: ${requiredGuard}`);
+}
 
 const sourceFiles = (await walk(root)).filter((file) => !file.includes(`${path.sep}.git${path.sep}`) && !file.includes(`${path.sep}node_modules${path.sep}`) && !file.includes(`${path.sep}dist${path.sep}`));
 if (sourceFiles.some((file) => path.relative(root, file).replaceAll('\\', '/').startsWith('operations/dev/'))) {

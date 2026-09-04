@@ -32,8 +32,8 @@ Every enabled capability still passes the acceptance gate in [the vanilla-client
 | Wall-clock scheduling | Confirmed | Yes | Low | Mod-owned scheduler using UTC plus configured display timezone. |
 | Game-time scheduling | Probable | Yes | Low | `UPalTimeManager` exposes hour/minute changes and timer-by-span. Observe before binding. |
 | Public server notice | Confirmed | Yes | Low | `APalGameStateInGame.BroadcastServerNotice`, reliable multicast. |
-| Public system chat | Confirmed | Yes | Low | `BroadcastChatMessage` or `UPalUtility.SendSystemAnnounce` through validated native shape. |
-| Private system chat | Probable | Yes | Low | `UPalUtility.SendSystemToPlayerChat` to existing player UIDs. |
+| Public system chat | Confirmed API, live adapter gate | Yes | Low | `UPalUtility.SendSystemAnnounce` for detailed event messages. |
+| Private system chat | Confirmed API, live adapter gate | Yes | Low | The same native helper with one existing requesting player UID for status, help, cooldown, and error responses. |
 | Chat command ingestion | Confirmed | Yes | Low | Hook server-received chat, parse `!` commands, sanitize, rate-limit, optionally suppress if safely possible. |
 | Join/leave roster | Confirmed | Yes | Low | Possession/login hooks plus roster reconciliation; never depend on client `ClientRestart`. |
 | Player identity resolution | Confirmed | Yes | Medium | Stable Palworld UID as primary key; names/platform IDs are aliases only. |
@@ -113,7 +113,7 @@ Record polling can supplement a missing event hook by comparing monotonic counte
 
 ### Messaging
 
-`APalGameStateInGame` exposes reliable multicast server notices and chat messages. `UPalUtility` exposes system announcement and targeted system-chat helpers. These are the primary vanilla UI.
+`APalGameStateInGame` exposes reliable multicast server notices and chat messages. `UPalUtility` exposes system announcement and targeted system-chat helpers. Alpha.3 reserves concise `BroadcastServerNotice` banners for event titles, uses `SendSystemAnnounce` for detailed global text, and uses `SendSystemToPlayerChat` for requester-only replies. These are the primary vanilla UI, and both exact system-chat calls remain IMOUTO runtime gates.
 
 ### Players, guilds, and records
 

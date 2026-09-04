@@ -255,7 +255,10 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 
 - Native preconditions and concurrent-system limits.
 - Declaration/start/arrival/wave/end/timeout/cancel.
-- `StartInvaderMarchForBaseCamp()` coverage across every available idle observer belonging to a guild represented online at the event boundary.
+- `StartInvaderMarchForBaseCamp()` one-base probe coverage before fanout, including a normal `void` return with no incident, selection, or lifecycle callback.
+- Masked before/after observer GUID agreement, invasion/path/cooldown flags, base ignore/availability state, incident membership, start-location/cache state, and manager pointers for every selected-base call.
+- A separately restored disposable-world comparison using console-only `StartInvaderMarchAll()`; never invoke it as fallback because it cannot preserve the online-guild target predicate.
+- No `RAID STARTED`, rankings, results, or rewards when zero selected bases produce a correlated native lifecycle callback.
 - Exact stock `GroupName` selection and the scope difference between generic and nearest-base debug calls.
 - `bSkipInvaderDeclaration=true`, including whether it bypasses the Negotiator and starts a forced assault.
 - Target base removed, unloaded, obstructed, on cooldown, already invaded, in an offline-only guild, or affected by a player/guild lookup failure.

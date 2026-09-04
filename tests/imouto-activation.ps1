@@ -74,6 +74,9 @@ try {
         throw 'Rejected scalar-array activation modified config.'
     }
     Copy-Item $DefaultConfig $ConfigPath -Force
+    $zeroCountdown = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $zeroCountdown.siegeLeague.manualCountdownMinutes = 0
+    [IO.File]::WriteAllText($ConfigPath, ($zeroCountdown | ConvertTo-Json -Depth 30))
 
     $result = & $Activation `
         -ServerRoot $ServerRoot `
@@ -89,6 +92,7 @@ try {
     if ($config.capabilities.grantItems -ne $false) { throw 'Activation enabled grantItems.' }
     if (@($config.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count -ne 0) { throw 'Activation enabled a schedule.' }
     if ($config.siegeLeague.chatStartPolicy -ne 'operatorOrPalworldAdmin') { throw 'Activation selected the wrong policy.' }
+    if ($config.siegeLeague.manualCountdownMinutes -ne 0) { throw 'Activation rejected or replaced a zero-minute manual countdown.' }
     $versions = @($config.compatibility.allowedUe4ssVersions | ForEach-Object { $_ })
     $builds = @($config.compatibility.allowedServerBuildIds | ForEach-Object { $_ })
     if ($versions.Count -ne 1 -or $versions[0] -ne '3.0.1' -or $builds.Count -ne 1 -or $builds[0] -ne '24575149') {

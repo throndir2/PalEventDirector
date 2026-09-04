@@ -2,7 +2,7 @@
 
 Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
-> **Project state:** runnable `0.1.0-alpha.3` laboratory build. It adds daily/weekly local-time schedules, durable 10/5/1-minute notices, manual warning countdowns, online-guild-only base targeting, a global start/late-join roster, operator/chat controls, and audited bounty profiles. All gameplay observation, invasion starts, bounty substitution, chat hooks, schedules, and live item delivery are disabled by default until the disposable-world gates pass.
+> **Project state:** runnable `0.1.0-alpha.3` laboratory build. It adds daily/weekly local-time schedules, durable 10/5/1-minute scheduled notices, 0–60-minute manual starts, online-guild-only base targeting, a global start/late-join roster, operator/chat controls, and audited bounty profiles. All gameplay observation, invasion starts, bounty substitution, chat hooks, schedules, and live item delivery are disabled by default until the disposable-world gates pass.
 
 `Info.json` intentionally leaves `MinRevision` at `0` for this unpublished laboratory package because the installed executable does not expose the official five-digit title revision in file metadata. Record that revision in-game and set it before any published release.
 
@@ -24,7 +24,7 @@ For the current laboratory topology, MIKO performs source validation and clean b
 
 The installer configures `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` and `Start-PalEventDirectorImouto.ps1`. With the server stopped, confirm the activation command once to enable chat/combat/invasion/bounty capabilities, native-admin-or-operator authorization, and compatibility pins while keeping rewards and schedules disabled. Then start IMOUTO with the generated launcher, not Steam Play: it reads the verified build ID from the local dedicated-server manifest and supplies both PED environment variables only to the child server process. Run it with `-ValidateOnly` to verify launch integration without starting Palworld.
 
-The primary admin command is `!siege start all-bounty [10-60 minutes]`. It always arms the mandatory 10/5/1-minute warning sequence; there is no immediate-start command. `chatStartPolicy=operatorOrPalworldAdmin` is the default and accepts either a stable UID in `operatorUids` or fresh server-side Palworld admin authentication. Display names and passwords are never inspected for PED authority. Public commands remain `!siege status`, `!siege profiles`, `!siege schedule`, `!siege score`, and `!siege leaderboard`; the unified policy governs start, cancel, resolve, abort, reset, and `!ped` chat commands. `anyUser` deliberately exposes all privileged chat actions, with the durable cooldown applying only to ordinary-user starts. See [the complete administration reference](docs/13-admin-and-scheduling.md).
+The primary admin command is `!siege start all-bounty [0-60 minutes]`. Passing `0` dispatches the native probe immediately without a countdown. A positive manual countdown announces its selected duration and the 10/5/1-minute milestones that fit before dispatch; recurring schedules still require all three standard warnings. A native `void` call is never treated as success: PED requests one eligible probe base, waits for a correlated lifecycle callback, and only then displays `RAID STARTED` and fans out to the remaining eligible bases. If no base confirms, the attempt ends as `START FAILED` with no rankings or rewards. Event banners are deliberately short titles, while timing, targeting, objectives, results, and errors are sent through Palworld system chat. `chatStartPolicy=operatorOrPalworldAdmin` is the default and accepts either a stable UID in `operatorUids` or fresh server-side Palworld admin authentication. Display names and passwords are never inspected for PED authority. Public commands remain `!siege status`, `!siege profiles`, `!siege schedule`, `!siege score`, and `!siege leaderboard`; the unified policy governs start, cancel, resolve, abort, reset, and `!ped` chat commands. `anyUser` deliberately exposes all privileged chat actions, with the durable cooldown applying only to ordinary-user starts. See [the complete administration reference](docs/13-admin-and-scheduling.md).
 
 Built-in profiles:
 
@@ -38,7 +38,7 @@ Built-in profiles:
 | `jackpot` | Every member uses a four- or five-token target. |
 | `native` | No composition substitution; useful as the baseline control. |
 
-The corresponding server-console forms are `ped start [profile] [minutes]`, `ped cancel`, `ped status`, `ped profiles`, `ped schedule`, `ped leaderboard`, `ped resolve`, `ped abort`, `ped reset`, and the currently blocked `ped rewards`.
+The corresponding server-console forms are `ped start [profile] [minutes]`, `ped cancel`, `ped status`, `ped profiles`, `ped schedule`, `ped leaderboard`, `ped resolve`, `ped abort`, `ped reset`, the separately restored-world diagnostic `ped diagnose-native-all confirm-disposable-start-all`, and the currently blocked `ped rewards`.
 
 ## Non-negotiable contract
 

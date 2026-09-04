@@ -86,7 +86,11 @@ The command requires explicit confirmation. It validates dedicated build `245751
 
 It sets the recommended `operatorOrPalworldAdmin` policy by default, pins the verified build/runtime allowlists, disables every recurring schedule, leaves the 10/5/1 warning sequence intact, and forcibly leaves `grantItems=false`. Its result reports `RestartRequired=True`. Optional `AuthorizationPolicy` values are `operatorOnly`, `palworldAdminOnly`, and `operatorOrPalworldAdmin`; `anyUser` is intentionally unavailable through this convenience command.
 
+The activation validator accepts `siegeLeague.manualCountdownMinutes` from 0 through 60. Zero is an explicit immediate manual start; it does not alter the mandatory warning offsets retained on recurring schedules.
+
 After restart through the generated launcher, authenticate with Palworld's built-in admin mechanism and run `!siege status`. PED reads the resulting server-side `APalPlayerController.bAdmin` Boolean fresh for each privileged command. It does not inspect the password or authorize by display name.
+
+`StartInvaderMarchForBaseCamp` is a native `void` function. A normal Lua return means only that UE4SS completed the invocation. PED first calls one deterministic selected probe base, records masked native state immediately before and after it, and waits for a correlated `BroadcastInvaderStart`. Only that callback produces `RAID STARTED` and permits fanout. If no probe callback arrives before `startDiscoverySeconds`, PED records `event_start_failed`, skips the remaining calls, and emits no rankings, normal results, or rewards.
 
 ## One-time Production world seed
 
@@ -197,13 +201,25 @@ The Palworld client remains completely vanilla. For each meaningful revision:
 
 - verify one UE4SS load and one Pal Event Director load;
 - verify the client connects without a mod requirement or missing-content error;
+- verify event red banners contain only short titles and the matching details arrive in Palworld system chat;
 - verify the 10-, 5-, and 1-minute notices;
+- verify `!siege start native 0` reaches dispatch without a countdown, while still enforcing every normal preflight and authorization gate;
 - verify only bases belonging to guilds with an online member at the start boundary are requested;
 - verify every online player and late joiner enters one global leaderboard regardless of guild;
 - verify unrelated native incidents never score;
 - verify cross-base contribution and final-hit tie-breaking;
 - verify shutdown/restart recovery; and
 - preserve logs, state, deployment record, and backup when a failure occurs.
+
+For the selected-base versus native-all comparison, use two independent runs from the same disposable world snapshot:
+
+1. In the first copy, run `!siege start native 0`. Preserve the PED journal/log and note the probe's masked pre/post `Selected-base native invasion state` records plus any declaration, selection, start, or arrival callbacks.
+2. Stop IMOUTO and restore the same pre-test disposable snapshot. Do not reuse the mutated first-run world.
+3. Start through the generated launcher, leave PED idle, and run `ped diagnose-native-all confirm-disposable-start-all` in the server console.
+4. Preserve the resulting masked `native-all-before`, `native-all-after`, declaration, selection, start, and arrival records.
+5. Compare map/flag transitions and callbacks. A normal return from either native function is not acceptance.
+
+The native-all command is console-only, requires the exact confirmation token, creates no PED event or score, and must never be used as automatic fallback. It may target bases outside the online-guild policy.
 
 Running the local client and dedicated server concurrently increases IMOUTO's CPU/GPU/RAM load. That load is isolated from MIKO Production, but performance observations should distinguish client contention from server/mod behavior.
 

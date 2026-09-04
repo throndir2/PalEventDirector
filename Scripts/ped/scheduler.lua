@@ -48,6 +48,30 @@ local function values_equal(left, right)
     return true
 end
 
+local function manual_warning_seconds(countdown_seconds)
+    local result = {}
+    local included = {}
+    local function include(seconds)
+        if seconds > 0 and seconds <= countdown_seconds and not included[seconds] then
+            result[#result + 1] = seconds
+            included[seconds] = true
+        end
+    end
+    include(countdown_seconds)
+    include(600)
+    include(300)
+    include(60)
+    table.sort(result, function(left, right) return left > right end)
+    return result
+end
+
+function Scheduler.manual_warning_seconds(countdown_seconds)
+    if not util.is_integer(countdown_seconds) or countdown_seconds < 0 or countdown_seconds > 3600 then
+        return nil
+    end
+    return manual_warning_seconds(countdown_seconds)
+end
+
 function Scheduler.new(options, restored_state)
     options = options or {}
     local state = restored_state or {
@@ -59,7 +83,7 @@ function Scheduler.new(options, restored_state)
         error("unsupported scheduler state schema")
     end
     for _, occurrence in pairs(state.occurrences or {}) do
-        if occurrence.status == "starting" then
+        if occurrence.status == "starting" or occurrence.status == "awaiting_confirmation" then
             occurrence.status = "recovery_required"
             occurrence.reason = "server_restarted_during_start"
         end
@@ -68,7 +92,9 @@ function Scheduler.new(options, restored_state)
         schedules = options.schedules or {},
         clock = options.clock or util.now_seconds,
         persist = options.persist or function() return true end,
-        announce = options.announce or function() return true end,
+        notify = options.notify or function(_, detail)
+            return (options.announce or function() return true end)(detail)
+        end,
         start_event = options.start_event or function() return false, "start unavailable" end,
         can_start = options.can_start or function() return true end,
         start_token = options.start_token,
@@ -163,8 +189,8 @@ end
 
 function Scheduler:arm_manual(profile, source, countdown_seconds, name)
     countdown_seconds = countdown_seconds or 600
-    if not util.is_integer(countdown_seconds) or countdown_seconds < 600 or countdown_seconds > 3600 then
-        return false, "manual countdown must be from 10 through 60 minutes"
+    if not util.is_integer(countdown_seconds) or countdown_seconds < 0 or countdown_seconds > 3600 then
+        return false, "manual countdown must be from 0 through 60 minutes"
     end
     for _, occurrence in pairs(self.state.occurrences) do
         if occurrence.manual and occurrence.status == "planned" then
@@ -179,7 +205,7 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name)
         enabled = true,
         frequency = "manual",
         profile = profile,
-        warningSeconds = { 600, 300, 60 },
+        warningSeconds = manual_warning_seconds(countdown_seconds),
         lateStartToleranceSeconds = 60,
     }
     local intended = now + countdown_seconds
@@ -193,6 +219,7 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name)
         warningAttempts = {},
         status = "planned",
         plannedAt = now,
+        countdownSeconds = countdown_seconds,
         manual = true,
         source = source,
         schedule = util.deep_copy(schedule),
@@ -202,13 +229,20 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name)
         self.state.occurrences[occurrence.key] = nil
         return false, "unable to persist manual countdown"
     end
-    if countdown_seconds == 600 then
-        local warned, warning_error = self:_emit_warning(schedule, occurrence, 600)
+    if countdown_seconds > 0 then
+        local warned, warning_error = self:_emit_warning(schedule, occurrence, countdown_seconds)
         if not warned then
-            occurrence.status = "recovery_required"
-            occurrence.reason = "initial_warning_failed: " .. tostring(warning_error)
-            self.persist("manual_countdown_recovery_required", occurrence)
+            if occurrence.status == "planned" then
+                occurrence.status = "recovery_required"
+                occurrence.reason = "initial_warning_failed: " .. tostring(warning_error)
+                self.persist("manual_countdown_recovery_required", occurrence)
+            end
             return false, warning_error
+        end
+    else
+        self:_start(schedule, occurrence, now)
+        if occurrence.status ~= "started" and occurrence.status ~= "awaiting_confirmation" then
+            return false, occurrence.reason or "immediate start failed"
         end
     end
     return true, occurrence
@@ -232,10 +266,17 @@ function Scheduler:cancel_manual(reason)
     return false, "no manual countdown is armed"
 end
 
-function Scheduler:_warning_message(schedule, seconds)
-    local minutes = math.floor(seconds / 60)
-    local unit = minutes == 1 and "minute" or "minutes"
-    return string.format("SIEGE LEAGUE - %s begins in %d %s. Only bases belonging to guilds with an online member at start will be attacked.", schedule.name or schedule.profile, minutes, unit)
+function Scheduler:_warning_notification(schedule, seconds)
+    local amount, unit
+    if seconds % 60 == 0 then
+        amount = seconds / 60
+        unit = amount == 1 and "minute" or "minutes"
+    else
+        amount = seconds
+        unit = amount == 1 and "second" or "seconds"
+    end
+    return string.format("SIEGE LEAGUE - %d %s", amount, unit:upper()),
+        string.format("%s begins in %d %s. Only bases belonging to guilds with an online member at start will be attacked.", schedule.name or schedule.profile, amount, unit)
 end
 
 function Scheduler:_emit_warning(schedule, occurrence, seconds)
@@ -245,29 +286,51 @@ function Scheduler:_emit_warning(schedule, occurrence, seconds)
     end
     occurrence.warningAttempts = occurrence.warningAttempts or {}
     occurrence.warningAttempts[key] = (occurrence.warningAttempts[key] or 0) + 1
+    local previous_status = occurrence.status
+    local previous_reason = occurrence.reason
+    occurrence.status = "recovery_required"
+    occurrence.reason = "warning_delivery_in_progress_" .. key
     if not self.persist("schedule_warning_intent", {
         occurrenceKey = occurrence.key,
         seconds = seconds,
         attempt = occurrence.warningAttempts[key],
     }) then
+        occurrence.status = previous_status
+        occurrence.reason = previous_reason
         return false, "unable to persist warning intent"
     end
-    local announced, announce_error = self.announce(self:_warning_message(schedule, seconds))
+    local title, detail = self:_warning_notification(schedule, seconds)
+    local announced, announce_error, partially_delivered = self.notify(title, detail)
     if not announced then
         occurrence.lastWarningError = tostring(announce_error or "announcement unavailable")
+        if partially_delivered then
+            occurrence.status = "recovery_required"
+            occurrence.reason = "warning_partially_delivered: " .. occurrence.lastWarningError
+            self.persist("schedule_warning_recovery_required", occurrence)
+        else
+            occurrence.status = "missed"
+            occurrence.reason = "mandatory_warning_missed_" .. key
+            if not self.persist("schedule_occurrence_missed", occurrence) then
+                occurrence.status = "recovery_required"
+                occurrence.reason = "unable_to_persist_warning_delivery_failure"
+            end
+        end
         return false, occurrence.lastWarningError
     end
     occurrence.warningsSent[key] = true
     occurrence.lastWarningError = nil
     occurrence.warningSentAt = occurrence.warningSentAt or {}
     occurrence.warningSentAt[key] = self.clock()
+    occurrence.status = previous_status
+    occurrence.reason = previous_reason
     local persisted, persist_error = self.persist("schedule_warning_sent", {
         occurrenceKey = occurrence.key,
         seconds = seconds,
     })
     if not persisted then
-        occurrence.warningsSent[key] = nil
-        occurrence.warningSentAt[key] = nil
+        occurrence.status = "recovery_required"
+        occurrence.reason = "warning_delivered_but_not_persisted: " .. tostring(persist_error)
+        self.persist("schedule_warning_recovery_required", occurrence)
         return false, persist_error
     end
     return true
@@ -289,33 +352,49 @@ end
 
 function Scheduler:_start(schedule, occurrence, now)
     if occurrence.status ~= "planned" then
-        return
+        return false, "occurrence is not planned"
     end
     local late_by = now - occurrence.intendedAt
     if late_by > (schedule.lateStartToleranceSeconds or 0) then
         self:_mark_terminal(occurrence, "missed", "late_tolerance_exceeded", "schedule_occurrence_missed")
-        return
+        return false, occurrence.reason
     end
     local can_start, reason = self.can_start()
     if not can_start then
         self:_mark_terminal(occurrence, "blocked", reason, "schedule_occurrence_blocked")
-        return
+        return false, occurrence.reason
     end
     occurrence.status = "starting"
     if not self.persist("schedule_start_intent", occurrence) then
         occurrence.status = "recovery_required"
         occurrence.reason = "unable_to_persist_start_intent"
-        return
+        return false, occurrence.reason
     end
-    local started, result = self.start_event("schedule:" .. schedule.id, schedule.profile, self.start_token, occurrence.key)
+    local started, result, confirmed_immediately = self.start_event("schedule:" .. schedule.id, schedule.profile, self.start_token, occurrence.key)
     if started then
-        occurrence.status = "started"
         occurrence.occurrenceId = result
-        occurrence.startedAt = now
-        if not self.persist("schedule_started", occurrence) then
-            occurrence.status = "recovery_required"
-            occurrence.reason = "unable_to_persist_start_result"
+        if occurrence.status == "started" then
+            return true, result
+        elseif occurrence.status == "recovery_required" then
+            return false, occurrence.reason or "native start confirmation requires recovery"
+        elseif confirmed_immediately then
+            occurrence.status = "started"
+            occurrence.startedAt = now
+            if not self.persist("schedule_started", occurrence) then
+                occurrence.status = "recovery_required"
+                occurrence.reason = "unable_to_persist_start_result"
+                return false, occurrence.reason
+            end
+        else
+            occurrence.status = "awaiting_confirmation"
+            occurrence.requestedAt = now
+            if not self.persist("schedule_start_requested", occurrence) then
+                occurrence.status = "recovery_required"
+                occurrence.reason = "unable_to_persist_start_request"
+                return false, occurrence.reason
+            end
         end
+        return true, result
     else
         occurrence.status = "failed"
         occurrence.reason = tostring(result)
@@ -323,7 +402,46 @@ function Scheduler:_start(schedule, occurrence, now)
             occurrence.status = "recovery_required"
             occurrence.reason = "unable_to_persist_start_failure"
         end
+        return false, occurrence.reason
     end
+end
+
+function Scheduler:confirm_start(key, occurrence_id, now)
+    local occurrence = self.state.occurrences[key]
+    if not occurrence then return false, "scheduler occurrence is missing" end
+    if occurrence.status == "started" then return true end
+    if occurrence.status ~= "starting" and occurrence.status ~= "awaiting_confirmation" then
+        return false, "scheduler occurrence is not awaiting confirmation"
+    end
+    occurrence.status = "started"
+    occurrence.occurrenceId = occurrence_id
+    occurrence.startedAt = now or self.clock()
+    occurrence.reason = nil
+    local persisted, persist_error = self.persist("schedule_started", occurrence)
+    if not persisted then
+        occurrence.status = "recovery_required"
+        occurrence.reason = "unable_to_persist_start_confirmation: " .. tostring(persist_error)
+        return false, occurrence.reason
+    end
+    return true
+end
+
+function Scheduler:fail_start(key, reason)
+    local occurrence = self.state.occurrences[key]
+    if not occurrence then return false, "scheduler occurrence is missing" end
+    if occurrence.status == "failed" then return true end
+    if occurrence.status ~= "starting" and occurrence.status ~= "awaiting_confirmation" then
+        return false, "scheduler occurrence is not awaiting confirmation"
+    end
+    occurrence.status = "failed"
+    occurrence.reason = reason or "native start was not confirmed"
+    local persisted, persist_error = self.persist("schedule_start_failed", occurrence)
+    if not persisted then
+        occurrence.status = "recovery_required"
+        occurrence.reason = "unable_to_persist_start_failure: " .. tostring(persist_error)
+        return false, occurrence.reason
+    end
+    return true
 end
 
 function Scheduler:_process(schedule, occurrence, now)

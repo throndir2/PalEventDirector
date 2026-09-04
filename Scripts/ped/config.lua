@@ -170,7 +170,7 @@ function M.validate(config)
             error("siegeLeague.chatStartPolicy must be 'operatorOnly', 'palworldAdminOnly', 'operatorOrPalworldAdmin', or 'anyUser'")
         end
         require_integer(config.siegeLeague.userStartCooldownSeconds, "siegeLeague.userStartCooldownSeconds", 60, 604800)
-        require_integer(config.siegeLeague.manualCountdownMinutes, "siegeLeague.manualCountdownMinutes", 10, 60)
+        require_integer(config.siegeLeague.manualCountdownMinutes, "siegeLeague.manualCountdownMinutes", 0, 60)
         local allowed_profiles = {}
         for index, profile_id in ipairs(config.siegeLeague.allowedProfiles or {}) do
             local normalized = bounties.normalize_profile_id(profile_id)

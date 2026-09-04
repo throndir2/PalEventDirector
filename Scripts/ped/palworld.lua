@@ -8,6 +8,8 @@ local HOOKS = {
     damage = "/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal",
     death = "/Script/Pal.PalEventNotify_Character:OnCharacterDead_ServerInternal",
     invasion_start = "/Script/Pal.PalInvaderManager:BroadcastInvaderStart",
+    invasion_declaration = "/Script/Pal.PalInvaderManager:BroadcastInvaderDeclaration",
+    invasion_arrived = "/Script/Pal.PalInvaderManager:BroadcastInvaderArrived",
     invasion_end = "/Script/Pal.PalInvaderManager:BroadcastInvaderEnd",
     invasion_timeout = "/Script/Pal.PalInvaderManager:BroadcastInvaderWaveTimeup",
     invasion_cancel = "/Script/Pal.PalInvaderManager:BroadcastInvaderCancel",
@@ -95,6 +97,31 @@ local function as_integer(value)
     return number and math.floor(number) or nil
 end
 
+local function scalar(value)
+    value = unwrap(value)
+    if type(value) == "boolean" or type(value) == "number" or type(value) == "string" then
+        return value
+    end
+    if value == nil then return nil end
+    local text = to_string(value)
+    return text ~= "" and text or nil
+end
+
+local function container_count(value)
+    value = unwrap(value)
+    if value == nil then return nil end
+    local ok, count = pcall(function()
+        if type(value.GetArrayNum) == "function" then return value:GetArrayNum() end
+        return #value
+    end)
+    return ok and tonumber(count) or nil
+end
+
+local function or_unavailable(value)
+    if value == nil then return "unavailable" end
+    return value
+end
+
 local function is_enemy_invader_type(value)
     local numeric = as_integer(value)
     if numeric ~= nil then
@@ -122,6 +149,16 @@ local function guid_string(value)
     end
     local result = components and table.concat(components, "-") or to_string(value)
     result = result:lower():gsub("[{}]", "")
+    local compact = result:gsub("%-", "")
+    if compact:match("^[0-9a-f]+$") and #compact == 32 then
+        result = table.concat({
+            compact:sub(1, 8),
+            compact:sub(9, 12),
+            compact:sub(13, 16),
+            compact:sub(17, 20),
+            compact:sub(21, 32),
+        }, "-")
+    end
     if result == "" or not result:find("[^0%-]") then
         return nil
     end
@@ -135,6 +172,23 @@ local function full_name(object)
     end
     local ok, result = call(object, "GetFullName")
     return ok and to_string(result) or nil
+end
+
+local function object_address(object)
+    object = unwrap(object)
+    if not valid(object) then return nil end
+    local ok, address = pcall(function() return object:GetAddress() end)
+    if not ok or address == nil then return nil end
+    return tostring(address)
+end
+
+local function same_object(left, right)
+    left = unwrap(left)
+    right = unwrap(right)
+    if not valid(left) or not valid(right) then return false end
+    local left_address = object_address(left)
+    local right_address = object_address(right)
+    return left_address ~= nil and right_address ~= nil and left_address == right_address
 end
 
 function Bridge.new(options)
@@ -159,7 +213,20 @@ function Bridge.new(options)
         base_guilds = {},
         pending_roster = {},
         event_roster = {},
+        pending_manager = nil,
+        event_manager = nil,
+        pending_world = nil,
+        event_world = nil,
+        event_manager_address = nil,
+        event_world_address = nil,
         request_windows = {},
+        dispatch_order = {},
+        probe_base_id = nil,
+        probe_confirmed = false,
+        fanout_dispatched = false,
+        native_all_diagnostic_until = 0,
+        native_all_diagnostic_manager = nil,
+        native_all_diagnostic_world = nil,
         dispatching_base_id = nil,
         member_context = {},
         profile_id = "native",
@@ -190,7 +257,21 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.pending_base_guilds = {}
     self.event_roster = self.pending_roster
     self.pending_roster = {}
+    self.event_manager = self.pending_manager
+    self.pending_manager = nil
+    self.event_world = self.pending_world
+    self.pending_world = nil
+    self.event_manager_address = object_address(self.event_manager)
+    self.event_world_address = object_address(self.event_world)
+    if not self.event_manager_address or not self.event_world_address then
+        self:end_event_tracking()
+        return nil, nil, "pinned event manager or world address is unavailable"
+    end
     self.request_windows = {}
+    self.dispatch_order = {}
+    self.probe_base_id = nil
+    self.probe_confirmed = false
+    self.fanout_dispatched = false
     self.dispatching_base_id = nil
     self.member_context = {}
     self.profile_id = profile_id or "native"
@@ -232,7 +313,17 @@ function Bridge:end_event_tracking()
     self.pending_base_guilds = {}
     self.event_roster = {}
     self.pending_roster = {}
+    self.pending_manager = nil
+    self.event_manager = nil
+    self.pending_world = nil
+    self.event_world = nil
+    self.event_manager_address = nil
+    self.event_world_address = nil
     self.request_windows = {}
+    self.dispatch_order = {}
+    self.probe_base_id = nil
+    self.probe_confirmed = false
+    self.fanout_dispatched = false
     self.dispatching_base_id = nil
     self.member_context = {}
     self.profile_id = "native"
@@ -282,6 +373,76 @@ function Bridge:_utility()
     if valid(default) then
         self.utility = default
         return default
+    end
+    return nil
+end
+
+function Bridge:_resolve_world_manager(roster)
+    local utility = self:_utility()
+    if not valid(utility) then return nil, nil, "PalUtility unavailable" end
+    if type(roster) ~= "table" or #roster < 1 then return nil, nil, "no online player world is available" end
+    local manager
+    local world
+    for _, player in ipairs(roster) do
+        if not valid(player.world) then
+            return nil, nil, "online player world is invalid for " .. util.mask_uid(player.uid)
+        end
+        local manager_ok, candidate = call(utility, "GetInvaderManager", player.world)
+        if not manager_ok or not valid(candidate) then
+            return nil, nil, "world-scoped PalInvaderManager lookup failed for " .. util.mask_uid(player.uid)
+        end
+        local candidate_world_ok, candidate_world = call(candidate, "GetWorld")
+        if not candidate_world_ok or not same_object(candidate_world, player.world) then
+            return nil, nil, "world-scoped PalInvaderManager returned a different world for " .. util.mask_uid(player.uid)
+        end
+        if manager and not same_object(manager, candidate) then
+            return nil, nil, "online players resolved to different invasion managers"
+        end
+        manager = candidate
+        if world and not same_object(world, player.world) then
+            return nil, nil, "online players belong to different worlds"
+        end
+        world = player.world
+    end
+    if not object_address(manager) or not object_address(world) then
+        return nil, nil, "world or PalInvaderManager address is unavailable"
+    end
+    return manager, world
+end
+
+function Bridge:_manager_hook_scope(context)
+    local manager = unwrap(context)
+    if not valid(manager) then return nil end
+    local manager_world_ok, manager_world = call(manager, "GetWorld")
+    if not manager_world_ok then return nil end
+    if self.event_open then
+        local manager_address = object_address(manager)
+        local world_address = object_address(manager_world)
+        if self.event_manager_address and self.event_world_address and manager_address and world_address
+            and manager_address == self.event_manager_address and world_address == self.event_world_address then
+            return "event"
+        end
+        return nil
+    end
+    if self.clock() <= self.native_all_diagnostic_until
+        and same_object(manager, self.native_all_diagnostic_manager)
+        and same_object(manager_world, self.native_all_diagnostic_world) then
+        return "native-all-diagnostic"
+    end
+    return nil
+end
+
+function Bridge:_selection_hook_scope(context)
+    local incident = unwrap(context)
+    if not valid(incident) then return nil end
+    local world_ok, world = call(incident, "GetWorld")
+    if not world_ok then return nil end
+    local world_address = object_address(world)
+    if self.event_open and self.event_world_address and world_address
+        and world_address == self.event_world_address then return "event" end
+    if not self.event_open and self.clock() <= self.native_all_diagnostic_until
+        and same_object(world, self.native_all_diagnostic_world) then
+        return "native-all-diagnostic"
     end
     return nil
 end
@@ -547,7 +708,7 @@ function Bridge:list_online_players()
     return players
 end
 
-function Bridge:_eligible_online_guild_bases(manager)
+function Bridge:_eligible_online_guild_bases(manager, roster)
     local utility = self:_utility()
     if not valid(utility) then
         return nil, nil, nil, nil, "PalUtility unavailable"
@@ -556,7 +717,7 @@ function Bridge:_eligible_online_guild_bases(manager)
     local native_ids = {}
     local base_guilds = {}
     local online_guilds = {}
-    local roster = self:list_online_players()
+    roster = roster or self:list_online_players()
     local resolved_roster = {}
     if #roster < 1 then
         return {}, {}, {}, {}, nil
@@ -586,20 +747,33 @@ function Bridge:_eligible_online_guild_bases(manager)
                 local available_ok, available = call(base, "IsAvailable")
                 local id_ok, id_value = call(base, "GetId")
                 local group_ok, group_value = call(base, "GetGroupIdBelongTo")
-                local base_id = id_ok and guid_string(id_value) or guid_string(key)
+                local key_id = guid_string(key)
+                local observer_id = guid_string(property(observer, "TargetBaseCampID"))
+                local base_id = id_ok and guid_string(id_value) or nil
                 local group_id = group_ok and guid_string(group_value) or nil
                 if base_id and group_id and online_guilds[group_id] then
                     local invading = property(observer, "bIsInvading")
                     local path_searching = property(observer, "bIsInvaderPathSearching")
-                    if invading == nil or path_searching == nil then
+                    local cooling_down = property(observer, "bIsCoolTime")
+                    local ignore_invader = property(base, "bIgnoreInvader")
+                    if not key_id or not observer_id or key_id ~= base_id or observer_id ~= base_id then
+                        observer_error = "eligible base GUID sources disagree: " .. util.mask_uid(base_id)
+                        return true
+                    elseif invading == nil or path_searching == nil or cooling_down == nil or ignore_invader == nil then
                         observer_error = "observer state is unavailable for eligible base " .. util.mask_uid(base_id)
                         return true
                     elseif invading or path_searching then
                         observer_error = "eligible base is already invading or path-searching: " .. util.mask_uid(base_id)
                         return true
+                    elseif cooling_down then
+                        observer_error = "eligible base is in native invasion cooldown: " .. util.mask_uid(base_id)
+                        return true
+                    elseif ignore_invader then
+                        observer_error = "eligible base ignores native invasions: " .. util.mask_uid(base_id)
+                        return true
                     elseif available_ok and available then
                         expected[base_id] = true
-                        native_ids[base_id] = id_value
+                        native_ids[base_id] = key
                         base_guilds[base_id] = group_id
                     end
                 end
@@ -779,13 +953,17 @@ function Bridge:_selection_base_id(incident)
 end
 
 function Bridge:_on_select_invaders(context, out_members)
+    local observed_base_id = self:_selection_base_id(context)
+    if self.event_open or self.clock() <= self.native_all_diagnostic_until then
+        self.logger:info("Native SelectInvaders observed", { base = util.mask_uid(observed_base_id), eventOpen = self.event_open })
+    end
     if not self.event_open or self.profile_id == "native" or not self.bounty_selector then
         return
     end
     if not is_enemy_invader_type(property(unwrap(context), "InvaderType")) then
         return
     end
-    local base_id = self:_selection_base_id(context)
+    local base_id = observed_base_id
     if not base_id or not self.expected_bases[base_id] then
         self.logger:warn("Ignored bounty substitution outside expected event bases", { base = util.mask_uid(base_id) })
         return
@@ -936,6 +1114,12 @@ function Bridge:_on_select_invaders(context, out_members)
     end
 end
 
+function Bridge:_on_select_invaders_post(context, _, _, _, out_members)
+    if self:_selection_hook_scope(context) then
+        self:_on_select_invaders(context, out_members)
+    end
+end
+
 function Bridge:register()
     if self.registered then
         return true
@@ -946,9 +1130,20 @@ function Bridge:register()
         required[#required + 1] = { "death", HOOKS.death, function(_, parameter) self:_on_death(parameter) end }
     end
     if self.config.capabilities.observeInvasions then
-        required[#required + 1] = { "invasion_start", HOOKS.invasion_start, function(_, parameter)
+        required[#required + 1] = { "invasion_declaration", HOOKS.invasion_declaration, function(context)
+            local scope = self:_manager_hook_scope(context)
+            if scope then
+                self.logger:info("Native invasion declaration observed", { eventOpen = self.event_open })
+            end
+        end }
+        required[#required + 1] = { "invasion_start", HOOKS.invasion_start, function(context, parameter)
+            local scope = self:_manager_hook_scope(context)
+            if not scope then return end
             local base_id, group_id, invader_type = self:_lifecycle_context(parameter)
             if self.config.diagnostics.traceHooks then self.logger:info("Invasion start hook", { base = util.mask_uid(base_id), group = util.mask_uid(group_id), discovery = self.discovery_open }) end
+            if scope == "native-all-diagnostic" then
+                self.logger:info("Native all-base diagnostic start observed", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) })
+            end
             local group_expected = self.owned_groups[group_id] == base_id
             local native_discovery = self.profile_id == "native" and self.discovery_open and self:_request_window_open(base_id)
             local existing_group
@@ -959,35 +1154,57 @@ function Bridge:register()
                 if self.director:on_invasion_start(base_id, group_id) then
                     self.owned_groups[group_id] = base_id
                     if self.request_windows[base_id] then self.request_windows[base_id].status = "started" end
+                    if base_id == self.probe_base_id then self.probe_confirmed = true end
+                    self.logger:info("Correlated native invasion start confirmed", {
+                        base = util.mask_uid(base_id),
+                        group = util.mask_uid(group_id),
+                        phase = self.request_windows[base_id] and self.request_windows[base_id].phase or "unknown",
+                    })
                 elseif not group_expected then
                     self.owned_groups[group_id] = nil
                 end
             end
         end }
-        required[#required + 1] = { "invasion_timeout", HOOKS.invasion_timeout, function(_, parameter)
+        required[#required + 1] = { "invasion_arrived", HOOKS.invasion_arrived, function(context, parameter)
+            local scope = self:_manager_hook_scope(context)
+            if not scope then return end
+            local base_id, group_id = self:_lifecycle_context(parameter)
+            self.logger:info("Native invasion arrival observed", { base = util.mask_uid(base_id), group = util.mask_uid(group_id), eventOpen = self.event_open })
+        end }
+        required[#required + 1] = { "invasion_timeout", HOOKS.invasion_timeout, function(context, parameter)
+            local scope = self:_manager_hook_scope(context)
+            if not scope then return end
             local base_id, group_id, invader_type = self:_lifecycle_context(parameter)
             if self.config.diagnostics.traceHooks then self.logger:info("Invasion timeout hook", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) }) end
+            if scope == "native-all-diagnostic" then
+                self.logger:info("Native all-base diagnostic timeout observed", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) })
+            end
             if base_id and group_id and is_enemy_invader_type(invader_type) and self.owned_groups[group_id] == base_id and self.director then
                 self.timed_out_bases[base_id] = true
                 self.director:on_invasion_timeout(base_id, group_id)
             end
         end }
-        required[#required + 1] = { "invasion_end", HOOKS.invasion_end, function(_, parameter)
+        required[#required + 1] = { "invasion_end", HOOKS.invasion_end, function(context, parameter)
+            local scope = self:_manager_hook_scope(context)
+            if not scope then return end
             local base_id, group_id, invader_type = self:_lifecycle_context(parameter)
             if self.config.diagnostics.traceHooks then self.logger:info("Invasion end hook", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) }) end
+            if scope == "native-all-diagnostic" then
+                self.logger:info("Native all-base diagnostic end observed", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) })
+            end
             if base_id and group_id and is_enemy_invader_type(invader_type) and self.owned_groups[group_id] == base_id and self.director then
                 self.director:on_invasion_end(base_id, group_id)
                 self.owned_groups[group_id] = nil
                 self.timed_out_bases[base_id] = nil
             end
         end }
-        required[#required + 1] = { "invasion_cancel", HOOKS.invasion_cancel, function()
-            if self.director then self.director:on_invasion_cancel() end
+        required[#required + 1] = { "invasion_cancel", HOOKS.invasion_cancel, function(context)
+            if self:_manager_hook_scope(context) == "event" and self.director then self.director:on_invasion_cancel() end
         end }
     end
     if self.config.capabilities.substituteBountyMembers then
-        required[#required + 1] = { "select_invaders", HOOKS.select_invaders, function(context, _, _, out_members)
-            self:_on_select_invaders(context, out_members)
+        required[#required + 1] = { "select_invaders", HOOKS.select_invaders, function(context, return_value, grade, biome, out_members)
+            self:_on_select_invaders_post(context, return_value, grade, biome, out_members)
         end }
     end
     if self.config.capabilities.chatCommands then
@@ -1079,13 +1296,18 @@ function Bridge:unregister()
     self.registered = false
 end
 
-function Bridge:active_invasion_count()
+function Bridge:active_invasion_count(world)
     local count = 0
     for _, incident in ipairs(self:_find_all("PalInvaderIncidentBase")) do
         if valid(incident) then
-            local ok, executing = call(incident, "IsExecuting")
-            if not ok or executing then
-                count = count + 1
+            local in_scope = true
+            if world then
+                local world_ok, incident_world = call(incident, "GetWorld")
+                in_scope = world_ok and same_object(incident_world, world)
+            end
+            if in_scope then
+                local ok, executing = call(incident, "IsExecuting")
+                if not ok or executing then count = count + 1 end
             end
         end
     end
@@ -1136,19 +1358,24 @@ function Bridge:preflight_start(profile_id)
     self.pending_native_base_ids = {}
     self.pending_base_guilds = {}
     self.pending_roster = {}
+    self.pending_manager = nil
+    self.pending_world = nil
     local environment_ok, environment_error = self:preflight_environment()
     if not environment_ok then
         return false, environment_error
     end
-    local manager = self:_find_first("PalInvaderManager")
-    if not valid(manager) then
-        return false, "PalInvaderManager instance is unavailable"
-    end
+    local roster = self:list_online_players()
+    local manager, world, manager_error = self:_resolve_world_manager(roster)
+    if not manager then return false, manager_error end
+    local utility = self:_utility()
+    local settings_ok, settings = call(utility, "GetOptionWorldSettings", world)
+    local invaders_enabled = settings_ok and property(settings, "bEnableInvaderEnemy") or nil
+    if invaders_enabled ~= true then return false, "native enemy invasions are disabled or unreadable in world settings" end
     local registered_ids, registration_error = self:_registered_base_ids(manager)
     if not registered_ids then
         return false, registration_error
     end
-    if self:active_invasion_count() > 0 then
+    if self:active_invasion_count(world) > 0 then
         return false, "a native invasion/visitor incident is already active; one incident per base is assumed and this alpha uses a global mutex"
     end
     local profile = bounties.profile(profile_id)
@@ -1164,10 +1391,10 @@ function Bridge:preflight_start(profile_id)
             return false, "SelectInvaders is unavailable for bounty substitution"
         end
     end
-    local base_set, native_ids, base_guilds, roster, eligibility_error = self:_eligible_online_guild_bases(manager)
+    local base_set, native_ids, base_guilds, resolved_roster, eligibility_error = self:_eligible_online_guild_bases(manager, roster)
     if not base_set then return false, eligibility_error end
-    if #roster > self.config.limits.maxPlayers then
-        return false, string.format("online roster count %d exceeds configured maximum %d", #roster, self.config.limits.maxPlayers)
+    if #resolved_roster > self.config.limits.maxPlayers then
+        return false, string.format("online roster count %d exceeds configured maximum %d", #resolved_roster, self.config.limits.maxPlayers)
     end
     local base_ids = util.sorted_keys(base_set)
     if #base_ids < 1 then return false, "no available base belongs to a guild with an online member" end
@@ -1177,7 +1404,9 @@ function Bridge:preflight_start(profile_id)
     self.pending_expected_bases = base_set
     self.pending_native_base_ids = native_ids
     self.pending_base_guilds = base_guilds
-    self.pending_roster = roster
+    self.pending_roster = resolved_roster
+    self.pending_manager = manager
+    self.pending_world = world
     local function_object = self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchForBaseCamp")
     if not valid(function_object) then
         return false, "StartInvaderMarchForBaseCamp is unavailable for this revision"
@@ -1185,50 +1414,296 @@ function Bridge:preflight_start(profile_id)
     return true
 end
 
-function Bridge:start_all_invasions()
-    local manager = self:_find_first("PalInvaderManager")
-    if not valid(manager) then
-        return false, "PalInvaderManager instance became unavailable before dispatch"
+function Bridge:_resolve_dispatch_target(manager, expected_base_id)
+    local observers = property(manager, "Observers")
+    if not observers then return nil, "PalInvaderManager.Observers is unavailable" end
+    local target
+    local iterated, iteration_error = pcall(function()
+        observers:ForEach(function(key, value)
+            if target then return end
+            local key_id = guid_string(key)
+            if key_id == expected_base_id then
+                local observer = unwrap(value)
+                local base = property(observer, "TargetBaseCamp")
+                local model_ok, model_native_id = call(base, "GetId")
+                local model_id = model_ok and guid_string(model_native_id) or nil
+                local observer_id = guid_string(property(observer, "TargetBaseCampID"))
+                target = {
+                    observer = observer,
+                    base = base,
+                    nativeId = model_native_id,
+                    keyId = key_id,
+                    observerId = observer_id,
+                    modelId = model_id,
+                }
+            end
+        end)
+    end)
+    if not iterated then return nil, "unable to enumerate dispatch observer: " .. tostring(iteration_error) end
+    if not target then return nil, "selected base is absent from the active manager observer map" end
+    if not valid(target.observer) or not valid(target.base) or not target.nativeId then
+        return nil, "selected base observer or native GUID is unavailable"
     end
+    if target.keyId ~= expected_base_id or target.observerId ~= expected_base_id or target.modelId ~= expected_base_id then
+        return nil, "observer key, TargetBaseCampID, and model GetId no longer agree"
+    end
+    return target
+end
+
+function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
+    local target, target_error = self:_resolve_dispatch_target(manager, expected_base_id)
+    local diagnostic = {
+        phase = phase,
+        base = util.mask_uid(expected_base_id),
+        manager = full_name(manager) or "unknown",
+        guidResolved = target ~= nil,
+        guidResolutionError = target_error,
+        observerKey = target and util.mask_uid(target.keyId) or "unavailable",
+        observerTargetId = target and util.mask_uid(target.observerId) or "unavailable",
+        modelId = target and util.mask_uid(target.modelId) or "unavailable",
+        guidSourcesMatch = target and target.keyId == target.observerId and target.keyId == target.modelId or false,
+    }
+    if target then
+        local available_ok, available = call(target.base, "IsAvailable")
+        if available_ok then diagnostic.baseAvailable = or_unavailable(scalar(available))
+        else diagnostic.baseAvailable = "unavailable" end
+        diagnostic.baseState = or_unavailable(scalar(property(target.base, "CurrentState")))
+        diagnostic.baseLevel = or_unavailable(scalar(property(target.base, "Level_InGuildProperty")))
+        diagnostic.baseTemporary = scalar(property(target.base, "bTemporary"))
+        diagnostic.baseIgnoreInvader = scalar(property(target.base, "bIgnoreInvader"))
+        diagnostic.observerInvading = scalar(property(target.observer, "bIsInvading"))
+        diagnostic.observerPathSearching = scalar(property(target.observer, "bIsInvaderPathSearching"))
+        diagnostic.observerCoolTime = scalar(property(target.observer, "bIsCoolTime"))
+        diagnostic.coolTimeFinish = scalar(property(target.observer, "CoolTimeFinish"))
+        diagnostic.coolTimeElapsed = scalar(property(target.observer, "CoolTimeElapsed"))
+        diagnostic.playerInBaseTimer = scalar(property(target.observer, "PlayerInBaseCampTimer"))
+        diagnostic.playerHandleCount = container_count(property(target.observer, "PlayerHandlesCache"))
+    end
+    local incidents = property(manager, "Incidents")
+    local incident_count = 0
+    local incident_for_base = false
+    local incident_state
+    local incident_can_execute
+    local incident_arrived
+    local incident_group
+    if incidents then
+        local inspected, inspection_error = pcall(function()
+            incidents:ForEach(function(key, value)
+                incident_count = incident_count + 1
+                if guid_string(key) == expected_base_id then
+                    local incident = unwrap(value)
+                    incident_for_base = true
+                    incident_state = scalar(property(incident, "ExecState"))
+                    incident_can_execute = scalar(property(incident, "bCanExecute"))
+                    incident_arrived = scalar(property(incident, "bIsArrived"))
+                    incident_group = guid_string(property(incident, "GroupGuid"))
+                        or guid_string(property(incident, "BroadcastGroupGuid"))
+                end
+            end)
+        end)
+        if not inspected then diagnostic.incidentInspectionError = tostring(inspection_error) end
+    else
+        diagnostic.incidentInspectionError = "Incidents map unavailable"
+    end
+    diagnostic.incidentCount = incident_count
+    diagnostic.incidentForBase = incident_for_base
+    diagnostic.incidentState = or_unavailable(incident_state)
+    diagnostic.incidentCanExecute = incident_can_execute
+    diagnostic.incidentArrived = incident_arrived
+    diagnostic.incidentGroup = incident_group and util.mask_uid(incident_group) or "unavailable"
+    diagnostic.managerInvaderInfo = valid(property(manager, "InvaderInfo"))
+    local start_log_id = guid_string(property(manager, "StartInvaderLogId"))
+    diagnostic.managerStartLogId = start_log_id and util.mask_uid(start_log_id) or "unavailable"
+    diagnostic.managerPathFinder = valid(property(manager, "PathFinder"))
+    local function summarize_keyed_map(map_name)
+        local map = property(manager, map_name)
+        if not map then return nil, nil, map_name .. " unavailable" end
+        local count = 0
+        local contains_base = false
+        local inspected, inspection_error = pcall(function()
+            map:ForEach(function(key)
+                count = count + 1
+                if guid_string(key) == expected_base_id then contains_base = true end
+            end)
+        end)
+        if not inspected then return nil, nil, tostring(inspection_error) end
+        return count, contains_base
+    end
+    diagnostic.startLocationCount, diagnostic.startLocationForBase, diagnostic.startLocationInspectionError = summarize_keyed_map("InvadeStartLocationList")
+    diagnostic.savedInvaderStateCount, diagnostic.savedInvaderStateForBase, diagnostic.savedInvaderStateInspectionError = summarize_keyed_map("InvaderSaveDataMapCache")
+    diagnostic.negotiatorRow = scalar(property(manager, "NegotiatorRowName")) or "unavailable"
+    local utility = self:_utility()
+    if valid(utility) and valid(self.event_world) then
+        local settings_ok, settings = call(utility, "GetOptionWorldSettings", self.event_world)
+        if settings_ok then diagnostic.worldInvaderEnabled = or_unavailable(scalar(property(settings, "bEnableInvaderEnemy")))
+        else diagnostic.worldInvaderEnabled = "unavailable" end
+    else
+        diagnostic.worldInvaderEnabled = "unavailable"
+    end
+    return diagnostic, target, target_error
+end
+
+function Bridge:_log_dispatch_snapshot(diagnostic)
+    self.logger:info("Selected-base native invasion state", diagnostic)
+end
+
+function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
+    local manager = self.event_manager
+    if not valid(manager) then
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = "pinned world invasion manager is unavailable" }
+    end
+    local before, target, target_error = self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-before")
+    self:_log_dispatch_snapshot(before)
+    if not target then
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = target_error, before = before }
+    end
+    if before.worldInvaderEnabled ~= true or before.baseAvailable ~= true or before.baseIgnoreInvader ~= false
+        or before.observerInvading ~= false or before.observerPathSearching ~= false or before.observerCoolTime ~= false
+        or before.incidentForBase then
+        return {
+            baseId = base_id,
+            phase = dispatch_phase,
+            status = "dispatch_precondition_failed",
+            error = "native observer or manager state rejected selected-base dispatch",
+            before = before,
+        }
+    end
+    local now = self.clock()
+    self.request_windows[base_id] = {
+        openedAt = now,
+        expiresAt = now + self.config.siegeLeague.startDiscoverySeconds,
+        status = "requesting",
+        phase = dispatch_phase,
+    }
+    self.dispatching_base_id = base_id
     self.selection_open = true
+    local ok, result = call(manager, "StartInvaderMarchForBaseCamp", target.nativeId)
+    self.selection_open = false
+    self.dispatching_base_id = nil
+    local after = self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-after")
+    self:_log_dispatch_snapshot(after)
+    local request = self.request_windows[base_id]
+    if not ok then
+        request.status = "dispatch_call_failed"
+        request.error = tostring(result)
+        return {
+            baseId = base_id,
+            phase = dispatch_phase,
+            status = "dispatch_call_failed",
+            error = tostring(result),
+            before = before,
+            after = after,
+        }
+    end
+    local status = request.status == "started" and "lifecycle_confirmed" or dispatch_phase .. "_call_returned"
+    request.status = status
+    return {
+        baseId = base_id,
+        phase = dispatch_phase,
+        status = status,
+        before = before,
+        after = after,
+    }
+end
+
+function Bridge:start_all_invasions()
+    if not valid(self.event_manager) then
+        return false, "pinned world invasion manager became unavailable before dispatch"
+    end
+    self.dispatch_order = util.sorted_keys(self.expected_bases)
+    self.probe_base_id = self.dispatch_order[1]
+    self.probe_confirmed = false
+    self.fanout_dispatched = false
+    if not self.probe_base_id then return false, "no eligible selected base exists" end
+    local requests = {}
+    local probe = self:_dispatch_selected_base(self.probe_base_id, "probe")
+    requests[#requests + 1] = probe
+    for index = 2, #self.dispatch_order do
+        requests[#requests + 1] = {
+            baseId = self.dispatch_order[index],
+            phase = "fanout",
+            status = "awaiting_probe_confirmation",
+        }
+    end
+    if probe.status == "dispatch_call_failed" or probe.status == "dispatch_precondition_failed" then
+        return false, { requested = 0, requests = requests, error = probe.error or "probe dispatch failed" }
+    end
+    return true, { requested = 1, requests = requests, phase = "probe" }
+end
+
+function Bridge:continue_invasion_dispatch()
+    if not self.probe_confirmed then return false, "probe lifecycle is not confirmed" end
+    if self.fanout_dispatched then return true, { requested = 0, requests = {}, phase = "already_dispatched" } end
+    self.fanout_dispatched = true
     local requests = {}
     local requested = 0
-    for _, base_id in ipairs(util.sorted_keys(self.expected_bases)) do
-        local native_id = self.native_base_ids[base_id]
-        if native_id == nil then
-            requests[#requests + 1] = { baseId = base_id, status = "dispatch_call_failed", error = "native GUID unavailable" }
-        else
-            local now = self.clock()
-            self.request_windows[base_id] = {
-                openedAt = now,
-                expiresAt = now + self.config.siegeLeague.startDiscoverySeconds,
-                status = "requesting",
-            }
-            self.dispatching_base_id = base_id
-            local ok, result = call(manager, "StartInvaderMarchForBaseCamp", native_id)
-            self.dispatching_base_id = nil
-            if ok then
-                requested = requested + 1
-                if self.request_windows[base_id].status ~= "started" then
-                    self.request_windows[base_id].status = "request_issued"
-                end
-                requests[#requests + 1] = { baseId = base_id, status = "request_issued" }
-            else
-                self.request_windows[base_id].status = "dispatch_call_failed"
-                self.request_windows[base_id].error = tostring(result)
-                requests[#requests + 1] = { baseId = base_id, status = "dispatch_call_failed", error = tostring(result) }
-            end
+    for index = 2, #self.dispatch_order do
+        local request = self:_dispatch_selected_base(self.dispatch_order[index], "fanout")
+        requests[#requests + 1] = request
+        if request.status ~= "dispatch_call_failed" and request.status ~= "dispatch_precondition_failed" then
+            requested = requested + 1
         end
     end
-    self.selection_open = false
-    if requested == 0 then
-        local first = requests[1]
-        return false, { requested = 0, requests = requests, error = first and first.error or "no eligible base start was requested" }
-    end
     if requested < #requests then
-        self.logger:warn("Some filtered base invasion requests failed synchronously", { failures = #requests - requested, requested = requested })
+        self.logger:warn("Some confirmed-probe fanout calls were rejected", { failures = #requests - requested, requested = requested })
     end
-    return true, { requested = requested, requests = requests }
+    return true, { requested = requested, requests = requests, phase = "fanout" }
+end
+
+function Bridge:diagnose_native_start_all(confirmation)
+    self.native_all_diagnostic_until = 0
+    self.native_all_diagnostic_manager = nil
+    self.native_all_diagnostic_world = nil
+    if confirmation ~= "confirm-disposable-start-all" then
+        return false, "diagnostic requires confirm-disposable-start-all"
+    end
+    if tostring(os.getenv("COMPUTERNAME") or ""):upper() ~= "IMOUTO" then
+        return false, "native all-base diagnostic is restricted to IMOUTO"
+    end
+    local director_status = self.director and self.director.state and self.director.state.status or "idle"
+    if self.event_open or director_status == "starting" or director_status == "active" or director_status == "resolving"
+        or director_status == "recovery_required" then
+        return false, "an event is already active"
+    end
+    local environment_ok, environment_error = self:preflight_environment()
+    if not environment_ok then return false, environment_error end
+    local roster = self:list_online_players()
+    local manager, world, manager_error = self:_resolve_world_manager(roster)
+    if not manager then return false, manager_error end
+    local registered_ids, registration_error = self:_registered_base_ids(manager)
+    if not registered_ids then return false, registration_error end
+    if #registered_ids < 1 then return false, "no registered invasion observers exist" end
+    if self:active_invasion_count(world) > 0 then return false, "a native invasion or visitor incident is already active" end
+    local function_object = self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchAll")
+    if not valid(function_object) then return false, "StartInvaderMarchAll is unavailable for this revision" end
+    table.sort(registered_ids)
+    local previous_world = self.event_world
+    self.event_world = world
+    local before = self:_dispatch_snapshot(manager, registered_ids[1], "native-all-before")
+    self:_log_dispatch_snapshot(before)
+    if before.worldInvaderEnabled ~= true then
+        self.event_world = previous_world
+        return false, "native enemy invasions are disabled or unreadable in world settings"
+    end
+    self.native_all_diagnostic_manager = manager
+    self.native_all_diagnostic_world = world
+    self.native_all_diagnostic_until = self.clock() + self.config.siegeLeague.startDiscoverySeconds
+    local called, call_error = call(manager, "StartInvaderMarchAll")
+    local after = self:_dispatch_snapshot(manager, registered_ids[1], "native-all-after")
+    self:_log_dispatch_snapshot(after)
+    self.event_world = previous_world
+    if not called then
+        self.native_all_diagnostic_until = 0
+        self.native_all_diagnostic_manager = nil
+        self.native_all_diagnostic_world = nil
+        return false, "StartInvaderMarchAll call failed: " .. tostring(call_error)
+    end
+    self.logger:warn("Disposable native all-base comparison call returned; acceptance still requires lifecycle evidence", {
+        observerCount = #registered_ids,
+        incidentCountBefore = before.incidentCount,
+        incidentCountAfter = after.incidentCount,
+    })
+    return true, "StartInvaderMarchAll returned; inspect masked declaration/start/arrival logs before the diagnostic window closes"
 end
 
 function Bridge:announce(message)
@@ -1247,7 +1722,44 @@ function Bridge:announce(message)
     if not ok then
         self.logger:warn("Announcement failed", { error = announce_error })
     end
-    return ok
+    return ok, announce_error
+end
+
+function Bridge:send_chat(message, recipient_uid)
+    local game_state = self:_find_first("PalGameStateInGame")
+    local utility = self:_utility()
+    if not valid(game_state) or not valid(utility) then
+        self.logger:warn("System chat skipped; Palworld messaging objects are unavailable", { recipient = util.mask_uid(recipient_uid) })
+        return false, "Palworld messaging objects are unavailable"
+    end
+    local string_constructor = global("FString")
+    local payload = message
+    if type(string_constructor) == "function" then
+        local ok, converted = pcall(string_constructor, message)
+        if ok then payload = converted end
+    end
+    local ok, chat_error
+    local recipient_count
+    if recipient_uid then
+        local receivers = {}
+        for _, player in ipairs(self:list_online_players()) do
+            if player.uid == recipient_uid then receivers[#receivers + 1] = player.guid end
+        end
+        if #receivers == 0 then
+            self.logger:warn("Private system chat recipient is no longer online", { recipient = util.mask_uid(recipient_uid) })
+            return false, "chat recipient is no longer online"
+        end
+        recipient_count = 1
+        ok, chat_error = call(utility, "SendSystemToPlayerChat", game_state, payload, receivers)
+    else
+        recipient_count = #self:list_online_players()
+        if recipient_count == 0 then return true end
+        ok, chat_error = call(utility, "SendSystemAnnounce", game_state, payload)
+    end
+    if not ok then
+        self.logger:warn("System chat failed", { error = chat_error, recipients = recipient_count })
+    end
+    return ok, chat_error
 end
 
 function Bridge:_online_player_guid(uid)
