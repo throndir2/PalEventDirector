@@ -19,10 +19,14 @@ async function assertNoLinks(pathname, stopAt) {
   let current = path.resolve(pathname);
   const chain = [];
   while (true) {
+    const relative = path.relative(resolvedStop, current);
+    if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      throw new Error(`path escapes trusted backup root: ${pathname}`);
+    }
     chain.push(current);
     if (current.toLowerCase() === resolvedStop.toLowerCase()) break;
     const parent = path.dirname(current);
-    if (parent === current || !current.toLowerCase().startsWith(`${resolvedStop.toLowerCase()}${path.sep}`)) {
+    if (parent === current) {
       throw new Error(`path escapes trusted backup root: ${pathname}`);
     }
     current = parent;
@@ -33,8 +37,8 @@ async function assertNoLinks(pathname, stopAt) {
   }
   const physical = await realpath(pathname);
   const physicalStop = await realpath(stopAt);
-  if (physical.toLowerCase() !== physicalStop.toLowerCase() &&
-      !physical.toLowerCase().startsWith(`${physicalStop.toLowerCase()}${path.sep}`)) {
+  const physicalRelative = path.relative(physicalStop, physical);
+  if (physicalRelative.startsWith('..') || path.isAbsolute(physicalRelative)) {
     throw new Error(`managed backup resolves outside trusted root: ${pathname}`);
   }
 }
