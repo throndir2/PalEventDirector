@@ -67,7 +67,44 @@ If PowerShell marks network scripts as remote, invoke the same file from a trust
 
 The installer supports the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
 
-Optional parameters:
+## One-time Production world seed
+
+World data is intentionally separate from routine mod bundles because it contains private Production player data. From a clean, pushed MIKO revision, run `npm run build:world-seed`. The MIKO-only builder selects the newest managed daily backup that is at least ten minutes old, requires the nonempty settings file copied as the managed backup producer's final completion sentinel without reading or packaging its contents, verifies that the currently running Production process was launched after that snapshot, confirms every selected save predates the relaunch, reads the save files into immutable buffers, verifies they remain unchanged during the snapshot, and creates:
+
+```text
+dist\IMOUTO-WORLD-SEED-<snapshot>-<revision>\
+```
+
+That sensitive local bundle contains `Import-MikoProductionWorldImouto.ps1`, `world-seed.zip`, a per-file hash manifest, and bundle provenance. It contains only active `.sav` data below the one world directory; it omits the backup's `PalWorldSettings.ini` and redundant in-world `backup` history. Never publish or commit this directory.
+
+The snapshot used for the first bundle was `daily_2026-09-03_150014`. It contains 13 primary character saves plus 5 `_dps` player sidecars, not 18 distinct characters.
+
+Run the importer once on IMOUTO after installing the mod and while the IMOUTO dedicated server is stopped:
+
+```powershell
+& '<MIKO repository share>\dist\IMOUTO-WORLD-SEED-2026-09-03_150014-<revision>\Import-MikoProductionWorldImouto.ps1'
+```
+
+The importer:
+
+1. requires local execution on the machine named IMOUTO;
+2. validates the local dedicated-server App ID, build, executable, and server pak;
+3. requires the IMOUTO server to be stopped and rejects reparse-point targets;
+4. accepts only the immutable adjacent world-seed archive and per-file manifest produced on MIKO from a stable managed `daily_*` backup;
+5. imports the active world, base/guild state, primary character saves, and player sidecars, excluding redundant in-world backup history;
+6. snapshots the network archive locally and verifies every staged/destination file before changing or accepting IMOUTO;
+7. moves any existing IMOUTO world and Pal Event Director runtime state into a unique local rollback directory;
+8. changes only IMOUTO's `DedicatedServerName` world selector while preserving the rest of `GameUserSettings.ini`;
+9. verifies that IMOUTO's `PalWorldSettings.ini` did not change; and
+10. journals the replacement phases and records the source snapshot, world ID, primary/sidecar counts, byte count, and rollback path under `PalworldWorldSeedImports`.
+
+If Pal Event Director has already booted, its runtime journal/snapshot is archived so stale event state cannot refer to the replaced world. Its existing `config.json` is preserved. Review that configuration before restart; enabled schedules remain configuration and can still fire after boot.
+
+The first successful import creates a marker and refuses accidental repetition. `ReplaceExistingSeed` permits only a bundle with a newer managed-snapshot timestamp. A pending transaction marker blocks retries after an interrupted replacement until the prior rollback directory is reviewed. The normal target is fixed to `D:\SteamLibrary\steamapps\common\PalServer`.
+
+This is a real copy of Production progression. Treat it as sensitive: do not publish or commit the save files, do not expose the DEV server publicly without authentication, and never copy DEV changes back to Production. Some copied characters may contain private player identity data. Players retain their copied guilds, bases, levels, and inventory as of the snapshot, but all DEV progression diverges permanently after import.
+
+Mod-installer optional parameters:
 
 | Parameter | Purpose |
 |---|---|
@@ -78,6 +115,8 @@ Optional parameters:
 | `ReplaceExistingUe4ss` | Back up and replace a different/incomplete UE4SS runtime. Without this explicit switch, a mismatch aborts. |
 | `DisableOtherUe4ssMods` | Disable existing enabled UE4SS mods. Without this explicit switch, any enabled non-PED mod aborts the deployment. |
 | `WhatIf` | Show the target action without staging, downloading, or writing files. |
+
+The world importer exposes only `ReplaceExistingSeed` and `WhatIf`; source and destination overrides are not available in normal execution.
 
 ## Installer behavior
 
@@ -135,5 +174,7 @@ Running the local client and dedicated server concurrently increases IMOUTO's CP
 ## Rollback
 
 Stop the IMOUTO dedicated server. The previous runtime/mod state is retained beneath the backup path reported by the installer. Restore the complete backed-up `ue4ss` directory and `dwmapi.dll` together; never mix files from two UE4SS releases. Restore the previous deployment record if provenance history matters.
+
+World-import rollback is separate. Keep IMOUTO stopped and use the path reported as `ImoutoBackup`. Preserve the replacement world for diagnosis, restore the backup's complete `SaveGames` directory, restore `GameUserSettings.ini`, restore the backup's `PalEventDirector` directory when present, and restore or remove the prior `PalworldWorldSeedImports` marker according to `backup.json`. Confirm `PalWorldSettings.ini` remained unchanged before starting. Never copy any IMOUTO world or event state back to MIKO Production.
 
 A successful IMOUTO test is not authorization to deploy MIKO Production.

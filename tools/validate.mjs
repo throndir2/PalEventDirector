@@ -26,7 +26,9 @@ const required = [
   'docs/13-admin-and-scheduling.md',
   'docs/14-imouto-dev-deployment.md',
   'operations/imouto/Install-PalEventDirectorImouto.ps1',
+  'operations/imouto/Import-MikoProductionWorldImouto.ps1',
   'tools/build-imouto-bundle.mjs',
+  'tools/build-imouto-world-seed.mjs',
 ];
 
 async function exists(relative) {
@@ -125,6 +127,50 @@ if (await exists('operations/imouto/Install-PalEventDirectorImouto.ps1')) {
     '$Entries = @(Read-Ue4ssModEntries -Path $ModsJson)',
   ]) {
     if (!installer.includes(requiredGuard)) failures.push(`IMOUTO installer is missing required guard: ${requiredGuard}`);
+  }
+}
+
+const imoutoWorldImporterPath = path.join(root, 'operations', 'imouto', 'Import-MikoProductionWorldImouto.ps1');
+if (await exists('operations/imouto/Import-MikoProductionWorldImouto.ps1')) {
+  const importer = await readFile(imoutoWorldImporterPath, 'utf8');
+  for (const requiredGuard of [
+    "[Environment]::MachineName -ine 'IMOUTO'",
+    "CanonicalServerRoot = 'D:\\SteamLibrary\\steamapps\\common\\PalServer'",
+    "SeedManifestPath = Join-Path $PSScriptRoot 'world-seed-manifest.json'",
+    "BundleManifestPath = Join-Path $PSScriptRoot 'bundle.json'",
+    "'^daily_\\d{4}-\\d{2}-\\d{2}_\\d{6}$'",
+    'function Assert-ServerStopped',
+    'function Assert-InventoriesEqual',
+    'function Set-DedicatedServerNameAtomic',
+    '$PalWorldSettingsHash',
+    '$ReplaceExistingSeed',
+    '$PendingRecord',
+    '$SaveGamesMoved',
+    '$NewSaveGamesInstalled',
+    '$SyntheticFailAfter',
+    "throw 'synthetic failure after seed_installed'",
+    "$ServerRoot.StartsWith($SyntheticRoot + '\\'",
+    "'archiving_savegames'",
+    "'installing_seed'",
+  ]) {
+    if (!importer.includes(requiredGuard)) failures.push(`IMOUTO world importer is missing required guard: ${requiredGuard}`);
+  }
+}
+
+const worldSeedBuilderPath = path.join(root, 'tools', 'build-imouto-world-seed.mjs');
+if (await exists('tools/build-imouto-world-seed.mjs')) {
+  const builder = await readFile(worldSeedBuilderPath, 'utf8');
+  for (const requiredGuard of [
+    "hostname().toUpperCase() !== 'MIKO'",
+    "const backupRoot = 'D:\\\\Backups\\\\Palworld\\\\daily'",
+    "git('status', '--porcelain') !== ''",
+    "git('ls-remote', '--exit-code', 'origin', 'refs/heads/main')",
+    "entry.name.toLowerCase() === 'backup'",
+    'primaryCharacterCount',
+    'playerSidecarCount',
+    'world-seed-manifest.json',
+  ]) {
+    if (!builder.includes(requiredGuard)) failures.push(`MIKO world-seed builder is missing required guard: ${requiredGuard}`);
   }
 }
 

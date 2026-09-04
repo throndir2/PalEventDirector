@@ -130,8 +130,10 @@ function Set-Ue4ssSafetySettings {
     [IO.File]::WriteAllText($Path, $text, [Text.UTF8Encoding]::new($false))
 }
 
-if ($SyntheticTestFixture -and -not $ServerRoot.StartsWith('C:\PED-Imouto-Installer-Test\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'SyntheticTestFixture is restricted to the disposable installer-test root.'
+$ServerRoot = [IO.Path]::GetFullPath($ServerRoot).TrimEnd('\')
+$SyntheticRoot = [IO.Path]::GetFullPath('C:\PED-Imouto-Installer-Test').TrimEnd('\')
+if ($SyntheticTestFixture -and -not $ServerRoot.StartsWith($SyntheticRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'SyntheticTestFixture is restricted to a canonical descendant of the disposable installer-test root.'
 }
 if ([Environment]::MachineName -ine 'IMOUTO' -and -not $SyntheticTestFixture) {
     throw 'This installer must run locally on IMOUTO. MIKO and remote target execution are prohibited.'
@@ -139,7 +141,6 @@ if ([Environment]::MachineName -ine 'IMOUTO' -and -not $SyntheticTestFixture) {
 if ($ServerRoot.StartsWith('\\') -or $ServerRoot.StartsWith('\\?\') -or $ServerRoot.StartsWith('\\.\')) {
     throw 'ServerRoot must be a local fixed-drive path on IMOUTO; UNC and device targets are prohibited.'
 }
-$ServerRoot = [IO.Path]::GetFullPath($ServerRoot).TrimEnd('\')
 $serverDrive = [IO.Path]::GetPathRoot($ServerRoot)
 $driveInfo = [IO.DriveInfo]::new($serverDrive)
 if ($driveInfo.DriveType -ne [IO.DriveType]::Fixed) {

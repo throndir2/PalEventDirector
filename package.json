@@ -9,6 +9,7 @@
     "validate": "node tools/validate.mjs",
     "build": "node tools/build.mjs",
     "build:imouto": "node tools/build-imouto-bundle.mjs",
+    "build:world-seed": "node tools/build-imouto-world-seed.mjs",
     "check": "npm run test && npm run validate"
   },
   "devDependencies": {
