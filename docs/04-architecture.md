@@ -389,6 +389,9 @@ A sign lease:
 
 Planned player commands:
 
+- `!siege status` / `!siege profiles` — current alarm and allowlisted profile help.
+- `!siege start <profile>` — operator start by default, or any-user start only under the configured global cooldown policy.
+- `!siege score` / `!siege leaderboard` — personal and global Siege League standings.
 - `!event` — active/upcoming event summary.
 - `!join` and `!leave` — participation.
 - `!score` — personal or guild progress.
@@ -400,6 +403,7 @@ Planned player commands:
 
 Planned operator commands:
 
+- `!siege resolve|abort|reset`
 - `!ped status`
 - `!ped validate <template>`
 - `!ped preview <template>`

@@ -2,7 +2,7 @@
 
 Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
-> **Project state:** runnable `0.1.0-alpha.1` laboratory build. It boots, validates persistent configuration, maintains a checksummed journal/snapshot, tracks cross-base Siege League contribution/final hits through current reflected candidates, creates exactly-once reward obligations, and exposes operator controls. All gameplay observation, invasion starts, and live item delivery are disabled by default until the disposable-world gates pass.
+> **Project state:** runnable `0.1.0-alpha.2` laboratory build. It boots, validates persistent configuration, maintains a checksummed journal/snapshot, tracks cross-base Siege League contribution/final hits through current reflected candidates, creates exactly-once reward obligations, exposes operator/chat controls, and can transform native selected members through audited bounty profiles. All gameplay observation, invasion starts, bounty substitution, chat hooks, and live item delivery are disabled by default until the disposable-world gates pass.
 
 `Info.json` intentionally leaves `MinRevision` at `0` for this unpublished laboratory package because the installed executable does not expose the official five-digit title revision in file metadata. Record that revision in-game and set it before any published release.
 
@@ -18,9 +18,23 @@ Prerequisite: one Palworld-compatible `UE4SS` package managed by Pocketpair's of
 4. Restart only a disposable laboratory server/world first.
 5. The first boot creates persistent `Pal/Saved/PalEventDirector/config.json` with all adapter/mutation switches off.
 6. Enable `diagnostics.observationProbe` and one observation capability at a time, restart, and complete the checklist in [the alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md). Use `traceHooks` only for short focused troubleshooting.
-7. Enable `startAllInvasions` only after both observation adapters pass. Live `grantItems` is intentionally rejected in this build; rewards remain durable pending obligations until the next persistence gate is implemented.
+7. Enable `startAllInvasions` and `substituteBountyMembers` only after observation and substitution probes pass. Live `grantItems` is intentionally rejected in this build; rewards remain durable pending obligations until the next persistence gate is implemented.
 
-Operator console commands are `ped status`, `ped start`, `ped leaderboard`, `ped resolve`, `ped abort`, `ped reset`, and `ped rewards`. Player chat commands remain disabled by default; when validated and enabled, players can use `!event`, `!score`, and `!leaderboard`.
+The primary admin command is `!siege start all-bounty`. `chatStartPolicy=operatorOnly` is the safe default and authorizes UIDs in `operatorUids`; `anyUser` permits any player to start an enabled profile subject to the durable global cooldown. Chat hooks remain disabled until validated. Available player commands are `!siege status`, `!siege profiles`, `!siege score`, and `!siege leaderboard`. Operators additionally get `!siege start <profile>`, `!siege resolve`, `!siege abort`, and `!siege reset`.
+
+Built-in profiles:
+
+| Profile | Composition |
+|---|---|
+| `all-bounty` | Default. Attempts to replace every intercepted native selected member while rotating the audited 34-ID bounty catalog across all bases; spawned outcomes still require live proof. |
+| `patrol` | All members use low-yield one- or two-token bounty targets. |
+| `mixed` | One bounty captain with the remaining native escorts. |
+| `most-wanted` | All members use two- through four-token targets. |
+| `kingpin` | Every member becomes Ram, the five-token Dark Trader bounty. |
+| `jackpot` | Every member uses a four- or five-token target. |
+| `native` | No composition substitution; useful as the baseline control. |
+
+The corresponding server-console forms are `ped start <profile>`, `ped status`, `ped profiles`, `ped leaderboard`, `ped resolve`, `ped abort`, and `ped reset`.
 
 ## Non-negotiable contract
 

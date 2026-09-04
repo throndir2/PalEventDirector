@@ -2,7 +2,7 @@
 
 ## Scope
 
-Version `0.1.0-alpha.1` is a runnable, fail-closed UE4SS Lua laboratory build. It is not authorized for the production world. The purpose of this release is to prove current Palworld hook signatures and native invasion behavior without requiring client files.
+Version `0.1.0-alpha.2` is a runnable, fail-closed UE4SS Lua laboratory build. It is not authorized for the production world. The purpose of this release is to prove current Palworld hook signatures, native invasion behavior, chat authorization, and bounty-member substitution without requiring client files.
 
 ## Implemented
 
@@ -10,6 +10,8 @@ Version `0.1.0-alpha.1` is a runnable, fail-closed UE4SS Lua laboratory build. I
 - Persistent validated JSON configuration outside the managed package.
 - Checksummed append-only journal and atomic snapshot/backup writes.
 - Siege League lifecycle with an all-base native start adapter.
+- Admin or cooldown-bound user activation through `!siege start <profile>` after chat validation.
+- Seven fixed composition profiles, including `all-bounty`, which attempts to replace every intercepted native member while cycling the complete audited 34-ID bounty catalog across the event.
 - Cross-base roaming: a player may defend every event base and accumulate contribution, final hits, base count, participation, and per-successful-base reward obligations.
 - Target-budgeted contribution with direct-player, active-Pal, optional base-worker, uncredited-damage, overkill, duplicate, and final-hit accounting.
 - Deterministic standings and exactly-once reward-obligation identities.
@@ -24,11 +26,36 @@ The generated default has every Palworld observation/mutation switch off:
 - `observeInvasions=false`
 - `chatCommands=false`
 - `startAllInvasions=false`
+- `substituteBountyMembers=false`
 - `grantItems=false`
 
 `grantItems=true` is rejected by the alpha configuration validator. Reward obligation creation and transaction tests exist, but live delivery remains blocked until journal replay and every crash boundary are proven against a copied world.
 
-This alpha also does not yet substitute bounty characters, alter levels, schedule recurring events, privately message players, or stop native invasions. `abort` stops director scoring and leaves Palworld's native incidents to their normal lifecycle.
+This alpha implements but does not enable bounty substitution. It does not yet alter levels, schedule recurring events, privately message players, or stop native invasions. `abort` stops director scoring and leaves Palworld's native incidents to their normal lifecycle.
+
+## Chat authorization and profiles
+
+After the chat hook passes Gate 2, set `chatCommands=true` and add canonical player GUIDs to `operatorUids`. The default `chatStartPolicy` is `operatorOnly`; an operator can run:
+
+`!siege start all-bounty`
+
+Setting `chatStartPolicy` to `anyUser` lets any user run the same allowlisted command, but `userStartCooldownSeconds` applies globally and active/recovery/native-concurrency guards still fail closed. User text can select only IDs in `allowedProfiles`; it cannot name an Unreal path, character ID, item, or arbitrary function.
+
+Recommended profile cadence:
+
+- `all-bounty` — flagship special event; every attacker is a bounty target and the full roster rotates globally;
+- `patrol` — frequent, lower-token alarm;
+- `mixed` — safest first substitution probe: one bounty leader and native escorts;
+- `most-wanted` — harder mid/high-token event;
+- `kingpin` — rare all-Ram spectacle with a severe token-economy multiplier;
+- `jackpot` — explicit rare economy event using only four/five-token targets;
+- `native` — control run with no substitution.
+
+`all-bounty` does not resize native arrays. It attempts to replace every member in each intercepted Palworld selection. If live call timing and initialization match the reflected contract, the complete 34-ID catalog is attempted once the event supplies at least 34 concrete member slots; smaller events use a deterministic subset and continue the rotation. Actual spawned IDs, drops, capture, and wave behavior remain live gates.
+
+The transform remains armed for repeated or asynchronous selections until the occurrence ends. It acts only on enemy incidents whose base was in the pre-start observer snapshot; once a base accepts a native group GUID, later selections and damage must match that same group. Visitor selections and groups from unrelated incidents are ignored.
+
+Alpha.2 uses configuration schema 2 and intentionally rejects schema 1. Before upgrading, stop the laboratory server, rename the alpha.1 `config.json` to a timestamped audit backup, start alpha.2 once to create a fresh fail-closed schema-2 file, stop it, then reapply reviewed values explicitly.
 
 ## Native concurrency conclusion
 
@@ -77,13 +104,16 @@ Expected safety policy is at most one invader-family incident per camp. Do not i
 
 ## Gate 4: all-base Siege League mutation
 
-Enable `startAllInvasions` only while `observeCombat` and `observeInvasions` remain enabled. Keep `grantItems=false`.
+Enable `startAllInvasions` and `substituteBountyMembers` only while `observeCombat` and `observeInvasions` remain enabled. Keep `grantItems=false`.
 
 The process environment must also set `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` to the exact Steam dedicated-server build ID in the configured allowlist. For this inspected build that value is `24575149`. An absent or changed value blocks mutation.
 
-Start through `ped start`, then verify:
+Start the lowest-risk replacement through `ped start mixed`, then test `ped start all-bounty`. After chat validation, repeat as an operator with `!siege start all-bounty`, and optionally repeat under the any-user cooldown policy. Verify:
 
 - every technically eligible base receives one classified attempted outcome;
+- every concrete member in `all-bounty` has an audited `BOSS_*` ID while retaining Palworld's native level and companion fields;
+- `mixed` changes exactly one concrete member per native selection;
+- unauthorized users cannot start under `operatorOnly`, while `anyUser` starts once and then observes the durable global cooldown;
 - players can move between all active bases and score at each;
 - each native group GUID belongs only to this occurrence;
 - natural/overlapping incidents never enter the event;
@@ -94,16 +124,16 @@ Start through `ped start`, then verify:
 - `ped abort` never destroys an unknown/native actor;
 - restart during active scoring enters recovery-required instead of starting another siege.
 
-## Gate 5: rewards and bounty substitution
+## Gate 5: rewards and bounty outcomes
 
-Not available in `alpha.1`. The next release must add and prove:
+Not available in `alpha.2`. The next release must add and prove:
 
 - replayable reward state transitions anchored to the journal;
 - full/partial inventory behavior and exact `EPalItemOperationResult` handling;
 - crash injection before intent, after intent, during grant, after grant, and before result checkpoint;
 - login retry and operator-review resolution;
 - current item-row allowlist verification;
-- bounty-member substitution, capture behavior, native drops, wave completion, level policy, and vanilla-client compatibility.
+- capture behavior, native bounty drops, wave completion, level policy, and vanilla-client compatibility for each enabled composition profile.
 
 ## Failure response
 

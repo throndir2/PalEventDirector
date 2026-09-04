@@ -19,6 +19,7 @@ const packageFiles = [
   'Info.json',
   'Scripts/config/default.json',
   'Scripts/main.lua',
+  'Scripts/ped/bounties.lua',
   'Scripts/ped/config.lua',
   'Scripts/ped/director.lua',
   'Scripts/ped/filesystem.lua',

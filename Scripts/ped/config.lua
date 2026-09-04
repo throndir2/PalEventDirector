@@ -1,11 +1,12 @@
 local json = require("ped.json")
+local bounties = require("ped.bounties")
 local util = require("ped.util")
 
 local M = {}
 
 function M.defaults()
     return {
-        schemaVersion = 1,
+        schemaVersion = 2,
         mode = "laboratory",
         compatibility = {
             requiredAdapter = "palworld-1.0.3-lab",
@@ -22,6 +23,7 @@ function M.defaults()
             observeInvasions = false,
             chatCommands = false,
             startAllInvasions = false,
+            substituteBountyMembers = false,
             grantItems = false,
         },
         diagnostics = {
@@ -37,6 +39,10 @@ function M.defaults()
         },
         siegeLeague = {
             name = "Siege League",
+            defaultProfile = "all-bounty",
+            allowedProfiles = json.array(bounties.profile_ids()),
+            chatStartPolicy = "operatorOnly",
+            userStartCooldownSeconds = 3600,
             allowCrossBaseRoaming = true,
             targetPoints = 1000,
             minimumParticipationPoints = 100,
@@ -101,7 +107,7 @@ function M.validate(config)
         return false, "configuration root must be an object"
     end
     local ok, message = pcall(function()
-        require_integer(config.schemaVersion, "schemaVersion", 1, 1)
+        require_integer(config.schemaVersion, "schemaVersion", 2, 2)
         if config.mode ~= "laboratory" and config.mode ~= "production" then
             error("mode must be 'laboratory' or 'production'")
         end
@@ -129,10 +135,33 @@ function M.validate(config)
         require_boolean(config.diagnostics.traceHooks, "diagnostics.traceHooks")
         require_boolean(config.diagnostics.observationProbe, "diagnostics.observationProbe")
         if config.capabilities.grantItems then
-            error("grantItems is not available in alpha.1; scoring and reward obligations are implemented, but live delivery requires journal replay validation")
+            error("grantItems is not available in alpha.2; scoring and reward obligations are implemented, but live delivery requires journal replay validation")
         end
         if config.capabilities.startAllInvasions and (not config.capabilities.observeCombat or not config.capabilities.observeInvasions) then
             error("startAllInvasions requires observeCombat and observeInvasions")
+        end
+        if config.siegeLeague.chatStartPolicy ~= "operatorOnly" and config.siegeLeague.chatStartPolicy ~= "anyUser" then
+            error("siegeLeague.chatStartPolicy must be 'operatorOnly' or 'anyUser'")
+        end
+        require_integer(config.siegeLeague.userStartCooldownSeconds, "siegeLeague.userStartCooldownSeconds", 60, 604800)
+        local allowed_profiles = {}
+        for index, profile_id in ipairs(config.siegeLeague.allowedProfiles or {}) do
+            local normalized = bounties.normalize_profile_id(profile_id)
+            if not normalized or normalized ~= profile_id then
+                error("siegeLeague.allowedProfiles[" .. index .. "] is not a canonical built-in profile ID")
+            end
+            if allowed_profiles[profile_id] then
+                error("duplicate allowed profile " .. profile_id)
+            end
+            allowed_profiles[profile_id] = true
+        end
+        if not allowed_profiles[config.siegeLeague.defaultProfile] then
+            error("siegeLeague.defaultProfile must be present in allowedProfiles")
+        end
+        for profile_id in pairs(allowed_profiles) do
+            if profile_id ~= "native" and not config.capabilities.substituteBountyMembers and config.capabilities.startAllInvasions then
+                error("non-native allowed profiles require substituteBountyMembers when startAllInvasions is enabled")
+            end
         end
         require_integer(config.limits.maxBases, "limits.maxBases", 1, 256)
         require_integer(config.limits.maxTargets, "limits.maxTargets", 1, 4096)

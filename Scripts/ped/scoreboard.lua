@@ -183,6 +183,18 @@ function Scoreboard:mark_unranked(target_id, reason)
     return true
 end
 
+function Scoreboard:unrank_base(base_id, reason)
+    local changed = 0
+    for _, target in pairs(self.state.targets) do
+        if target.baseId == base_id and target.ranked then
+            target.ranked = false
+            target.unrankedReason = reason or "base_unranked"
+            changed = changed + 1
+        end
+    end
+    return changed
+end
+
 function Scoreboard:close_target(input)
     local target = self.state.targets[input.target_id]
     if not target then
@@ -211,7 +223,7 @@ function Scoreboard:_player_result(uid, player)
         acceptedDamage = player.acceptedDamage,
         directDamage = player.directDamage,
         palDamage = player.palDamage,
-        finalHits = player.finalHits,
+        finalHits = 0,
         qualifiedTargets = 0,
         basesDefended = util.count(player.bases),
         baseScoreMicro = {},
@@ -219,6 +231,9 @@ function Scoreboard:_player_result(uid, player)
     }
     for _, target in pairs(self.state.targets) do
         if target.ranked then
+            if target.finalHitPlayerUid == uid then
+                result.finalHits = result.finalHits + 1
+            end
             local contributor = target.contributors[uid]
             if contributor then
                 local points = mul_div_floor(target.pointMicro, contributor.damage, target.healthBudget)

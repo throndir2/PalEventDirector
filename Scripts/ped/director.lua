@@ -1,5 +1,7 @@
 local Rewards = require("ped.rewards")
 local Scoreboard = require("ped.scoreboard")
+local bounties = require("ped.bounties")
+local config_module = require("ped.config")
 local util = require("ped.util")
 
 local Director = {}
@@ -12,6 +14,7 @@ local function new_state()
         schemaVersion = 1,
         status = "idle",
         nonce = 0,
+        lastUserStartAt = 0,
         event = nil,
         lastEvent = nil,
     }
@@ -31,6 +34,7 @@ function Director.new(options)
         next_reward_retry = 0,
         command_times = {},
         last_public_command = 0,
+        last_start_attempt = 0,
     }, Director)
 
     local restored, _, restore_error = self.store:load_snapshot()
@@ -123,14 +127,34 @@ function Director:_active_event()
     return nil
 end
 
-function Director:start(source)
+function Director:_profile_allowed(profile_id)
+    profile_id = bounties.normalize_profile_id(profile_id or self.config.siegeLeague.defaultProfile)
+    if not profile_id then
+        return nil, "unknown profile"
+    end
+    for _, allowed in ipairs(self.config.siegeLeague.allowedProfiles) do
+        if allowed == profile_id then
+            return profile_id
+        end
+    end
+    return nil, "profile is not enabled: " .. profile_id
+end
+
+function Director:start(source, requested_profile)
     if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
         return false, "director is " .. self.state.status
     end
     if not self.config.capabilities.startAllInvasions then
         return false, "capabilities.startAllInvasions is disabled"
     end
-    local healthy, health_error = self.bridge:preflight_start()
+    local profile_id, profile_error = self:_profile_allowed(requested_profile)
+    if not profile_id then
+        return false, profile_error
+    end
+    if profile_id ~= "native" and not self.config.capabilities.substituteBountyMembers then
+        return false, "capabilities.substituteBountyMembers is disabled"
+    end
+    local healthy, health_error = self.bridge:preflight_start(profile_id)
     if not healthy then
         return false, health_error
     end
@@ -141,12 +165,15 @@ function Director:start(source)
     self.state.event = {
         id = occurrence_id,
         name = self.config.siegeLeague.name,
+        profileId = profile_id,
+        profileName = bounties.profile(profile_id).name,
         status = "starting",
         source = source or "operator",
         startedAt = now,
         startedAtUtc = util.utc_now(),
         lastLifecycleAt = now,
         bases = {},
+        compositions = {},
         timeoutBases = {},
     }
     self.state.status = "starting"
@@ -154,6 +181,7 @@ function Director:start(source)
     local durable, durable_error = self:_persist("event_start_intent", {
         occurrenceId = occurrence_id,
         source = source or "operator",
+        profileId = profile_id,
         allowCrossBaseRoaming = true,
     })
     if not durable then
@@ -161,8 +189,20 @@ function Director:start(source)
         return false, durable_error
     end
 
-    if self.bridge.begin_event_discovery then self.bridge:begin_event_discovery() end
-    local started, start_error = self.bridge:start_all_invasions()
+    local expected_base_ids = self.bridge.begin_event_discovery and self.bridge:begin_event_discovery(profile_id, occurrence_id) or {}
+    for _, base_id in ipairs(expected_base_ids or {}) do
+        self.state.event.bases[base_id] = {
+            id = base_id,
+            status = "pending",
+            ranked = false,
+        }
+    end
+    if not self:_checkpoint("expected_bases") then
+        if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
+        self.state.status = "recovery_required"
+        return false, "unable to checkpoint expected base set"
+    end
+    local started, start_error = self.bridge:start_all_invasions(profile_id)
     if not started then
         if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
         self.state.status = "aborted"
@@ -171,8 +211,8 @@ function Director:start(source)
         self:_persist("event_start_failed", { occurrenceId = occurrence_id, reason = start_error })
         return false, start_error
     end
-    self:_announce("SIEGE LEAGUE: Every base is under threat. Move between bases, protect everything, and rack up contribution and final hits!")
-    self.logger:info("Requested all-base Siege League", { occurrence = occurrence_id })
+    self:_announce("SIEGE LEAGUE - " .. bounties.profile(profile_id).name .. ": Every base is under threat. Move between bases, protect everything, and rack up contribution and final hits!")
+    self.logger:info("Requested all-base Siege League", { occurrence = occurrence_id, profile = profile_id })
     return true, occurrence_id
 end
 
@@ -182,16 +222,13 @@ function Director:on_invasion_start(base_id, group_id)
         return false
     end
     if not event.bases[base_id] then
-        if util.count(event.bases) >= self.config.limits.maxBases then
-            self.logger:error("Base limit reached; refusing additional event base", { base = util.mask_uid(base_id) })
-            return false
-        end
-        event.bases[base_id] = {
-            id = base_id,
-            groupId = group_id,
-            status = "active",
-            startedAt = self.clock(),
-        }
+        self.logger:error("Rejected invasion start outside expected base set", { base = util.mask_uid(base_id) })
+        return false
+    elseif event.bases[base_id].status == "pending" then
+        event.bases[base_id].groupId = group_id
+        event.bases[base_id].status = "active"
+        event.bases[base_id].startedAt = self.clock()
+        event.bases[base_id].ranked = event.profileId == "native" or (event.compositions[base_id] and not event.compositions[base_id].failed)
     else
         if event.bases[base_id].groupId ~= group_id then
             return false
@@ -204,6 +241,35 @@ function Director:on_invasion_start(base_id, group_id)
     self:_mark_dirty()
     self.logger:info("Invasion joined Siege League", { base = util.mask_uid(base_id), occurrence = event.id })
     return true
+end
+
+function Director:on_composition_result(base_id, replaced_count, selected_count, composition_error, assignments)
+    local event = self:_active_event()
+    if not event or type(base_id) ~= "string" then
+        return false
+    end
+    local composition = event.compositions[base_id]
+    if not composition then
+        composition = { selections = {}, failed = false }
+        event.compositions[base_id] = composition
+    end
+    composition.selections[#composition.selections + 1] = {
+        profileId = event.profileId,
+        replaced = replaced_count or 0,
+        selected = selected_count or 0,
+        error = composition_error,
+        assignments = assignments or {},
+    }
+    if composition_error then
+        composition.failed = true
+        event.compositionFailed = true
+        if event.bases[base_id] then event.bases[base_id].ranked = false end
+        if self.scoreboard then self.scoreboard:unrank_base(base_id, "composition_failure") end
+    elseif event.bases[base_id] and not composition.failed then
+        event.bases[base_id].ranked = true
+    end
+    self:_mark_dirty()
+    return composition_error == nil
 end
 
 function Director:on_invasion_timeout(base_id, group_id)
@@ -258,6 +324,15 @@ function Director:on_damage(record)
     if not event.bases[record.base_id] then
         return false, "base_not_tracked"
     end
+    if event.bases[record.base_id].status ~= "active" then
+        return false, "base_not_active"
+    end
+    if not record.group_id or record.group_id ~= event.bases[record.base_id].groupId then
+        return false, "group_not_owned"
+    end
+    if event.bases[record.base_id].ranked == false then
+        return false, "base_composition_unranked"
+    end
     if record.source_kind == "direct_player" and not self.config.siegeLeague.creditDirectPlayer then
         record.source_kind = "uncredited"
         record.player_uid = nil
@@ -281,6 +356,13 @@ function Director:on_death(record)
     local event = self:_active_event()
     if not event or not self.scoreboard then
         return false, "inactive"
+    end
+    local base = event.bases[record.base_id]
+    if not base or base.status ~= "active" then
+        return false, "base_not_active"
+    end
+    if not record.group_id or record.group_id ~= base.groupId then
+        return false, "group_not_owned"
     end
     if record.source_kind == "direct_player" and not self.config.siegeLeague.creditDirectPlayer then
         record.source_kind = "uncredited"
@@ -314,7 +396,7 @@ local function all_bases_closed(event)
     local found = false
     for _, base in pairs(event.bases) do
         found = true
-        if base.status == "active" then
+        if base.status == "active" or base.status == "pending" then
             return false
         end
     end
@@ -481,7 +563,18 @@ function Director:status_text()
         end
     end
     local stats = self.scoreboard and self.scoreboard:stats() or { players = 0, targets = 0 }
-    return string.format("%s %s: bases active=%d completed=%d, players=%d, tracked invaders=%d.", event.name, self.state.status, active_bases, completed_bases, stats.players, stats.targets)
+    return string.format("%s (%s) %s: bases active=%d completed=%d, players=%d, tracked invaders=%d.", event.name, event.profileName or event.profileId or "unknown", self.state.status, active_bases, completed_bases, stats.players, stats.targets)
+end
+
+function Director:profiles_text()
+    local enabled = {}
+    for _, profile_id in ipairs(self.config.siegeLeague.allowedProfiles) do
+        local profile = bounties.profile(profile_id)
+        if profile then
+            enabled[#enabled + 1] = profile.id .. " (" .. profile.name .. ")"
+        end
+    end
+    return "Siege profiles: " .. table.concat(enabled, ", ") .. ". Default: " .. self.config.siegeLeague.defaultProfile .. "."
 end
 
 function Director:leaderboard_text(limit)
@@ -527,12 +620,84 @@ function Director:handle_chat(uid, message)
     if self.command_times[uid] and now - self.command_times[uid] < 2 then
         return true
     end
-    if now - self.last_public_command < 5 then
+    local words = util.split_words(lowered)
+    local public_query = lowered == "!event" or lowered == "!score" or lowered == "!leaderboard"
+        or (words[1] == "!siege" and ({ status = true, profiles = true, score = true, leaderboard = true })[words[2] or "status"])
+    if public_query and now - self.last_public_command < 5 then
         return true
     end
     self.command_times[uid] = now
-    self.last_public_command = now
-    if lowered == "!event" then
+    if public_query then self.last_public_command = now end
+    if words[1] == "!siege" then
+        local action = words[2] or "status"
+        if action == "status" then
+            self:_announce(self:status_text())
+            return true
+        elseif action == "profiles" then
+            self:_announce(self:profiles_text())
+            return true
+        elseif action == "score" then
+            self:_announce(self:player_text(uid))
+            return true
+        elseif action == "leaderboard" then
+            self:_announce(self:leaderboard_text())
+            return true
+        elseif action == "start" then
+            local operator = config_module.is_operator(self.config, uid)
+            if not operator and self.config.siegeLeague.chatStartPolicy ~= "anyUser" then
+                self:_announce("Siege League start denied: only configured operators may start an alarm.")
+                return true
+            end
+            if not operator then
+                local last_start = self.state.lastUserStartAt or 0
+                local remaining = last_start > 0 and (self.config.siegeLeague.userStartCooldownSeconds - (now - last_start)) or 0
+                if remaining > 0 then
+                    self:_announce("Siege League user-start cooldown: " .. math.ceil(remaining / 60) .. " minute(s) remaining.")
+                    return true
+                end
+            end
+            if now - self.last_start_attempt < 10 then
+                self:_announce("Siege League start requests are temporarily rate-limited.")
+                return true
+            end
+            self.last_start_attempt = now
+            local profile_id, profile_error = self:_profile_allowed(words[3])
+            if not profile_id then
+                self:_announce("Siege League start failed: " .. tostring(profile_error))
+                return true
+            end
+            if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
+                self:_announce("Siege League start failed: director is " .. self.state.status)
+                return true
+            end
+            local previous_user_start = self.state.lastUserStartAt or 0
+            if not operator then
+                self.state.lastUserStartAt = now
+                local persisted, persist_error = self:_persist("user_start_cooldown_intent", { playerUid = util.mask_uid(uid), profileId = profile_id })
+                if not persisted then
+                    self.state.lastUserStartAt = previous_user_start
+                    self:_announce("Siege League start failed: unable to persist user cooldown: " .. tostring(persist_error))
+                    return true
+                end
+            end
+            local ok, result = self:start("chat:" .. util.mask_uid(uid), profile_id)
+            if not ok and not operator then
+                self.state.lastUserStartAt = previous_user_start
+                local rollback_ok = self:_persist("user_start_cooldown_rollback", { playerUid = util.mask_uid(uid), reason = tostring(result) })
+                if not rollback_ok then
+                    self.state.status = "recovery_required"
+                end
+            end
+            if not ok then
+                self:_announce("Siege League start failed: " .. tostring(result))
+            end
+            return true
+        elseif config_module.is_operator(self.config, uid) and (action == "resolve" or action == "abort" or action == "reset") then
+            return self:handle_operator_command(action, "chat:" .. util.mask_uid(uid))
+        end
+        self:_announce("Siege commands: !siege status|profiles|score|leaderboard|start <profile>.")
+        return true
+    elseif lowered == "!event" then
         self:_announce(self:status_text())
         return true
     elseif lowered == "!score" then
@@ -541,7 +706,7 @@ function Director:handle_chat(uid, message)
     elseif lowered == "!leaderboard" then
         self:_announce(self:leaderboard_text())
         return true
-    elseif util.starts_with(lowered, "!ped ") and require("ped.config").is_operator(self.config, uid) then
+    elseif util.starts_with(lowered, "!ped ") and config_module.is_operator(self.config, uid) then
         return self:handle_operator_command(message:sub(6), "chat:" .. util.mask_uid(uid))
     end
     return false
@@ -552,11 +717,13 @@ function Director:handle_operator_command(command, source)
     local action = (words[1] or "status"):lower()
     local ok, result
     if action == "start" then
-        ok, result = self:start(source or "console")
+        ok, result = self:start(source or "console", words[2])
     elseif action == "status" then
         ok, result = true, self:status_text()
     elseif action == "leaderboard" then
         ok, result = true, self:leaderboard_text()
+    elseif action == "profiles" then
+        ok, result = true, self:profiles_text()
     elseif action == "resolve" then
         ok, result = self:resolve("operator")
     elseif action == "abort" then
@@ -571,7 +738,7 @@ function Director:handle_operator_command(command, source)
             ok, result = true, "processed " .. count .. " pending reward obligations"
         end
     else
-        ok, result = false, "unknown command; use start, status, leaderboard, resolve, abort, reset, or rewards"
+        ok, result = false, "unknown command; use start [profile], status, profiles, leaderboard, resolve, abort, reset, or rewards"
     end
     if source and source:match("^chat:") then
         self:_announce((ok and "PED: " or "PED ERROR: ") .. tostring(result or "ok"))
@@ -583,17 +750,27 @@ function Director:tick()
     local now = self.clock()
     local event = self:_active_event()
     if event then
-        if self.state.status == "starting" and now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds then
+        if not event.discoveryClosed and now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds then
             if self.bridge.close_event_discovery then self.bridge:close_event_discovery() end
+            event.discoveryClosed = true
+            self:_mark_dirty()
         end
-        if self.state.status == "starting" and now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds and util.count(event.bases) == 0 then
-            self:abort("no native invasion starts observed")
-        elseif now - event.startedAt >= self.config.siegeLeague.maxRuntimeSeconds then
+        if now - event.startedAt >= self.config.siegeLeague.maxRuntimeSeconds then
             self:resolve("maximum runtime")
-        elseif all_bases_closed(event)
-            and now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds
-            and now - event.lastLifecycleAt >= self.config.siegeLeague.settleDelaySeconds then
-            self:resolve("all observed bases resolved")
+        elseif now - event.startedAt >= self.config.siegeLeague.startDiscoverySeconds then
+            local active_count = 0
+            for _, base in pairs(event.bases) do
+                if base.status == "pending" then
+                    base.status = "native_start_missing"
+                    base.endedAt = now
+                    self:_mark_dirty()
+                elseif base.status == "active" then
+                    active_count = active_count + 1
+                end
+            end
+            if active_count == 0 and all_bases_closed(event) and now - event.lastLifecycleAt >= self.config.siegeLeague.settleDelaySeconds then
+                self:resolve("all expected bases classified")
+            end
         end
     end
     if self.dirty and now - self.last_checkpoint >= self.config.runtime.checkpointIntervalSeconds then

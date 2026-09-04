@@ -299,6 +299,18 @@ A future definition should express policy explicitly:
 
 Health protection should reduce the per-base profile size before it excludes bases. For example, every base can receive one bounty leader rather than only some bases receiving sixteen attackers. An emergency server-health stop remains necessary, but it is a failure response rather than a consent or eligibility rule.
 
+### Chat activation
+
+Alpha.2 provides the fixed command `!siege start <profile>`. The default `operatorOnly` policy resolves the sender's stable player UID against `operatorUids`; display names never authorize a start. An optional `anyUser` policy permits any player to start one allowlisted profile, subject to a persistent global cooldown plus the ordinary active-event, recovery, compatibility, base-count, and native-concurrency guards.
+
+The recommended live policy is operator-direct start and, later, a separately implemented player vote. `anyUser` is useful for a trusted private server but must retain a substantial cooldown. User text can select only fixed profile IDs and cannot supply character IDs, Unreal paths, levels, item IDs, or function names.
+
+The flagship command is:
+
+`!siege start all-bounty`
+
+The `all-bounty` profile attempts to replace every concrete member in each intercepted array Palworld selected. It does not enlarge that array. A deterministic cursor rotates through all 34 audited bounty IDs across base selections; therefore all 34 are attempted when the event supplies at least 34 concrete slots, while a smaller event receives a deterministic subset. The transform leaves native levels, companion fields, counts, waves, pathfinding, lifecycle, and completion context untouched; live tests must prove the game consumes those values as expected.
+
 ## Leaderboard and reward decision
 
 ### Primary ranking
@@ -381,6 +393,12 @@ All-base incidents can select different levels and stock member counts. Configur
 - Intended as a frequent token-farming event.
 - Completion-only until its capture policy is proven fair for ranked play.
 
+### Bounty Captain
+
+- One selected member per base composition becomes a bounty target.
+- Native escorts, levels, companions, counts, and waves remain.
+- Preferred first substitution probe because it minimizes economic and AI impact.
+
 ### Most Wanted
 
 - Three waves selected by current invasion grade.
@@ -404,6 +422,11 @@ All-base incidents can select different levels and stock member counts. Configur
 - Explicit economy event in which every wave uses 4–5-token targets.
 - The event summary must forecast the maximum possible token creation from base count, attackers, waves, capture, and butchering.
 - This is allowed if intentional; it should not be an accidental consequence of a generic raid preset.
+
+### Native Alarm
+
+- No member substitution.
+- Baseline profile for lifecycle, scoring, performance, and vanilla-client comparison.
 
 ## Economy calculation
 

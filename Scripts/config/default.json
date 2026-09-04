@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "mode": "laboratory",
   "compatibility": {
     "requiredAdapter": "palworld-1.0.3-lab",
@@ -18,6 +18,7 @@
     "observeInvasions": false,
     "chatCommands": false,
     "startAllInvasions": false,
+    "substituteBountyMembers": false,
     "grantItems": false
   },
   "diagnostics": {
@@ -33,6 +34,18 @@
   },
   "siegeLeague": {
     "name": "Siege League",
+    "defaultProfile": "all-bounty",
+    "allowedProfiles": [
+      "all-bounty",
+      "patrol",
+      "mixed",
+      "most-wanted",
+      "kingpin",
+      "jackpot",
+      "native"
+    ],
+    "chatStartPolicy": "operatorOnly",
+    "userStartCooldownSeconds": 3600,
     "allowCrossBaseRoaming": true,
     "targetPoints": 1000,
     "minimumParticipationPoints": 100,

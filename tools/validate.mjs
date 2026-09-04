@@ -10,6 +10,7 @@ const required = [
   'Scripts/main.lua',
   'Scripts/config/default.json',
   'Scripts/ped/config.lua',
+  'Scripts/ped/bounties.lua',
   'Scripts/ped/director.lua',
   'Scripts/ped/filesystem.lua',
   'Scripts/ped/json.lua',

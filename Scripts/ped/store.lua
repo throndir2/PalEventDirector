@@ -140,7 +140,7 @@ function Store:load_snapshot()
         end
     end
     if self.sequence > 0 then
-        return nil, nil, "journal exists without an exactly anchored snapshot; replay is not available in alpha.1"
+        return nil, nil, "journal exists without an exactly anchored snapshot; replay is not available in alpha.2"
     end
     if load_error ~= "not found" or backup_error ~= "not found" then
         return nil, nil, "no valid snapshot: " .. tostring(load_error) .. "; backup: " .. tostring(backup_error)

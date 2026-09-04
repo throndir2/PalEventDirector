@@ -1,6 +1,6 @@
 {
   "name": "pal-event-director",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "private": true,
   "type": "module",
   "description": "Build and test tooling for the Pal Event Director UE4SS Lua server mod",
