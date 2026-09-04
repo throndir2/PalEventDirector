@@ -188,9 +188,15 @@ function Assert-PedConfigSchema3 {
 }
 
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot).TrimEnd('\')
-$SyntheticRoot = [IO.Path]::GetFullPath('C:\PED-Imouto-Activation-Test').TrimEnd('\')
-if ($SyntheticTestFixture -and -not $ServerRoot.StartsWith($SyntheticRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'SyntheticTestFixture is restricted to a canonical descendant of the disposable activation-test root.'
+$SyntheticRoots = @(
+    [IO.Path]::GetFullPath('C:\PED-Imouto-Activation-Test').TrimEnd('\'),
+    [IO.Path]::GetFullPath('C:\PED-Imouto-Installer-Test').TrimEnd('\')
+)
+$SyntheticRootAccepted = @($SyntheticRoots | Where-Object {
+    $ServerRoot.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase)
+}).Count -eq 1
+if ($SyntheticTestFixture -and -not $SyntheticRootAccepted) {
+    throw 'SyntheticTestFixture is restricted to a canonical descendant of a disposable PED test root.'
 }
 if ($SyntheticExpectedUe4ssDllSha256) {
     if (-not $SyntheticTestFixture -or $SyntheticExpectedUe4ssDllSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
