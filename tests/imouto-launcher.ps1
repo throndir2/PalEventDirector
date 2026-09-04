@@ -4,14 +4,16 @@ $ErrorActionPreference = 'Stop'
 $RepositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $Launcher = Join-Path $RepositoryRoot 'operations\imouto\Start-PalEventDirectorImouto.ps1'
 $FixtureRoot = 'C:\PED-Imouto-Launcher-Test'
+$InstallerFixtureRoot = 'C:\PED-Imouto-Installer-Test'
 
 function New-LauncherFixture {
     param(
         [Parameter(Mandatory)][string]$Name,
         [AllowEmptyString()][string]$ManifestBuildId,
-        [AllowEmptyString()][string]$DeploymentBuildId
+        [AllowEmptyString()][string]$DeploymentBuildId,
+        [string]$Root = $FixtureRoot
     )
-    $serverRoot = Join-Path $FixtureRoot "$Name\steamapps\common\PalServer"
+    $serverRoot = Join-Path $Root "$Name\steamapps\common\PalServer"
     $steamAppsRoot = Split-Path (Split-Path $serverRoot -Parent) -Parent
     $deploymentRoot = Join-Path $serverRoot 'PalEventDirectorDeployments'
     $shippingRoot = Join-Path $serverRoot 'Pal\Binaries\Win64'
@@ -51,6 +53,7 @@ function New-LauncherFixture {
 
 try {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $InstallerFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 
     $absent = New-LauncherFixture -Name 'absent' -ManifestBuildId '' -DeploymentBuildId '24575149'
     try {
@@ -74,6 +77,14 @@ try {
         $result.DataDirectory -ne (Join-Path $matching.ServerRoot 'Pal\Saved\PalEventDirector') -or
         $result.EnvironmentScope -ne 'child-process-only') {
         throw 'Matching launcher validation returned the wrong launch contract.'
+    }
+
+    $installerMatching = New-LauncherFixture -Name 'matching' -ManifestBuildId '24575149' `
+        -DeploymentBuildId '24575149' -Root $InstallerFixtureRoot
+    $installerResult = & $installerMatching.Launcher -ServerRoot $installerMatching.ServerRoot `
+        -SyntheticTestFixture -ValidateOnly
+    if ($installerResult.LaunchIntegrationReady -ne $true) {
+        throw 'Launcher rejected the confined installer integration fixture.'
     }
 
     $incomplete = New-LauncherFixture -Name 'incomplete' -ManifestBuildId '24575149' -DeploymentBuildId '24575149'
@@ -129,4 +140,5 @@ try {
     Write-Output 'PASS IMOUTO launcher rejects absent/mismatched IDs and passes verified variables only to the child process'
 } finally {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item $InstallerFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }

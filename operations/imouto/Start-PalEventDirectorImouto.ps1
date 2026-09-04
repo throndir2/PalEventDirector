@@ -25,16 +25,22 @@ $CanonicalServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer'
 $ExpectedAppId = '2394010'
 
 $ServerRoot = [IO.Path]::GetFullPath($ServerRoot).TrimEnd('\')
-$SyntheticRoot = [IO.Path]::GetFullPath('C:\PED-Imouto-Launcher-Test').TrimEnd('\')
-if ($SyntheticTestFixture -and -not $ServerRoot.StartsWith($SyntheticRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
-    throw 'SyntheticTestFixture is restricted to a canonical descendant of the disposable launcher-test root.'
+$SyntheticRoots = @(
+    [IO.Path]::GetFullPath('C:\PED-Imouto-Launcher-Test').TrimEnd('\'),
+    [IO.Path]::GetFullPath('C:\PED-Imouto-Installer-Test').TrimEnd('\')
+)
+$SyntheticRoot = $SyntheticRoots | Where-Object {
+    $ServerRoot.StartsWith($_ + '\', [StringComparison]::OrdinalIgnoreCase)
+} | Select-Object -First 1
+if ($SyntheticTestFixture -and [string]::IsNullOrWhiteSpace([string]$SyntheticRoot)) {
+    throw 'SyntheticTestFixture is restricted to a canonical descendant of a disposable PED test root.'
 }
 if ($SyntheticChildScript) {
     if (-not $SyntheticTestFixture) { throw 'SyntheticChildScript is available only in a disposable synthetic fixture.' }
     $SyntheticChildScript = [IO.Path]::GetFullPath($SyntheticChildScript)
     if (-not $SyntheticChildScript.StartsWith($SyntheticRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
         -not (Test-Path -LiteralPath $SyntheticChildScript -PathType Leaf)) {
-        throw 'SyntheticChildScript must be an existing canonical descendant of the launcher-test root.'
+        throw 'SyntheticChildScript must be an existing canonical descendant of the selected disposable PED test root.'
     }
 }
 if ([Environment]::MachineName -ine 'IMOUTO' -and -not $SyntheticTestFixture) {
