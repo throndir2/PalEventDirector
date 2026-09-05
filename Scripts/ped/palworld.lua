@@ -6,6 +6,7 @@ local DiagnosticIngress = require("ped.diagnostic_ingress")
 local Bridge = {}
 Bridge.__index = Bridge
 local NATIVE_PROBE_GROUP = "Invader_Group_NPC_Grade5_Hunter"
+local PROBE_LIMITS = { rows = 512, points = 256, navigation = 32, functions = 128, classes = 8 }
 
 local HOOKS = {
     damage = "/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal",
@@ -66,6 +67,22 @@ local function property(object, name)
         return nil
     end
     return unwrap(value)
+end
+
+local function probe_field(object, name, kind)
+    object = unwrap(object)
+    if type(object) ~= "userdata" and type(object) ~= "table" then
+        error("Native probe data has an unexpected type", 0)
+    end
+    local value = unwrap(object[name])
+    if type(value) ~= kind or (kind == "number" and (value ~= value or math.abs(value) == math.huge)) then
+        error("Native probe data has an unexpected type", 0)
+    end
+    return value
+end
+
+local function probe_vector(value)
+    return { probe_field(value, "X", "number"), probe_field(value, "Y", "number"), probe_field(value, "Z", "number") }
 end
 
 local function call(object, method_name, ...)
@@ -295,8 +312,8 @@ function Bridge:_native_step(label, operation)
     end
     if not record("before") then return fail("breadcrumb-before") end
     local result = table.pack(pcall(operation))
-    if not result[1] then return fail(PreflightDiagnostic.classify_error(result[2])) end
     if self.native_fault then return false, self.native_fault end
+    if not result[1] then return fail(PreflightDiagnostic.classify_error(result[2])) end
     if not record("after") then return fail("breadcrumb-after") end
     return true, table.unpack(result, 2, result.n)
 end
@@ -367,6 +384,7 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.bounty_selector = bounties.new_selector(self.profile_id, occurrence_id)
     self.substitution_count = 0
     self.timed_out_bases = {}
+    self.probe_handoff_metadata, self.probe_handoff_counts = nil, nil
     local targets = {}
     for base_id in pairs(self.expected_bases) do
         targets[#targets + 1] = { id = base_id, guildId = self.base_guilds[base_id] }
@@ -419,6 +437,7 @@ function Bridge:end_event_tracking()
     self.member_context = {}
     self.profile_id = "native"
     self.bounty_selector = nil
+    self.probe_handoff_metadata, self.probe_handoff_counts = nil, nil
 end
 
 function Bridge:_static_find(path)
@@ -557,19 +576,28 @@ function Bridge:_selection_hook_scope(context)
     return nil
 end
 
-function Bridge:_register_hook(name, path, callback)
+function Bridge:_register_hook(name, path, callback, mode)
     local register = global("RegisterHook")
     if type(register) ~= "function" then
         return false, "RegisterHook is unavailable"
     end
-    local ok, pre_id, post_id = pcall(register, path, function() end, function(...)
+    local function observed(...)
         self.hook_observed[name] = (self.hook_observed[name] or 0) + 1
         callback(...)
-    end)
+    end
+    local ok, pre_id, post_id
+    if mode == "script" then
+        ok, pre_id, post_id = pcall(register, path, observed)
+    else
+        ok, pre_id, post_id = pcall(register, path, function() end, observed)
+    end
     if not ok then
         return false, tostring(pre_id)
     end
     self.hook_ids[name] = { path = path, pre = pre_id, post = post_id }
+    if mode == "script" and (not util.is_integer(pre_id) or pre_id < 0 or pre_id ~= post_id) then
+        return false, "Script hook registration identifiers are invalid"
+    end
     return true
 end
 
@@ -1683,6 +1711,239 @@ function Bridge:_resolve_dispatch_target(manager, expected_base_id)
     return target
 end
 
+function Bridge:_prepare_probe_handoff(manager)
+    local inspected, metadata, function_path = self:_native_step("probe-handoff-metadata", function()
+        local owner = manager:GetClass()
+        for _ = 1, PROBE_LIMITS.classes do
+            if not valid(owner) then break end
+            local functions = {}
+            owner:ForEachFunction(function(fn)
+                functions[#functions + 1] = fn
+                if #functions >= PROBE_LIMITS.functions then return true end
+                return nil
+            end)
+            for _, fn in ipairs(functions) do
+                if not valid(fn) then error("Native probe metadata is unsupported", 0) end
+                if fn:GetFName():ToString() == "RequestIncidentInvaderEnemy_BP" then
+                    if not same_object(fn:GetOuter(), owner) then error("Native probe metadata is unsupported", 0) end
+                    local blueprint = owner:IsA("/Script/Engine.BlueprintGeneratedClass")
+                    local flags = fn:GetFunctionFlags()
+                    if type(blueprint) ~= "boolean" or not util.is_integer(flags) then
+                        error("Native probe metadata is unsupported", 0)
+                    end
+                    local native = (flags & 0x400) ~= 0
+                    local result = { handoffResolution = blueprint and "blueprint" or "base-declaration",
+                        handoffOwnerBlueprint = blueprint, handoffFunctionNative = native, handoffHookRegistered = false }
+                    if not blueprint or native then return result end
+                    local path = fn:GetFullName()
+                    if type(path) ~= "string" or #path == 0 or #path > 1024 then
+                        error("Native probe metadata is unsupported", 0)
+                    end
+                    return result, path
+                end
+            end
+            if #functions >= PROBE_LIMITS.functions then
+                return { handoffResolution = "function-limit", handoffHookRegistered = false }
+            end
+            owner = owner:GetSuperStruct()
+        end
+        return { handoffResolution = valid(owner) and "class-limit" or "not-found", handoffHookRegistered = false }
+    end)
+    if not inspected then return false, metadata end
+    if function_path then
+        local hooked, hook_error = self:_native_step("probe-handoff-register", function()
+            local existing = self.hook_ids.probe_handoff
+            if existing then
+                if existing.path ~= function_path then error("Native probe observer registration failed", 0) end
+                return
+            end
+            local ok = self:_register_hook("probe_handoff", function_path, function(context, base, parameter)
+                if not self.event_open or not self.probe_base_id or self.native_fault then return end
+                self:_native_step("probe-blueprint-handoff", function()
+                    if self:_manager_hook_scope(context) ~= "event" then return end
+                    local counts = self.probe_handoff_counts
+                    if not counts then return end
+                    counts.calls = counts.calls + 1
+                    base, parameter = unwrap(base), unwrap(parameter)
+                    local parameter_valid = valid(parameter)
+                    if parameter_valid then counts.validParameters = counts.validParameters + 1 end
+                    local parameter_matches = parameter_valid and guid_string(property(parameter, "TargetBaseCampID")) == self.probe_base_id
+                    local base_matches = false
+                    if valid(base) and base:IsA("/Script/Pal.PalBaseCampModel") then
+                        local id_ok, id = self:_native_call("probe-handoff-base-id", base, "GetId")
+                        if not id_ok then return end
+                        base_matches = guid_string(id) == self.probe_base_id
+                    end
+                    if parameter_matches or base_matches then counts.probeCalls = counts.probeCalls + 1 end
+                end)
+            end, "script")
+            if not ok then error("Native probe observer registration failed", 0) end
+        end)
+        if not hooked then return false, hook_error end
+        metadata.handoffHookRegistered = true
+    end
+    self.probe_handoff_metadata = metadata
+    self.probe_handoff_counts = { calls = 0, validParameters = 0, probeCalls = 0 }
+    return true
+end
+
+function Bridge:_probe_group_inventory(manager)
+    local found, data, row_count = self:_native_step("probe-table-metadata", function()
+        local data = unwrap(manager.InvaderEnemyDataTable)
+        if not valid(data) or data:type() ~= "UDataTable" then error("Native probe table schema is unsupported", 0) end
+        local row_struct = data:GetRowStruct()
+        if not valid(row_struct) or row_struct:GetFName():ToString() ~= "PalInvaderDatabaseRow" then
+            error("Native probe table schema is unsupported", 0)
+        end
+        local count = #data
+        if not util.is_integer(count) or count < 0 then error("Native probe data has an unexpected type", 0) end
+        return data, count
+    end)
+    if not found then return false, data end
+    return self:_native_step("probe-table-rows", function()
+        if not valid(data) then error("Native probe table schema is unsupported", 0) end
+        local summary = { invaderTableRows = row_count, invaderRowsScanned = 0, invaderMatchingRows = 0,
+            invaderMatchingWeightedRows = 0, probeGroupSpecified = self.event_nearest_test ~= nil }
+        local biomes = {}
+        data:ForEachRow(function(_, row)
+            local name = unwrap(row.GroupName)
+            if name == nil or name:type() ~= "FName" then error("Native probe data has an unexpected type", 0) end
+            local group = name:ToString()
+            if type(group) ~= "string" then error("Native probe data has an unexpected type", 0) end
+            local biome = probe_field(row, "BiomeID", "number")
+            local minimum = probe_field(row, "InvadeGradeMin", "number")
+            local maximum = probe_field(row, "InvadeGradeMax", "number")
+            local weight = probe_field(row, "Weight", "number")
+            if not util.is_integer(biome) or biome < 0 or biome > 255 or not util.is_integer(minimum)
+                or not util.is_integer(maximum) or minimum > maximum then
+                error("Native probe data has an unexpected type", 0)
+            end
+            summary.invaderRowsScanned = summary.invaderRowsScanned + 1
+            if not summary.probeGroupSpecified or group == NATIVE_PROBE_GROUP then
+                summary.invaderMatchingRows = summary.invaderMatchingRows + 1
+                if weight > 0 then summary.invaderMatchingWeightedRows = summary.invaderMatchingWeightedRows + 1 end
+                summary.invaderMatchingGradeMin = math.min(summary.invaderMatchingGradeMin or minimum, minimum)
+                summary.invaderMatchingGradeMax = math.max(summary.invaderMatchingGradeMax or maximum, maximum)
+                biomes[biome] = true
+            end
+            -- This iterator also double-removes Boolean false; nil continues safely.
+            if summary.invaderRowsScanned >= PROBE_LIMITS.rows then return true end
+            return nil
+        end)
+        if #data ~= row_count then error("Native probe data changed during observation", 0) end
+        summary.invaderRowsComplete = summary.invaderRowsScanned == row_count
+        if summary.probeGroupSpecified then
+            if summary.invaderMatchingRows > 0 then summary.probeGroupPresent = true
+            elseif summary.invaderRowsComplete then summary.probeGroupPresent = false end
+        end
+        return summary, biomes
+    end)
+end
+
+function Bridge:_probe_spawn_inventory(manager, base, biomes)
+    local settings_ok, settings = self:_native_call("probe-game-setting", self:_utility(), "GetGameSetting", self.event_world)
+    if not settings_ok then return false, settings end
+    local scanned, summary, candidates = self:_native_step("probe-spawn-geometry", function()
+        if not valid(settings) or not valid(base) or not valid(manager) then
+            error("Native probe data has an unexpected type", 0)
+        end
+        local minimum = probe_field(settings, "InvadeStartPoint_BaseCampRadius_Min_cm", "number")
+        local maximum = probe_field(settings, "InvadeStartPoint_BaseCampRadius_Max_cm", "number")
+        if minimum < 0 or maximum < minimum then error("Native probe data has an unexpected type", 0) end
+        local origin = probe_vector(unwrap(base.Transform).Translation)
+        local points = unwrap(manager.InvadeStartLocationList)
+        local count = #points
+        if not util.is_integer(count) or count < 0 then error("Native probe data has an unexpected type", 0) end
+        local result = { probeRadiusMinCm = minimum, probeRadiusMaxCm = maximum,
+            probeWaterContinuousThresholdCm = probe_field(settings, "InvaderPathWaterContinuousDistanceThreshold", "number"),
+            probeWaterTotalThresholdCm = probe_field(settings, "InvaderPathWaterTotalDistanceThreshold", "number"),
+            probeRequiredBaseLevel = probe_field(settings, "InvadeOccurableBaseCampLevel", "number"),
+            probePlayersInsideBase = container_count(unwrap(base.PlayerUIdsExistsInsideInServer)),
+            probeStartPointCount = count, probeStartPointsScanned = 0,
+            probeRadiusMatches2D = 0, probeRadiusMatches3D = 0, probeBiomeMatches2D = 0, probeBiomeMatches3D = 0,
+            probeNavigationCandidates = 0, probeNavigationChecked = 0, probeNavigationNotDisabled = 0,
+            probeNavigationDisabled = 0, probeNavigationUnavailable = 0, probeNavigationForeignWorld = 0 }
+        local candidates = {}
+        local min_squared, max_squared = minimum * minimum, maximum * maximum
+        points:ForEach(function(_, entry)
+            local point = unwrap(entry)
+            local location = probe_vector(point.Location)
+            local biome = probe_field(point, "BiomeType", "number")
+            if not util.is_integer(biome) or biome < 0 or biome > 255 then
+                error("Native probe data has an unexpected type", 0)
+            end
+            local dx, dy, dz = location[1] - origin[1], location[2] - origin[2], location[3] - origin[3]
+            local horizontal = dx * dx + dy * dy
+            local spatial = horizontal + dz * dz
+            local in_2d = horizontal >= min_squared and horizontal <= max_squared
+            local in_3d = spatial >= min_squared and spatial <= max_squared
+            result.probeStartPointsScanned = result.probeStartPointsScanned + 1
+            if in_2d then
+                result.probeRadiusMatches2D = result.probeRadiusMatches2D + 1
+                if biomes[biome] then result.probeBiomeMatches2D = result.probeBiomeMatches2D + 1 end
+            end
+            if in_3d then
+                result.probeRadiusMatches3D = result.probeRadiusMatches3D + 1
+                if biomes[biome] then result.probeBiomeMatches3D = result.probeBiomeMatches3D + 1 end
+            end
+            if in_2d or in_3d then
+                result.probeNavigationCandidates = result.probeNavigationCandidates + 1
+                if #candidates < PROBE_LIMITS.navigation then
+                    candidates[#candidates + 1] = { actor = unwrap(point.SourceActor) }
+                end
+            end
+            if result.probeStartPointsScanned >= PROBE_LIMITS.points then return true end
+            return nil
+        end)
+        if #points ~= count then error("Native probe data changed during observation", 0) end
+        result.probeGeometryComplete = result.probeStartPointsScanned == count
+        return result, candidates
+    end)
+    if not scanned then return false, summary end
+    for _, candidate in ipairs(candidates) do
+        local read, invoker = self:_native_step("probe-navigation-component", function()
+            if not valid(candidate.actor) then return nil end
+            return unwrap(candidate.actor.NavInvokerComponent)
+        end)
+        if not read then return false, invoker end
+        if not valid(invoker) then
+            summary.probeNavigationUnavailable = summary.probeNavigationUnavailable + 1
+        else
+            local world_ok, world = self:_native_call("probe-navigation-world", invoker, "GetWorld")
+            if not world_ok then return false, world end
+            if not same_object(world, self.event_world) then
+                summary.probeNavigationForeignWorld = summary.probeNavigationForeignWorld + 1
+            else
+                local checked, disabled = self:_native_call("probe-navigation-disabled", invoker, "IsDisableInvorker")
+                if not checked then return false, disabled end
+                local boolean_ok, boolean_error = self:_native_step("probe-navigation-result", function()
+                    if type(disabled) ~= "boolean" then error("Native probe data has an unexpected type", 0) end
+                end)
+                if not boolean_ok then return false, boolean_error end
+                summary.probeNavigationChecked = summary.probeNavigationChecked + 1
+                if disabled then summary.probeNavigationDisabled = summary.probeNavigationDisabled + 1
+                else summary.probeNavigationNotDisabled = summary.probeNavigationNotDisabled + 1 end
+            end
+        end
+    end
+    summary.probeNavigationComplete = summary.probeGeometryComplete
+        and summary.probeNavigationChecked == summary.probeNavigationCandidates
+    return true, summary
+end
+
+function Bridge:_capture_probe_prerequisites(manager, base)
+    local observed, observer_error = self:_prepare_probe_handoff(manager)
+    if not observed then return false, observer_error end
+    local grouped, summary, biomes = self:_probe_group_inventory(manager)
+    if not grouped then return false, summary end
+    local sampled, geometry = self:_probe_spawn_inventory(manager, base, biomes)
+    if not sampled then return false, geometry end
+    for key, value in pairs(geometry) do summary[key] = value end
+    summary.nativeProbeRecorded = true
+    summary.probeDataComplete = summary.invaderRowsComplete and summary.probeGeometryComplete and summary.probeNavigationComplete
+    return true, summary
+end
+
 function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
     local target, target_error = self:_resolve_dispatch_target(manager, expected_base_id)
     local diagnostic = {
@@ -1715,6 +1976,16 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
         diagnostic.playerInBaseTimer = scalar(property(target.observer, "PlayerInBaseCampTimer"))
         diagnostic.playerHandleCount = container_count(property(target.observer, "PlayerHandlesCache"))
     end
+    if phase == "probe-before" and target then
+        local captured, prerequisites = self:_capture_probe_prerequisites(manager, target.base)
+        if not captured then return diagnostic, target, prerequisites end
+        for key, value in pairs(prerequisites) do diagnostic[key] = value end
+    end
+    for key, value in pairs(self.probe_handoff_metadata or {}) do diagnostic[key] = value end
+    local handoff = self.probe_handoff_counts or {}
+    diagnostic.handoffObservedCalls = handoff.calls or 0
+    diagnostic.handoffProbeCalls = handoff.probeCalls or 0
+    diagnostic.handoffValidParameterCalls = handoff.validParameters or 0
     local incidents = property(manager, "Incidents")
     local incident_count = 0
     local incident_for_base = false

@@ -10,7 +10,7 @@ let propertyCount = 2;
 let callbacks = 0;
 let invalidCleanup = false;
 
-const iterate = (state) => {
+const iterate = (state, kind = 'property') => {
   if (!lua.lua_isuserdata(state, 1)) {
     return lauxlib.luaL_error(state, to_luastring('A function requiring userdata as param #1 was called without userdata at param #1'));
   }
@@ -18,9 +18,12 @@ const iterate = (state) => {
   lua.lua_remove(state, 1);
   for (let index = 1; index <= propertyCount; index += 1) {
     lua.lua_pushvalue(state, 1);
+    if (kind === 'row') lua.lua_pushstring(state, to_luastring(String(index)));
+    if (kind === 'map') lua.lua_pushinteger(state, index);
     lua.lua_pushinteger(state, index);
     callbacks += 1;
-    if (lua.lua_pcall(state, 1, 1, 0) !== lua.LUA_OK) return lua.lua_error(state);
+    const argumentsCount = kind === 'row' || kind === 'map' ? 2 : 1;
+    if (lua.lua_pcall(state, argumentsCount, 1, 0) !== lua.LUA_OK) return lua.lua_error(state);
     let stop = false;
     if (lua.lua_isboolean(state, 2)) {
       stop = lua.lua_toboolean(state, 2);
@@ -35,7 +38,7 @@ const iterate = (state) => {
     }
     lua.lua_remove(state, 2);
   }
-  return 1;
+  return kind === 'row' ? 0 : 1;
 };
 
 lua.lua_newuserdata(L, 1);
@@ -43,6 +46,10 @@ lua.lua_newtable(L);
 lua.lua_newtable(L);
 lua.lua_pushcfunction(L, iterate);
 lua.lua_setfield(L, -2, to_luastring('ForEachProperty'));
+for (const [method, kind] of [['ForEachRow', 'row'], ['ForEach', 'map'], ['ForEachFunction', 'function']]) {
+  lua.lua_pushcfunction(L, (state) => iterate(state, kind));
+  lua.lua_setfield(L, -2, to_luastring(method));
+}
 lua.lua_setfield(L, -2, to_luastring('__index'));
 lua.lua_setmetatable(L, -2);
 lua.lua_setglobal(L, to_luastring('owner'));
@@ -75,6 +82,26 @@ try {
     }
   }
   console.log('PASS pinned receiver requirement and false-result double removal reproduced; nil/true paths preserve the stack');
+
+  for (const [method, arity] of [['ForEachRow', 2], ['ForEach', 2], ['ForEachFunction', 1]]) {
+    for (const result of ['false', 'nil', 'true']) {
+      callbacks = 0;
+      invalidCleanup = false;
+      execute(`
+        local ok, reason = pcall(function()
+          owner:${method}(function(...)
+            assert(select("#", ...) == ${arity})
+            return ${result}
+          end)
+        end)
+        assert(ok == ${result !== 'false'}, reason)
+      `);
+      if (invalidCleanup !== (result === 'false') || callbacks !== (result === 'nil' ? 2 : 1)) {
+        throw new Error(`${method} stack cleanup or early-stop contract failed`);
+      }
+    }
+  }
+  console.log('PASS independently audited row/map/function iterator arities, false-result hazard and bounded nil/true paths');
 
   for (const count of [2, 5]) {
     propertyCount = count;

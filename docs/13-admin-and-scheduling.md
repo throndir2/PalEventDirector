@@ -165,6 +165,8 @@ Admin starts carry an internal, persisted `adminOverride` selected by the author
 
 Chat start requests also retain their requester privately so PED can report bounded progress directly: request received, target count validated, native call returned, and lifecycle outcome. A returned call is explicitly not called a confirmed raid. A zero countdown skips the deliberate wait; `startDiscoverySeconds` (default 60) only bounds the subsequent wait for lifecycle confirmation, not a guaranteed spawn delay. Timeout replies summarize pathfinding, incident presence, and hook counts without exposing player IDs or world positions. Native-error replies identify the fixed operation label and a bounded failure classification, never the raw error; further native calls remain locked until investigation and a fresh server process.
 
+Probe diagnostics additionally report loaded group data, 2D/3D spawn-radius matches, sampled navigation disable state and concrete Blueprint-hook registration. Partial scans are labeled, and geometric matches do not prove a valid path. Progress and timeout messages carry the request number; timeout messages distinguish observed Blueprint handoffs from those whose parameters matched the probe. These are read-only observations, not new cooldown, group or spawn-location overrides. See the [diagnostic evidence contract](15-preflight-crash-diagnostics.md#automatic-probe-prerequisite-evidence) for limits and interpretation.
+
 ## Server-console commands
 
 In the direct laboratory profile, ordinary console commands are available subject to their implemented state checks. The stepped diagnostic remains optional. Native-all comparison and item grants remain disabled in the current profile.

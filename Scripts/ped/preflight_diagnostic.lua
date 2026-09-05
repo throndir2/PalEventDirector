@@ -18,6 +18,11 @@ local ERROR_SIGNATURES = {
     { text = "attempt to call a nil value", code = "non-callable-value" },
     { text = "attempt to call a userdata value", code = "non-callable-value" },
     { text = "FName constructor unavailable", code = "fname-constructor-unavailable" },
+    { text = "Native probe data has an unexpected type", code = "probe-data-shape" },
+    { text = "Native probe data changed during observation", code = "probe-data-changed" },
+    { text = "Native probe table schema is unsupported", code = "probe-table-schema" },
+    { text = "Native probe metadata is unsupported", code = "probe-metadata" },
+    { text = "Native probe observer registration failed", code = "probe-hook-registration" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 

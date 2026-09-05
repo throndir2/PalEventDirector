@@ -17,6 +17,12 @@ local function native_start_guard(bridge)
     return true -- Pure-Lua simulation bridges have no native adapter.
 end
 
+local function diagnostic_boolean(value)
+    if value == true then return "yes" end
+    if value == false then return "no" end
+    return "unknown"
+end
+
 local function warning_sets_match(actual, expected)
     if type(actual) ~= "table" or #actual ~= #expected then return false end
     local remaining = {}
@@ -285,6 +291,20 @@ function Director:arm_start(source, requested_profile, countdown_minutes, admin_
     return true, result.key
 end
 
+function Director:_report_probe_diagnostics(diagnostic)
+    local event = self.state.event
+    if not event or not event.requesterUid or event.probeDiagnosticsReported or not diagnostic
+        or diagnostic.nativeProbeRecorded ~= true then return end
+    event.probeDiagnosticsReported = true
+    self:_chat(string.format(
+        "PED request #%d diagnostics (%s): group=%s; rows=%d/%d; radius matches 2D=%d, 3D=%d; nav not-disabled=%d/%d checked; Blueprint hook=%s. Radius matches do not prove a usable path.",
+        event.requestNumber or 0, diagnostic.probeDataComplete and "complete" or "partial",
+        diagnostic.probeGroupSpecified and diagnostic_boolean(diagnostic.probeGroupPresent) or "native choice",
+        diagnostic.invaderRowsScanned, diagnostic.invaderTableRows, diagnostic.probeRadiusMatches2D, diagnostic.probeRadiusMatches3D,
+        diagnostic.probeNavigationNotDisabled, diagnostic.probeNavigationChecked,
+        diagnostic.handoffHookRegistered and "registered" or "unavailable"), event.requesterUid)
+end
+
 function Director:_apply_dispatch_results(result)
     local event = self.state.event
     if not event or type(result) ~= "table" or type(result.requests) ~= "table" then return end
@@ -297,6 +317,7 @@ function Director:_apply_dispatch_results(result)
             base.dispatchError = request.error
             base.dispatchBefore = request.before
             base.dispatchAfter = request.after
+            if request.phase == "probe" then self:_report_probe_diagnostics(request.before) end
             if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then
                 base.status = request.status
                 base.endedAt = now
@@ -496,7 +517,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         expectedBases = util.count(self.state.event.bases),
     })
     if self.state.event.requesterUid and not self.state.event.startConfirmedAt then
-        self:_chat("PED: native call returned; waiting for an invasion-start callback. This is not yet a confirmed raid.", self.state.event.requesterUid)
+        self:_chat(string.format("PED request #%d: native call returned; waiting up to %ds for an invasion-start callback. This is not yet a confirmed raid.",
+            self.state.event.requestNumber or 0, math.max(0, self.state.event.startConfirmationDeadline - self.clock())),
+            self.state.event.requesterUid)
     end
     return true, occurrence_id, self.state.status == "active"
 end
@@ -815,14 +838,13 @@ function Director:_fail_unconfirmed_start(reason)
     )
     if event.requesterUid and event.startTimeoutDiagnostics then
         local diagnostic = event.startTimeoutDiagnostics
-        local function state(value)
-            if value == true then return "yes" end
-            if value == false then return "no" end
-            return "unknown"
-        end
-        self:_chat(string.format("PED timeout: pathfinding=%s, incident=%s, invasion=%s; start callbacks=%d, selection callbacks=%d. Do not repeat the request yet.",
-            state(diagnostic.observerPathSearching), state(diagnostic.incidentForBase), state(diagnostic.observerInvading),
-            diagnostic.startHookCalls or 0, diagnostic.selectionHookCalls or 0), event.requesterUid)
+        local handoff = diagnostic.handoffHookRegistered
+            and string.format("%d observed, %d matched probe", diagnostic.handoffObservedCalls or 0, diagnostic.handoffProbeCalls or 0)
+            or "observer unavailable"
+        self:_chat(string.format("PED request #%d timeout: pathfinding=%s, incident=%s, invasion=%s; start callbacks=%d, selection callbacks=%d; Blueprint callbacks=%s. Do not repeat the request yet.",
+            event.requestNumber or 0, diagnostic_boolean(diagnostic.observerPathSearching),
+            diagnostic_boolean(diagnostic.incidentForBase), diagnostic_boolean(diagnostic.observerInvading),
+            diagnostic.startHookCalls or 0, diagnostic.selectionHookCalls or 0, handoff), event.requesterUid)
     end
     return true, event.abortReason
 end

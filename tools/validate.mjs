@@ -50,6 +50,7 @@ const required = [
   'tests/artifact-provenance.mjs',
   'tests/preflight-diagnostic.lua',
   'tests/admin-control.lua',
+  'tests/native-probe-diagnostics.lua',
   'tests/preflight-failfast.lua',
   'tests/preflight-failfast.mjs',
   'tests/preflight-property-binding.mjs',

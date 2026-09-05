@@ -1044,6 +1044,7 @@ test("selected-base dispatch probes one base before confirmed fanout and records
     bridge.event_manager = manager
     bridge.event_world = world
     bridge.expected_bases = { ["base-alpha"] = true, ["base-bravo"] = true }
+    bridge._capture_probe_prerequisites = function() return true, {} end
 
     local started, probe = bridge:start_all_invasions()
     truthy(started, probe)
@@ -2263,6 +2264,7 @@ end)
 
 dofile(join(root, "tests", "preflight-diagnostic.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "admin-control.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "native-probe-diagnostics.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)
