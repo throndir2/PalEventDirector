@@ -187,10 +187,16 @@ function Scheduler:_materialize(schedule, intended_at)
     return occurrence
 end
 
-function Scheduler:arm_manual(profile, source, countdown_seconds, name, admin_override)
+function Scheduler:arm_manual(profile, source, countdown_seconds, name, admin_override, context)
     countdown_seconds = countdown_seconds or 600
     if not util.is_integer(countdown_seconds) or countdown_seconds < 0 or countdown_seconds > 3600 then
         return false, "manual countdown must be from 0 through 60 minutes"
+    end
+    context = context or {}
+    if type(context) ~= "table" then return false, "manual request context must be a table" end
+    if context.nearestNativeTest and (admin_override ~= true or profile ~= "native" or countdown_seconds ~= 0
+        or type(context.requesterUid) ~= "string" or context.requesterUid == "") then
+        return false, "nearest-base native tests require an authenticated requester, native profile, and zero countdown"
     end
     local superseded = {}
     for _, occurrence in pairs(self.state.occurrences) do
@@ -226,6 +232,8 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name, admin_ov
         manual = true,
         manualOrder = self.state.manualNonce,
         adminOverride = admin_override == true,
+        requesterUid = context.requesterUid,
+        nearestNativeTest = context.nearestNativeTest == true,
         superseded = {},
         source = source,
         schedule = util.deep_copy(schedule),

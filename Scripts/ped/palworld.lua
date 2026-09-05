@@ -5,6 +5,7 @@ local DiagnosticIngress = require("ped.diagnostic_ingress")
 
 local Bridge = {}
 Bridge.__index = Bridge
+local NATIVE_PROBE_GROUP = "Invader_Group_NPC_Grade5_Hunter"
 
 local HOOKS = {
     damage = "/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal",
@@ -223,6 +224,8 @@ function Bridge.new(options)
         pending_world = nil,
         pending_admin_override = false,
         event_admin_override = false,
+        pending_nearest_test = nil,
+        event_nearest_test = nil,
         event_world = nil,
         event_manager_address = nil,
         event_world_address = nil,
@@ -338,6 +341,8 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.pending_world = nil
     self.event_admin_override = self.pending_admin_override == true
     self.pending_admin_override = false
+    self.event_nearest_test = self.pending_nearest_test
+    self.pending_nearest_test = nil
     self.event_manager_address = object_address(self.event_manager)
     self.event_world_address = object_address(self.event_world)
     if not self.event_manager_address or not self.event_world_address then
@@ -378,6 +383,7 @@ end
 
 function Bridge:end_event_tracking()
     self.pending_admin_override, self.event_admin_override = false, false
+    self.pending_nearest_test, self.event_nearest_test = nil, nil
     self.event_open = false
     self.discovery_open = false
     self.selection_open = false
@@ -1520,6 +1526,31 @@ function Bridge:preflight_environment()
     return true, { serverBuildId = observed_build_id, ue4ssVersion = current }
 end
 
+function Bridge:_nearest_test_base(controller, world)
+    local world_ok, current_world = self:_native_call("test-controller-world", controller, "GetWorld")
+    if not world_ok or not same_object(current_world, world) then return nil, "requesting controller changed worlds" end
+    local pawn_ok, pawn = self:_native_call("test-player-character", controller, "GetDefaultPlayerCharacter")
+    if not pawn_ok or not valid(pawn) then return nil, "requesting player's character is unavailable" end
+    local location_ok, location = self:_native_call("test-player-location", pawn, "K2_GetActorLocation")
+    if not location_ok or location == nil then return nil, "requesting player's location is unavailable" end
+    local manager_ok, manager = self:_native_call("test-base-manager", self:_utility(), "GetBaseCampManager", world)
+    if not manager_ok or not valid(manager) then return nil, "base manager is unavailable" end
+    local manager_world_ok, manager_world = self:_native_call("test-base-manager-world", manager, "GetWorld")
+    if not manager_world_ok or not same_object(manager_world, world) then return nil, "base manager belongs to a different world" end
+    local ranged_ok, ranged = self:_native_call("test-in-range-base", manager, "GetInRangedBaseCamp", location, 0)
+    local nearest_ok, nearest = self:_native_call("test-nearest-base", manager, "GetNearestBaseCamp", location)
+    if not ranged_ok or not nearest_ok or not valid(ranged) or not valid(nearest) then
+        return nil, "stand inside an eligible base before using the nearest-base native test"
+    end
+    local ranged_id_ok, ranged_id = self:_native_call("test-in-range-id", ranged, "GetId")
+    local nearest_id_ok, nearest_id = self:_native_call("test-nearest-id", nearest, "GetId")
+    local id = ranged_id_ok and guid_string(ranged_id) or nil
+    if not id or not nearest_id_ok or id ~= guid_string(nearest_id) then
+        return nil, "nearest and in-range base identities do not agree"
+    end
+    return id
+end
+
 function Bridge:preflight_start(profile_id, control)
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
@@ -1530,6 +1561,7 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_manager = nil
     self.pending_world = nil
     self.pending_admin_override = type(control) == "table" and control.admin == true
+    self.pending_nearest_test = nil
     local environment_ok, environment_error = self:preflight_environment()
     if not environment_ok then
         return false, environment_error
@@ -1571,6 +1603,17 @@ function Bridge:preflight_start(profile_id, control)
         self:_native_step("eligible-bases", function() return self:_eligible_online_guild_bases(manager, roster, self.pending_admin_override) end)
     if not eligible_ok then return false, base_set end
     if not base_set then return false, eligibility_error end
+    if type(control) == "table" and control.nearestNativeTest then
+        if not self.pending_admin_override or profile_id ~= "native" then return false, "nearest-base test requires the admin native profile" end
+        local requester
+        for _, player in ipairs(roster) do if player.uid == control.requesterUid then requester = player; break end end
+        if not requester or not valid(requester.controller) then return false, "requesting controller is no longer online" end
+        local id, nearest_error = self:_nearest_test_base(requester.controller, world)
+        if not id then return false, nearest_error end
+        if not base_set[id] then return false, "nearest base is outside the eligible online-guild target set" end
+        base_set, native_ids, base_guilds = { [id] = true }, { [id] = native_ids[id] }, { [id] = base_guilds[id] }
+        self.pending_nearest_test = { controller = requester.controller, world = world, baseId = id }
+    end
     if #resolved_roster > self.config.limits.maxPlayers then
         return false, string.format("online roster count %d exceeds configured maximum %d", #resolved_roster, self.config.limits.maxPlayers)
     end
@@ -1585,9 +1628,11 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_roster = resolved_roster
     self.pending_manager = manager
     self.pending_world = world
-    local method = self.pending_admin_override and "RequestIncidentInvaderEnemy" or "StartInvaderMarchForBaseCamp"
+    local method = self.pending_nearest_test and "Debug_InvaderMarchForNearCamp"
+        or self.pending_admin_override and "RequestIncidentInvaderEnemy" or "StartInvaderMarchForBaseCamp"
+    local owner = self.pending_nearest_test and "PalPlayerController" or "PalInvaderManager"
     local lookup_ok, function_object = self:_native_step("dispatch-function",
-        function() return self:_static_find("/Script/Pal.PalInvaderManager:" .. method) end)
+        function() return self:_static_find("/Script/Pal." .. owner .. ":" .. method) end)
     if not lookup_ok then return false, function_object end
     if not valid(function_object) then
         return false, method .. " is unavailable for this revision"
@@ -1719,7 +1764,7 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
         if inspected then
             diagnostic.startPointActorsLoaded = source_actors
             diagnostic.startPointInvokersLoaded = invokers
-            diagnostic.startPointInvokersWaitingForPartition = waiting
+            diagnostic.startPointInvokersConfiguredToWaitForPartition = waiting
         end
     end
     local function summarize_keyed_map(map_name)
@@ -1786,7 +1831,24 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     self.dispatching_base_id = base_id
     self.selection_open = true
     local ok, result
-    if self.event_admin_override then
+    if self.event_nearest_test then
+        local test = self.event_nearest_test
+        local current_id, target_error = self:_nearest_test_base(test.controller, test.world)
+        if current_id ~= base_id or current_id ~= test.baseId then
+            ok, result = false, target_error or "requester moved away from the selected native-test base"
+        else
+            local name_ok, group = self:_native_step("test-native-group", function()
+                local constructor = global("FName")
+                if type(constructor) ~= "function" then error("FName constructor unavailable", 0) end
+                return constructor(NATIVE_PROBE_GROUP)
+            end)
+            if name_ok then
+                ok, result = self:_native_call("debug-nearest-native", test.controller, "Debug_InvaderMarchForNearCamp", group, true)
+            else
+                ok, result = false, group
+            end
+        end
+    elseif self.event_admin_override then
         ok, result = self:_native_call("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
         if ok then
             ok, result = self:_native_step("admin-admission-result", function()

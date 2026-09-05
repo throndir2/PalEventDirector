@@ -248,7 +248,7 @@ function Director:_profile_allowed(profile_id)
     return nil, "profile is not enabled: " .. profile_id
 end
 
-function Director:arm_start(source, requested_profile, countdown_minutes, admin_override)
+function Director:arm_start(source, requested_profile, countdown_minutes, admin_override, context)
     local allowed, reason = native_start_guard(self.bridge)
     if not allowed then return false, reason end
     if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
@@ -280,7 +280,7 @@ function Director:arm_start(source, requested_profile, countdown_minutes, admin_
         return false, "countdown must be an integer from 0 through 60 minutes"
     end
     local armed, result = self.scheduler:arm_manual(profile_id, source or "operator", countdown_minutes * 60,
-        bounties.profile(profile_id).name, admin_override == true)
+        bounties.profile(profile_id).name, admin_override == true, context)
     if not armed then return false, result end
     return true, result.key
 end
@@ -346,7 +346,10 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         return false, "capabilities.substituteBountyMembers is disabled"
     end
     local admin_override = scheduler_occurrence.manual == true and scheduler_occurrence.adminOverride == true
-    local healthy, health_error = self.bridge:preflight_start(profile_id, { admin = admin_override })
+    local healthy, health_error = self.bridge:preflight_start(profile_id, {
+        admin = admin_override, requesterUid = scheduler_occurrence.requesterUid,
+        nearestNativeTest = admin_override and scheduler_occurrence.nearestNativeTest == true,
+    })
     if not healthy then
         return false, health_error
     end
@@ -363,6 +366,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         status = "starting",
         source = source or "operator",
         adminOverride = admin_override,
+        requesterUid = scheduler_occurrence.requesterUid,
+        nearestNativeTest = scheduler_occurrence.nearestNativeTest == true,
+        requestNumber = scheduler_occurrence.manualOrder,
         schedulerOccurrenceKey = scheduler_occurrence_key,
         startedAt = now,
         startConfirmationDeadline = now + self.config.siegeLeague.startDiscoverySeconds,
@@ -442,6 +448,12 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         return false, durable_error
     end
 
+    if self.state.event.requesterUid then
+        self:_chat(string.format("PED request #%d: %d target(s) validated; requesting the native probe%s.",
+            self.state.event.requestNumber or 0, util.count(self.state.event.bases),
+            self.state.event.nearestNativeTest and " through the nearest-base debug RPC (stock native group, no bounty substitution)" or ""),
+            self.state.event.requesterUid)
+    end
     local started, start_result = self.bridge:start_all_invasions(profile_id)
     if not started then
         self:_apply_dispatch_results(start_result)
@@ -483,6 +495,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         profile = profile_id,
         expectedBases = util.count(self.state.event.bases),
     })
+    if self.state.event.requesterUid and not self.state.event.startConfirmedAt then
+        self:_chat("PED: native call returned; waiting for an invasion-start callback. This is not yet a confirmed raid.", self.state.event.requesterUid)
+    end
     return true, occurrence_id, self.state.status == "active"
 end
 
@@ -798,6 +813,17 @@ function Director:_fail_unconfirmed_start(reason)
         "SIEGE LEAGUE - START FAILED",
         "Siege League start failed: " .. event.abortReason .. ". No Siege League results or rewards were created; inspect the native diagnostics before retrying."
     )
+    if event.requesterUid and event.startTimeoutDiagnostics then
+        local diagnostic = event.startTimeoutDiagnostics
+        local function state(value)
+            if value == true then return "yes" end
+            if value == false then return "no" end
+            return "unknown"
+        end
+        self:_chat(string.format("PED timeout: pathfinding=%s, incident=%s, invasion=%s; start callbacks=%d, selection callbacks=%d. Do not repeat the request yet.",
+            state(diagnostic.observerPathSearching), state(diagnostic.incidentForBase), state(diagnostic.observerInvading),
+            diagnostic.startHookCalls or 0, diagnostic.selectionHookCalls or 0), event.requesterUid)
+    end
     return true, event.abortReason
 end
 
@@ -1249,7 +1275,8 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
             return true
         end
     end
-    local ok, result = self:arm_start("chat:" .. util.mask_uid(uid), profile_id, countdown_minutes, not ordinary_user)
+    self:_chat("PED: start request received; checking the requested profile and native targets.", uid)
+    local ok, result = self:arm_start("chat:" .. util.mask_uid(uid), profile_id, countdown_minutes, not ordinary_user, { requesterUid = uid })
     if not ok and ordinary_user then
         self.state.lastUserStartAt = previous_user_start
         local rollback_ok = self:_persist("user_start_cooldown_rollback", {
@@ -1259,6 +1286,19 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
         if not rollback_ok then self.state.status = "recovery_required" end
     end
     if not ok then self:_chat("Siege League start failed: " .. tostring(result), uid) end
+    return true
+end
+
+function Director:_handle_nearest_native_test(principal)
+    local allowed, _, authority = self:_authorize_chat_command(principal, "test-native")
+    if not allowed or authority == "any-user-policy" then
+        self:_chat("PED native test requires an authorized administrator or operator.", principal.uid)
+        return true
+    end
+    self:_chat("PED native test: one nearby eligible base, a stock Hunter group, no bounty substitution and no fanout. Stand inside your base.", principal.uid)
+    local ok, result = self:arm_start("chat:" .. util.mask_uid(principal.uid), "native", 0, true,
+        { requesterUid = principal.uid, nearestNativeTest = true })
+    if not ok then self:_chat("PED native test failed: " .. tostring(result), principal.uid) end
     return true
 end
 
@@ -1299,6 +1339,9 @@ function Director:handle_chat(principal, message)
             return true
         elseif action == "start" then
             return self:_handle_chat_start(principal, words[3], words[4], now)
+        elseif action == "test-native" then
+            if #words ~= 2 then self:_chat("Use !siege test-native with no extra arguments.", uid); return true end
+            return self:_handle_nearest_native_test(principal)
         elseif action == "cancel" or action == "resolve" or action == "abort" or action == "reset" then
             self:handle_operator_command(action, "chat:" .. util.mask_uid(uid), principal)
             return true
@@ -1315,6 +1358,10 @@ function Director:handle_chat(principal, message)
         self:_chat(self:leaderboard_text(), uid)
         return true
     elseif util.starts_with(lowered, "!ped ") then
+        if words[2] == "test-native" then
+            if #words ~= 2 then self:_chat("Use !ped test-native with no extra arguments.", uid); return true end
+            return self:_handle_nearest_native_test(principal)
+        end
         if words[2] == "start" then
             return self:_handle_chat_start(principal, words[3], words[4], now)
         end

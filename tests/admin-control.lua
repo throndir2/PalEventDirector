@@ -242,4 +242,136 @@ return function(test, equal, truthy)
         _G.RegisterHook = previous
         truthy(ok, failure)
     end)
+
+    test("nearest native test is admin-only and has fixed native scope", function()
+        local director, replies, controls = command_fixture()
+        local ordinary = { uid = "fixture-user", palworldAdminReadable = true, palworldAdmin = false }
+        local admin = { uid = "fixture-admin", palworldAdminReadable = true, palworldAdmin = true }
+        director:handle_chat(ordinary, "!siege test-native")
+        equal(#controls, 0)
+        truthy(replies[#replies]:match("requires an authorized"))
+        director:handle_chat(admin, "!siege test-native")
+        equal(#controls, 1)
+        equal(controls[1].nearestNativeTest, true)
+        equal(controls[1].requesterUid, admin.uid)
+        equal(controls[1].admin, true)
+        director:handle_chat(admin, "!ped test-native extra")
+        equal(#controls, 1)
+    end)
+
+    test("nearest native RPC uses only the validated requester and stock group", function()
+        local old_fname = _G.FName
+        local calls, moved = 0, false
+        local world = { IsValid = function() return true end }
+        local controller = { IsValid = function() return true end,
+            Debug_InvaderMarchForNearCamp = function(_, group, skip)
+                equal(group, "Invader_Group_NPC_Grade5_Hunter")
+                equal(skip, true)
+                calls = calls + 1
+            end }
+        local bridge = Bridge.new({ config = Config.defaults(), logger = {
+            info = function() end, error = function() end, preflight_breadcrumb = function() return true end,
+        } })
+        bridge.config.capabilities.startAllInvasions = true
+        bridge.registered, bridge.periodic_active, bridge.event_admin_override = true, true, true
+        bridge.event_manager = { IsValid = function() return true end,
+            RequestIncidentInvaderEnemy = function() error("nearest test used lower-level request") end,
+            StartInvaderMarchForBaseCamp = function() error("nearest test used march fallback") end }
+        bridge.event_nearest_test = { controller = controller, world = world, baseId = "base" }
+        bridge._nearest_test_base = function(_, caller, owner_world)
+            equal(caller, controller); equal(owner_world, world)
+            return moved and "other-base" or "base"
+        end
+        bridge._dispatch_snapshot = function()
+            return { worldInvaderEnabled = true, baseAvailable = true, baseIgnoreInvader = false,
+                observerInvading = false, observerPathSearching = false, observerCoolTime = true, incidentForBase = false },
+                { nativeId = "native-guid", observer = { IsValid = function() return true end } }
+        end
+        _G.FName = function(name) return name end
+        local ok, failure = pcall(function()
+            local result = bridge:_dispatch_selected_base("base", "probe")
+            equal(result.status, "probe_call_returned")
+            equal(calls, 1)
+            equal(bridge.probe_confirmed, false)
+            moved = true
+            equal(bridge:_dispatch_selected_base("base", "probe").status, "dispatch_call_failed")
+            equal(calls, 1, "moved requester dispatched against another base")
+        end)
+        _G.FName = old_fname
+        truthy(ok, failure)
+    end)
+
+    test("nearest and in-range identity checks reject a changed world or wrong base", function()
+        local world = { IsValid = function() return true end, GetAddress = function() return 1 end }
+        local foreign = { IsValid = function() return true end, GetAddress = function() return 2 end }
+        local current_world, nearest_id = world, "base"
+        local location = {}
+        local controller = { IsValid = function() return true end, GetWorld = function() return current_world end,
+            GetDefaultPlayerCharacter = function() return {
+                IsValid = function() return true end, K2_GetActorLocation = function() return location end,
+            } end }
+        local base_manager = { IsValid = function() return true end, GetWorld = function() return world end,
+            GetInRangedBaseCamp = function(_, value, margin)
+                equal(value, location); equal(margin, 0)
+                return { IsValid = function() return true end, GetId = function() return "base" end }
+            end,
+            GetNearestBaseCamp = function(_, value)
+                equal(value, location)
+                return { IsValid = function() return true end, GetId = function() return nearest_id end }
+            end }
+        local bridge = Bridge.new({ config = Config.defaults(), logger = {
+            preflight_breadcrumb = function() return true end, error = function() end,
+        } })
+        bridge.utility = { IsValid = function() return true end, GetBaseCampManager = function() return base_manager end }
+        equal(bridge:_nearest_test_base(controller, world), "base")
+        nearest_id = "other"
+        equal(bridge:_nearest_test_base(controller, world), nil)
+        current_world = foreign
+        equal(bridge:_nearest_test_base(controller, world), nil)
+    end)
+
+    test("nearest native validation narrows scope to one eligible requester base", function()
+        local world = { IsValid = function() return true end, GetAddress = function() return 1 end }
+        local manager = { IsValid = function() return true end, GetAddress = function() return 2 end, GetWorld = function() return world end }
+        local controller = { IsValid = function() return true end }
+        local roster = { { uid = "requester", controller = controller, world = world } }
+        local config = Config.defaults()
+        config.capabilities.startAllInvasions = true
+        local bridge = Bridge.new({ config = config, logger = {
+            preflight_breadcrumb = function() return true end, error = function() end,
+        } })
+        bridge.registered, bridge.periodic_active = true, true
+        bridge.utility = { IsValid = function() return true end,
+            GetInvaderManager = function() return manager end,
+            GetOptionSubsystem = function() return {
+                IsValid = function() return true end, GetWorld = function() return world end,
+                OptionWorldSettings = { bEnableInvaderEnemy = true },
+            } end }
+        bridge.preflight_environment = function() return true end
+        bridge.list_online_players = function() return roster end
+        bridge._registered_base_ids = function() return { "near", "far" } end
+        bridge.active_invasion_count = function() return 0 end
+        bridge._eligible_online_guild_bases = function()
+            return { near = true, far = true }, { near = "near-id", far = "far-id" },
+                { near = "guild", far = "guild" }, roster
+        end
+        local selected = "near"
+        bridge._nearest_test_base = function(_, caller, owner) equal(caller, controller); equal(owner, world); return selected end
+        bridge._static_find = function(_, path)
+            equal(path, "/Script/Pal.PalPlayerController:Debug_InvaderMarchForNearCamp")
+            return { IsValid = function() return true end }
+        end
+        local context = { admin = true, requesterUid = "requester", nearestNativeTest = true }
+        truthy(bridge:preflight_start("native", context))
+        equal(bridge.pending_expected_bases.near, true)
+        equal(bridge.pending_expected_bases.far, nil)
+        local targets = bridge:begin_event_discovery("native", "test-occurrence")
+        equal(#targets, 1)
+        equal(bridge.event_nearest_test.baseId, "near")
+        bridge:end_event_tracking()
+        equal(bridge.event_nearest_test, nil)
+        selected = "outside"
+        equal(bridge:preflight_start("native", context), false)
+        equal(bridge:preflight_start("native", { admin = false, requesterUid = "requester", nearestNativeTest = true }), false)
+    end)
 end

@@ -156,11 +156,14 @@ Privileged chat forms:
 | `!siege resolve` | Resolves a starting, active, or recovery event and creates score/reward obligations. |
 | `!siege abort` | Stops director scoring/tracking; native Palworld incidents continue normally. |
 | `!siege reset` | Returns completed/aborted/recovery state to idle only when no native invasion is active. |
+| `!siege test-native` / `!ped test-native` | Admin-only, immediate one-base native entry-point test while inside an eligible base. Uses a fixed stock group through `Debug_InvaderMarchForNearCamp`, with no bounty substitution or fanout. Not an all-base command or a gameplay prerequisite. |
 | `!ped <operator command>` | Runs the corresponding console command below after the same fresh policy decision. |
 
 Unknown commands print the bounded help form. Ordinary users retain the two-second per-UID command limit, ten-second process-local start limit, and configured user-start cooldown. Authorized admins/operators bypass those limits. A newer admin manual countdown atomically supersedes an older pending manual countdown, and due admin work is processed before ordinary due work. Positive countdown duration is still honored.
 
 Admin starts carry an internal, persisted `adminOverride` selected by the authorization result, never from chat text. Their selected-base request uses `RequestIncidentInvaderEnemy(Guid, Observer)`, does not veto solely on a readable cooldown flag, and never rewrites cooldown timers. Native rejection is reported explicitly; acceptance still requires lifecycle confirmation. Current status prioritizes the latest failed manual attempt over an unrelated historical completed event.
+
+Chat start requests also retain their requester privately so PED can report bounded progress directly: request received, target count validated, native call returned, and lifecycle outcome. A returned call is explicitly not called a confirmed raid. Timeout replies summarize pathfinding, incident presence, and hook counts without exposing player IDs or world positions.
 
 ## Server-console commands
 

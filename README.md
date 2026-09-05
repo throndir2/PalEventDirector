@@ -95,6 +95,8 @@ Read these in order:
 
 The installed test-profile preparation command enables chat and the event observation/substitution capabilities. Use `!siege status` and an authorized `!siege start native 0` or `!siege start all-bounty 0` directly. Standard authorization, version, world-setting, base-eligibility, and active-incident checks still apply automatically. A native Lua error or failed breadcrumb write stops further native starts until the server is restarted after investigation. The stepped diagnostic remains available for isolated troubleshooting, but is not required for gameplay.
 
+For the current entry-point investigation, an admin can use `!siege test-native` while standing inside an eligible base. This explicitly tests one nearest base through the player-controller debug RPC, with a fixed stock Hunter group, no bounty substitution, and no fanout. It is not an all-base start or an unlock requirement. Private chat reports request validation, native-call return, and the observed result; a successful raid remains unproven until native lifecycle confirmation.
+
 ## Feasibility language
 
 All plans use the same labels:

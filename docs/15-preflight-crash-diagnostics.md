@@ -24,7 +24,15 @@ The `9141b3d4b46c` test reached the direct native request and returned Boolean `
 
 That probe was the first GUID-sorted target among ten bases and had no cached players in its base. Probe selection now prefers an eligible base with observed player presence, with deterministic ID ordering as the fallback; it does not remove any other target or dispatch fanout before confirmation. This avoids choosing an unoccupied remote base ahead of a known occupied one, but does not prove that navigation was the cause of the timeout.
 
-Timeout handling now captures the native state at the deadline, not just immediately after submission. It records observer/pathfinding/incident state, hook-entry counters, and aggregate loaded start-point actor/navigation-invoker counts, including invokers waiting for world partition. No positions, player IDs, or invoker state are changed. `InvadeStartLocationList` is a start-point inventory: a key not matching a base ID is not proof that the base lacks a usable start point.
+Timeout handling now captures the native state at the deadline, not just immediately after submission. It records observer/pathfinding/incident state, hook-entry counters, and aggregate loaded start-point actor/navigation-invoker counts. The editable `bIsWaitWorldPartition` flag is reported as configuration, not current waiting: it defaults true in the generated constructor and cannot prove a streaming stall. No positions, player IDs, or invoker state are changed. `InvadeStartLocationList` is a start-point inventory: a key not matching a base ID is not proof that the base lacks a usable start point.
+
+### Higher-level native entry-point control
+
+The occupied-base run still ended its path search without an incident or lifecycle callback. The next explicit control is `!siege test-native` (also `!ped test-native`), not another all-base attempt. It requires fresh admin authority and a current requester controller, checks the controller/base-manager world, and requires the native nearest-base and in-range-base queries to agree on an eligible online-guild base. Those checks are repeated immediately before dispatch, so movement cannot silently redirect the RPC.
+
+The command records a normal durable native-profile occurrence with exactly one target, then invokes `APalPlayerController.Debug_InvaderMarchForNearCamp(FName, true)` using the previously audited stock `GroupName` `Invader_Group_NPC_Grade5_Hunter`. Bounty substitution and fanout are absent from this control. The broader debug RPC is not used. The exact declaration is available in the pinned local Modding Kit; its generated stub does not prove successful behavior on this server.
+
+Requester-only chat states the one-base scope and emits validation/return/outcome progress. A void return is not success; native lifecycle confirmation remains required. Normal `start` commands retain their existing scope and route. This control is never an automatic fallback and must not be run in parallel with another pending start.
 
 ## Preserved IMOUTO evidence
 
