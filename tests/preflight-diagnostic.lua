@@ -47,7 +47,10 @@ return function(test, equal, truthy)
         }) }
         local settings_type = object("settings-type", {
             GetFullName = call("settings-type.GetFullName", function() return "ScriptStruct /Script/Pal.PalOptionWorldSettings" end),
-            ForEachProperty = call("settings-type.ForEachProperty", function(_, callback) for _, value in ipairs(fields) do if callback(value) then break end end end),
+            ForEachProperty = call("settings-type.ForEachProperty", function(callback)
+                equal(type(callback), "function", "ForEachProperty requires dot-call callback syntax")
+                for _, value in ipairs(fields) do if callback(value) then break end end
+            end),
         })
         local function class(name)
             return object(name, { GetFullName = call(name .. ".GetFullName", function() return "Class " .. name end) })
@@ -65,10 +68,18 @@ return function(test, equal, truthy)
                 GetPropertyClass = call(method .. ".return-class", function() return class("/Script/Pal.PalInvaderManager") end),
                 GetStruct = call(method .. ".return-struct", function() return settings_type end),
             })
+            local enumerate
+            if not options.missing_enumerator then
+                enumerate = call(method .. ".ForEachProperty", function(callback)
+                    equal(type(callback), "function", "ForEachProperty requires dot-call callback syntax")
+                    callback(input)
+                    callback(output)
+                end)
+            end
             return object(method, {
                 type = call(method .. ".type", function() return "UFunction" end),
                 GetFunctionFlags = call(method .. ".flags", function() return options.flags or 0x2400 end),
-                ForEachProperty = call(method .. ".ForEachProperty", function(_, callback) callback(input); callback(output) end),
+                ForEachProperty = enumerate,
             })
         end
         local metadata = {
@@ -165,7 +176,7 @@ return function(test, equal, truthy)
     end)
 
     test("diagnostic rejects mismatched UFunction shape before invoking manager", function()
-        for _, options in ipairs({ { flags = 0 }, { return_offset = 16 }, { invalid = "utility" }, { bad_api = true } }) do
+        for _, options in ipairs({ { flags = 0 }, { return_offset = 16 }, { invalid = "utility" }, { bad_api = true }, { missing_enumerator = true } }) do
             local diagnostic, _, operations = fixture(options)
             finish(diagnostic, operations)
             for _, name in ipairs(operations) do truthy(name ~= "utility.GetInvaderManager") end
@@ -192,7 +203,7 @@ return function(test, equal, truthy)
     test("diagnostic loses no boundary to error formatting or failed breadcrumb writes", function()
         local diagnostic, records, operations = fixture({ failure = "utility.GetInvaderManager" })
         local reason = finish(diagnostic, operations)
-        truthy(reason:match("raw error suppressed"))
+        truthy(reason:match("%[lua%-operation%].*raw error suppressed"))
         truthy(records[#records].step:match("get%-invader%-manager.before$"))
         local count = #operations
         equal(diagnostic:run(TOKEN), false)
@@ -208,6 +219,17 @@ return function(test, equal, truthy)
         equal(#after_calls, 1)
         equal(after_fail:run(TOKEN), false)
         equal(#after_calls, 1)
+    end)
+
+    test("metadata enumeration failures use a bounded privacy-safe classification", function()
+        local diagnostic, records, operations = fixture({ failure = "GetInvaderManager.ForEachProperty" })
+        local reason = finish(diagnostic, operations)
+        truthy(reason:match("%[metadata%-enumeration%].*raw error suppressed"))
+        truthy(records[#records].step:match("manager%-properties.before$"))
+        for _, record in ipairs(records) do
+            equal(record.failure, nil)
+            equal(util.count(record), 3)
+        end
     end)
 
     test("preflight breadcrumb writer emits exactly three safe fields regardless of log level", function()

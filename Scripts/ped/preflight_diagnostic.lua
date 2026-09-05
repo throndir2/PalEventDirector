@@ -6,6 +6,10 @@ local RUNTIME_TAG = "2281fa31"
 local RUNTIME_API = "3.0.1"
 local TOKEN = "confirm-disposable-readonly"
 local CALL_BUFFER_BYTES = 0x200 -- Verified in the pinned UE4SS LuaUFunction.hpp.
+local FAILURE_CLASSES = {
+    ["lua-operation"] = true,
+    ["metadata-enumeration"] = true,
+}
 
 local function integer(value)
     return type(value) == "number" and value == math.floor(value) and value == value
@@ -42,12 +46,13 @@ function Diagnostic:_require(condition, reason)
     if not condition then self:_stop(reason) end
 end
 
-function Diagnostic:_op(name, object_valid, callback, is_validity_check)
+function Diagnostic:_op(name, object_valid, callback, is_validity_check, failure_class)
     return coroutine.yield({
         name = name,
         object_valid = object_valid == true,
         callback = callback,
         is_validity_check = is_validity_check == true,
+        failure_class = FAILURE_CLASSES[failure_class] and failure_class or "lua-operation",
     })
 end
 
@@ -66,16 +71,21 @@ end
 
 function Diagnostic:_properties(name, owner, maximum)
     local result = self:_op(name .. "-properties", true, function()
+        local enumerate = owner.ForEachProperty
+        if type(enumerate) ~= "function" then return { status = "method-unavailable" } end
         local properties = {}
         -- This callback only retains metadata handles; it calls no reflected methods.
-        owner:ForEachProperty(function(property)
+        -- Pinned UE4SS binds the owner and reads the callback from argument 1.
+        enumerate(function(property)
             properties[#properties + 1] = property
             return #properties > maximum
         end)
-        return properties
-    end)
-    self:_require(type(result) == "table" and #result <= maximum, "Unexpected property inventory; signature validation stopped.")
-    return result
+        return { status = "ok", properties = properties }
+    end, false, "metadata-enumeration")
+    self:_require(type(result) == "table" and result.status == "ok" and type(result.properties) == "table",
+        "Pinned UE4SS wrapper does not expose compatible property enumeration; signature validation stopped.")
+    self:_require(#result.properties <= maximum, "Unexpected property inventory; signature validation stopped.")
+    return result.properties
 end
 
 function Diagnostic:_signature(label, function_name, result_kind, result_class)
@@ -244,8 +254,9 @@ function Diagnostic:run(confirmation, expected_step)
     -- pcall only contains ordinary Lua errors. Stack-cookie fail-fast is NOT catchable.
     local ok, result = pcall(self.pending.callback)
     if not ok then
+        local failure_class = self.pending.failure_class
         self:_halt()
-        return false, "Read-only operation raised a Lua error; raw error suppressed. Preserve the before-marker; do not retry."
+        return false, "Read-only operation failed [" .. failure_class .. "]; raw error suppressed. Preserve the before-marker; do not retry."
     end
     local object_valid = self.pending.object_valid
     if self.pending.is_validity_check then object_valid = result == true end
