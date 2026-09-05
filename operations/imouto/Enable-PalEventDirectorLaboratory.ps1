@@ -264,7 +264,7 @@ if ([string]$config.mode -ne 'laboratory') { throw 'Laboratory activation requir
 
 $NativeTest = $deployment.deliveryProfile -eq 'laboratory-native-test'
 $PreparationAction = if ($NativeTest) {
-    'enable laboratory chat/combat/invasion controls; require a fresh local preflight before any start; disable schedules and rewards'
+    'enable laboratory chat/combat/invasion controls with automatic native-call breadcrumbs; disable schedules and rewards'
 } else {
     'prepare read-only preflight diagnostics; disable every gameplay capability and recurring schedule'
 }
@@ -314,15 +314,15 @@ if (-not $PSCmdlet.ShouldProcess(
     }
 
     [pscustomobject]@{
-        Status = $(if ($NativeTest) { 'LaboratoryTestPreflightRequired' } else { 'PreflightDiagnosticsOnly' })
+        Status = $(if ($NativeTest) { 'LaboratoryTestEnabled' } else { 'PreflightDiagnosticsOnly' })
         ServerBuildId = $VerifiedBuildId
         Ue4ssApiVersion = $ExpectedUe4ssApiVersion
         ConfigSchema = 3
         AuthorizationPolicy = $AuthorizationPolicy
         EnabledCapabilities = $(if ($NativeTest) { $gameplayCapabilities -join ',' } else { '' })
-        NativeStartsQuarantined = $true
-        NativePreflightRequired = $NativeTest
-        DiagnosticCommand = 'ped diagnose-preflight; then confirm-disposable-readonly with the exact previewed step'
+        NativeStartsQuarantined = (-not $NativeTest)
+        NativePreflightRequired = $false
+        DiagnosticCommand = 'Optional: ped diagnose-preflight; then confirm-disposable-readonly with the exact previewed step'
         GrantItems = $false
         EnabledSchedules = 0
         MandatoryWarnings = '600,300,60'

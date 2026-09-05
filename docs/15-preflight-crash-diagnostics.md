@@ -4,11 +4,17 @@
 
 **Diagnostic-only quarantine. Do not issue another siege start on revision `575a9f521977069dcfcb244994f6c017044e9604`.**
 
-That revision produced a dedicated-server native crash, not client desynchronization. The original `preflight-diagnostic-only` profile remains fully quarantined. The new `laboratory-native-test` profile restores chat, combat/invasion observation, and substitution hooks for testing, but manual, direct, and fanout starts remain locked until the current server session completes its stepped read-only preflight. Native-all comparison remains unavailable. No diagnostic or restart automatically starts an event, and configuration alone cannot mark the preflight complete.
+That revision produced a dedicated-server native crash, not client desynchronization. The original `preflight-diagnostic-only` profile remains fully quarantined. The `laboratory-native-test` profile enables chat, combat/invasion observation, substitution, and ordinary invasion starts for testing. There is no mandatory stepped preflight. Native-all comparison remains unavailable. No diagnostic or restart automatically starts an event.
 
 The package version remains alpha.3 to preserve configuration and state schemas. The clean commit SHA, artifact hash, and attested delivery profile identify the package. Both profiles force recurring schedules and item delivery off. Installing the test profile is **not** evidence that an invasion has worked: acceptance still requires its native lifecycle callback.
 
-In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. A start requested too early receives an explicit blocked response, without a countdown intent, cooldown write, or native preflight call. Each restart requires a fresh local preflight; readiness is never loaded from a snapshot or response file.
+In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. An authorized `!siege start native 0` or `!siege start all-bounty 0` runs the normal start validation and, if eligible, dispatches the native probe. Version pins, capability switches, authorization, world settings, base eligibility, and active-incident checks remain automatic requirements; the operator does not have to complete a separate diagnostic.
+
+### Normal gameplay test loop
+
+Start the installed test profile, join, and issue the ordinary in-game command. The adapter automatically brackets roster resolution, world-manager resolution, the manager/option-subsystem calls, the invasion-enable flag read, base/incident/eligibility inspection, dispatch snapshots, and the actual march request with flushed before/after breadcrumbs. Labels are developer-authored; player IDs, addresses, settings, and returned objects are not recorded there.
+
+Ordinary eligibility rejections return an error normally. A native Lua error, missing recorder, or failed before/after write records a fixed error classification and disables further native starts for that process. There is no retry or fallback. Native fail-fast cannot be caught: preserve the last before-marker, private logs, and crash evidence, then stop/fix/redeploy/restart. Do not replay the interrupted event.
 
 ## Preserved IMOUTO evidence
 
@@ -24,6 +30,8 @@ Operator-provided evidence, not independently read from IMOUTO in the MIKO codin
 - Evidence is retained on IMOUTO beneath `PalEventDirectorDiagnosticBackups/20260904-151244-crash-575a9f521977` in its dedicated-server root. Leave that directory and the original dump unchanged. Never add a dump, world, settings file, or player data to Git or a public issue.
 
 The reported boundary is `Bridge:preflight_start`, before native invasion dispatch. Stack-cookie failure is consistent with memory corruption; it does not by itself establish which reflected call damaged the stack. Lua `pcall` cannot catch this native fail-fast.
+
+Local inspection of the preserved dump on IMOUTO confirmed fast-fail parameter `2` (stack-cookie check failure). The dump's UE4SS CodeView identity matches the pinned local DLL, whose GUID/age matches its PDB. The first stack slot is return RVA `0x288DFC`, resolving to `RC::LuaType::call_ufunction_from_lua+0x12FC`; the preceding instruction calls `__security_check_cookie` at RVA `0xC477B0`. This places the failed cookie in the reflected-call wrapper that owns the fixed parameter buffer, rather than identifying only the terminal `__report_gsfailure` routine. It still does not identify the particular UFunction that corrupted that frame. The original dump hash remains unchanged.
 
 ## Source and signature audit
 
@@ -56,7 +64,7 @@ The isolated diagnostic profile inspects only the return struct's metadata handl
 
 The guarded gameplay adapter removes **both** calls to this getter, including the dispatch snapshot's call. It uses the audited [GetOptionSubsystem declaration](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalUtility.h) and the [OptionWorldSettings property](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalOptionSubsystem.h). A property view does not pass the large struct through `ProcessEvent`'s fixed call buffer. The subsystem must belong to the selected world, and only a readable, Boolean `true` invasion-enable flag passes. Missing data, a different world, or a disabled flag fails closed; there is no fallback to the old getter.
 
-In the test profile, the stepped sequence therefore follows manager verification with the option-subsystem pointer-signature audit, a separately bracketed getter call, world identity checks, the struct-view wrapper check, and the single Boolean read. Only successful completion opens the session-local start gate. This validates the preflight path, not native invasion acceptance or subsequent gameplay behavior.
+For optional isolated investigation, the test profile's stepped sequence follows manager verification with the option-subsystem pointer-signature audit, a separately bracketed getter call, world identity checks, the struct-view wrapper check, and the single Boolean read. It does not open or close a gameplay gate. Native invasion acceptance still requires a correlated lifecycle callback during an ordinary gameplay test.
 
 `GetWorld` and `GetAddress` behavior is documented by the pinned [UObject binding source](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/include/LuaType/LuaUObject.hpp). Metadata property enumeration and offsets use only methods exposed by the pinned [UStruct](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUStruct.cpp) and [property](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaXProperty.cpp) bindings. No raw-memory offsets, custom-property hacks, or invented size getters are used.
 
@@ -84,9 +92,9 @@ FName and FieldClass wrappers expose `type()` but not `IsValid()` in this pin. T
 
 1. Preserve the crash evidence directory unchanged. Stop only IMOUTO through the existing managed/operator shutdown procedure. Do not restart or change MIKO Production.
 2. Run the installer from the new diagnostic-profile bundle. Existing UE4SS installations require the explicit `-ReplaceExistingUe4ss` switch. It backs up and replaces the entire runtime from the hash-pinned archive rather than adopting existing files; enabled unrelated mods still require separate review. It rejects an older normal-profile artifact and retains rollback evidence.
-3. Run the installed laboratory activation command. The isolated profile reports `PreflightDiagnosticsOnly` and disables all six capabilities. The test profile reports `LaboratoryTestPreflightRequired` and enables chat/combat/invasion/substitution capabilities; starts remain locked by the runtime gate. Both back up configuration, disable recurring schedules and item delivery, and leave event recovery files untouched.
+3. Run the installed laboratory activation command. The isolated profile reports `PreflightDiagnosticsOnly` and disables all six capabilities. The test profile reports `LaboratoryTestEnabled` and enables chat/combat/invasion/substitution capabilities without manual preflight. Both back up configuration, disable recurring schedules and item delivery, and leave event recovery files untouched.
 4. Run the installed launcher with `-ValidateOnly`, then without that switch. The launcher verifies the installed PED scripts, runtime/proxy/layout/settings/mod-control inventory, operator scripts, and pinned DLL; it exports the verified build, runtime API, and runtime tag only into the child server process.
-5. Join and remain in-world, then use the installed `PalEventDirectorDeployments/Invoke-PalEventDirectorPreflight.ps1` on IMOUTO. `-Preview` queues a no-native-call preview; `-ReadResult` reads its result. Submit one step with `-ExpectedStep` set to the exact next identifier. Use `-ReadResult` again after processing. The operator may delegate confirmations to the agent, but it must still execute only one step and inspect its response and markers before submitting another. There is no bulk-run option or automatic retry.
+5. For gameplay testing, join and use the ordinary in-game commands directly. For optional isolated diagnostics instead, use the installed `PalEventDirectorDeployments/Invoke-PalEventDirectorPreflight.ps1`: `-Preview`, `-ReadResult`, then one exact `-ExpectedStep` at a time. The operator may delegate confirmations to the agent, but the isolated diagnostic still has no bulk-run option or automatic retry.
 6. If a trusted engine console is already available, the equivalent `ped diagnose-preflight` commands below also work and return output to its output device. No player/chat variant or debug-console enabling is needed.
 
 Local ingress is confined to `Pal/Saved/PalEventDirector/preflight-commands`. The file is renamed to `in-flight.json` before game-thread execution and cleared only after a response is written. A stale queued or in-flight request at startup blocks ingress and is never replayed. After a crash, preserve and archive that directory with the evidence while the server is stopped before beginning a deliberately new diagnostic run. Do not remove it as a way to retry automatically.
@@ -106,7 +114,7 @@ The shared sequence is:
 3. `get-invader-manager` **only**, then a separate `manager-valid` operation.
 4. `manager-get-world`, its validity check, then separate manager/world address operations.
 5. In the isolated profile, individual settings-function signature/return-struct metadata reads and the return-offset screen, ending in an explicit block.
-6. In the test profile, individual option-subsystem signature reads, its getter/world checks, the settings property-view type, and the invasion-enable Boolean. Successful completion permits a later explicit start command; it does not scan eligibility or dispatch automatically.
+6. In the test profile, optional option-subsystem signature reads, its getter/world checks, the settings property-view type, and the invasion-enable Boolean. This inspection is independent of ordinary in-game starts and does not dispatch automatically.
 
 The first missing after-marker identifies the exact operation that did not return. For example, a surviving `get-invader-manager.after` permits the next explicit validity command; it does not run `manager-get-world` for the operator. A metadata mismatch or unreadable size is a stop condition, not permission to weaken checks.
 
@@ -119,6 +127,8 @@ The dedicated data directory receives `native-preflight-breadcrumbs.ndjson`. Eac
 ```
 
 The leading run identifier and incrementing operation ordinal distinguish steps within a run. Step names are static labels/ordinal indexes, never object-derived names or IDs. `objectValid` describes the context's latest explicit validity result; lookup steps start false and do not claim validity until the separate validity operation. An after-marker means only that the operation returned and the marker was written; it is not a native invasion acceptance signal.
+
+Automatic gameplay traces use `timestamp-ordinal-start-operation.before/after` labels. Their `objectValid` is false because a generic operation boundary makes no separate object-validity claim. They preserve multiple return values internally but never serialize those values into the breadcrumb file.
 
 The recorder bypasses normal log-level filtering and flushes/closes the file before each native operation and immediately after return. Before-write failure means **no operation runs**. After-write failure, Lua error, invalid object, or signature mismatch halts that diagnostic session. Raw native/Lua error strings are suppressed; pointers, UIDs, object names, settings values, credentials, worlds, and result tables never enter the breadcrumb file.
 

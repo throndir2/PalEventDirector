@@ -111,7 +111,8 @@ const palworldAdapter = await readFile(path.join(root, 'Scripts/ped/palworld.lua
 for (const requiredGuard of [
   'function Bridge:native_start_guard()',
   'Native starts are quarantined',
-  'diagnostic.native_ready',
+  'self.native_fault',
+  'function Bridge:_native_step',
   'function Bridge:_world_invaders_enabled',
   'function Bridge:diagnose_preflight',
   'if not hooks_enabled then',
@@ -239,7 +240,7 @@ if (await exists('operations/imouto/Enable-PalEventDirectorLaboratory.ps1')) {
     '$config.capabilities.observeInvasions = $NativeTest',
     '$config.capabilities.startAllInvasions = $NativeTest',
     '$config.capabilities.substituteBountyMembers = $NativeTest',
-    "'LaboratoryTestPreflightRequired'",
+    "'LaboratoryTestEnabled'",
     '$config.capabilities.grantItems = $false',
     '$schedule.enabled = $false',
     "MandatoryWarnings = '600,300,60'",

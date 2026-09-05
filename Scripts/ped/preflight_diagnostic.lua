@@ -339,9 +339,10 @@ function Diagnostic:run(confirmation, expected_step)
     self.running = false
     if not advanced then return false, advance_error end
     if self.completed then
-        return true, "Returned: " .. completed_step .. ". Inspect its after-marker. Native preflight completed for this world; only an explicit enabled start command can request an invasion. No dispatch ran."
+        return true, "Returned: " .. completed_step .. ". Inspect its after-marker. Diagnostic inspection completed; this is not a gameplay prerequisite. No dispatch ran."
     end
     return true, "Returned: " .. completed_step .. ". Inspect its after-marker. Next: " .. self.pending.step .. ". No dispatch ran."
 end
 
+Diagnostic.classify_error = failure_detail
 return Diagnostic

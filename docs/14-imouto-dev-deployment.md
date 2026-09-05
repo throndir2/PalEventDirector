@@ -1,6 +1,6 @@
 # IMOUTO DEV deployment
 
-> **Guarded test-profile override:** follow [the preflight crash runbook](15-preflight-crash-diagnostics.md). The `laboratory-native-test` bundle restores chat and prepares gameplay hooks, but invasions require a fresh, completed local preflight in the current server session. Schedules, rewards, and native-all comparison stay disabled. The older isolated diagnostic profile still disables all capabilities. Installation preserves recovery evidence and validates the pinned runtime; startup never requests an invasion.
+> **Direct test-profile override:** follow [the crash test runbook](15-preflight-crash-diagnostics.md). The `laboratory-native-test` bundle enables chat and ordinary invasion starts without manual diagnostic steps. Native start operations are bracketed by flushed breadcrumbs automatically. Schedules, rewards, and native-all comparison stay disabled. The older isolated diagnostic profile still disables all capabilities. Installation preserves recovery evidence and validates the pinned runtime; startup never requests an invasion.
 
 ## Host roles
 

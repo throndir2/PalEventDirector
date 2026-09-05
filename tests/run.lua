@@ -1031,14 +1031,16 @@ test("selected-base dispatch probes one base before confirmed fanout and records
         config = Config.defaults(),
         logger = {
             info = function(_, message, fields) logs[#logs + 1] = { message = message, fields = util.deep_copy(fields) } end,
+            preflight_breadcrumb = function() return true end,
             warn = function() end,
             error = function() end,
         },
         clock = function() return 1000 end,
     })
     bridge.utility = utility
-    -- Historical dispatch simulation only. The shipped Bridge guard is tested separately.
-    bridge.native_start_guard = function() return true end
+    bridge.config.capabilities.startAllInvasions = true
+    bridge.registered, bridge.periodic_active = true, true
+    equal(bridge.preflight_diagnostic, nil, "ordinary invasion test must not require stepped preflight")
     bridge.event_manager = manager
     bridge.event_world = world
     bridge.expected_bases = { ["base-alpha"] = true, ["base-bravo"] = true }

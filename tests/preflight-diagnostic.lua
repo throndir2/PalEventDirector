@@ -174,22 +174,23 @@ return function(test, equal, truthy)
         return reason
     end
 
-    test("laboratory readiness completes without dispatch or a by-value settings getter", function()
+    test("optional inspection completes without becoming a gameplay prerequisite", function()
         local diagnostic, records, operations = fixture({ native_readiness = true })
         local result = finish(diagnostic, operations, true)
         truthy(diagnostic.completed and diagnostic.native_ready)
-        truthy(result:match("Native preflight completed"))
+        truthy(result:match("Diagnostic inspection completed"))
         truthy(records[#records].step:match("options%-invasion%-enabled.after$"))
         local count = #operations
         equal(diagnostic:run(TOKEN), false)
         equal(#operations, count)
         local bridge = Bridge.new({ config = Config.defaults(), logger = {}, delivery_profile = "laboratory-native-test" })
         equal(bridge:native_start_guard(), false)
-        diagnostic.ready_world = { IsValid = function() return true end }
-        bridge.preflight_diagnostic = diagnostic
         bridge.config.capabilities.startAllInvasions = true
         bridge.registered, bridge.periodic_active = true, true
+        equal(bridge.preflight_diagnostic, nil)
         truthy(bridge:native_start_guard())
+        bridge.preflight_diagnostic = { halted = true, completed = false }
+        truthy(bridge:native_start_guard(), "optional diagnostic was a mandatory gate")
         bridge.config.capabilities.startAllInvasions = false
         equal(bridge:native_start_guard(), false)
         bridge.config.capabilities.startAllInvasions = true
@@ -197,9 +198,8 @@ return function(test, equal, truthy)
         equal(bridge:native_start_guard(), false)
         bridge.periodic_active = true
         equal(bridge:diagnose_native_start_all("confirm-disposable-start-all"), false)
-        diagnostic.ready_world = nil
+        bridge.native_fault = "fixture native fault"
         equal(bridge:native_start_guard(), false)
-        equal(Bridge.new({ config = Config.defaults(), logger = {} }):native_start_guard(), false, "restart reused readiness")
     end)
 
     test("laboratory readiness rejects wrong-world options disabled invasions and wrong struct wrappers", function()
@@ -222,7 +222,7 @@ return function(test, equal, truthy)
         local options_world = world
         local settings = { bEnableInvaderEnemy = true }
         local options = { IsValid = function() return true end, GetWorld = function() return options_world end, OptionWorldSettings = settings }
-        local bridge = Bridge.new({ config = Config.defaults(), logger = {} })
+        local bridge = Bridge.new({ config = Config.defaults(), logger = { preflight_breadcrumb = function() return true end } })
         bridge.utility = {
             IsValid = function() return true end,
             GetOptionSubsystem = function(_, context) equal(context, world); return options end,
@@ -239,6 +239,97 @@ return function(test, equal, truthy)
         options_world = world
         options.OptionWorldSettings = nil
         equal(bridge:_world_invaders_enabled(world), false)
+    end)
+
+    test("normal native operations preserve flushed boundaries multiple returns and private errors", function()
+        for _, failure in ipairs({ "none", "before", "after", "operation" }) do
+            local records, calls = {}, 0
+            local bridge = Bridge.new({ config = Config.defaults(), logger = {
+                preflight_breadcrumb = function(_, step, build, valid)
+                    if step:match("%." .. failure .. "$") then return false end
+                    records[#records + 1] = { step = step, buildId = build, objectValid = valid }
+                    return true
+                end,
+                error = function() end,
+            } })
+            local ok, first, second, third = bridge:_native_step("fixture", function()
+                calls = calls + 1
+                truthy(records[#records].step:match("%.before$"))
+                if failure == "operation" then error(setmetatable({}, { __tostring = function() error("private native error formatted") end })) end
+                return 7, nil, "last"
+            end)
+            if failure == "none" then
+                truthy(ok)
+                equal(first, 7); equal(second, nil); equal(third, "last")
+                equal(#records, 2)
+                truthy(records[2].step:match("%.after$"))
+            else
+                equal(ok, false)
+                truthy(first:match("Native operation stopped"))
+                if failure == "operation" then truthy(first:match("non%-string%-error")) end
+                equal(calls, failure == "before" and 0 or 1)
+                local count = #records
+                equal(bridge:_native_step("retry", function() error("native operation retried") end), false)
+                equal(#records, count)
+            end
+            for _, record in ipairs(records) do equal(util.count(record), 3); equal(record.objectValid, false) end
+        end
+    end)
+
+    test("normal start validation runs directly and traces a failing manager call without retry", function()
+        for _, fail_manager in ipairs({ false, true }) do
+            local records, option_calls = {}, 0
+            local config = Config.defaults()
+            config.capabilities.startAllInvasions = true
+            local world = { IsValid = function() return true end, GetAddress = function() return 100 end }
+            local manager = { IsValid = function() return true end, GetAddress = function() return 200 end, GetWorld = function() return world end }
+            local roster = { { uid = "fixture-player", world = world } }
+            local bridge = Bridge.new({ config = config, delivery_profile = "laboratory-native-test", logger = {
+                preflight_breadcrumb = function(_, step) records[#records + 1] = step; return true end,
+                error = function() end,
+            } })
+            bridge.registered, bridge.periodic_active = true, true
+            bridge.utility = {
+                IsValid = function() return true end,
+                GetInvaderManager = function()
+                    if fail_manager then error(setmetatable({}, { __tostring = function() error("private native error formatted") end })) end
+                    return manager
+                end,
+                GetOptionSubsystem = function()
+                    option_calls = option_calls + 1
+                    return { IsValid = function() return true end, GetWorld = function() return world end,
+                        OptionWorldSettings = { bEnableInvaderEnemy = true } }
+                end,
+                GetOptionWorldSettings = function() error("unsafe settings getter invoked") end,
+            }
+            bridge.preflight_environment = function() return true end
+            bridge.list_online_players = function() return roster end
+            bridge._registered_base_ids = function() return { "fixture-base" } end
+            bridge.active_invasion_count = function() return 0 end
+            bridge._eligible_online_guild_bases = function()
+                return { ["fixture-base"] = true }, { ["fixture-base"] = "native-id" }, { ["fixture-base"] = "fixture-guild" }, roster
+            end
+            bridge._static_find = function() return { IsValid = function() return true end } end
+            equal(bridge.preflight_diagnostic, nil)
+            local ok, reason = bridge:preflight_start("native")
+            if fail_manager then
+                equal(ok, false)
+                truthy(reason:match("non%-string%-error"))
+                truthy(records[#records]:match("start%-get%-invader%-manager.before$"))
+                equal(option_calls, 0)
+                local count = #records
+                equal(bridge:preflight_start("native"), false)
+                equal(#records, count)
+            else
+                truthy(ok, reason)
+                equal(option_calls, 1)
+                equal(bridge.pending_manager, manager)
+                equal(bridge.pending_world, world)
+                truthy(bridge.pending_expected_bases["fixture-base"])
+                equal(#bridge.pending_roster, 1)
+                truthy(records[#records]:match("start%-dispatch%-function.after$"))
+            end
+        end
     end)
 
     test("preflight diagnostic is inert until exact host build runtime and console confirmation", function()
@@ -517,7 +608,7 @@ return function(test, equal, truthy)
         equal(laboratory.schedules[1].enabled, false)
     end)
 
-    test("laboratory chat registers while invasion readiness stays locked", function()
+    test("laboratory chat and gameplay controls work without a manual preflight", function()
         local old_console, old_loop, old_getenv = _G.RegisterConsoleCommandGlobalHandler, _G.LoopInGameThreadWithDelay, os.getenv
         local config = Config.defaults()
         for name in pairs(config.capabilities) do config.capabilities[name] = name ~= "grantItems" end
@@ -536,28 +627,27 @@ return function(test, equal, truthy)
             truthy(hooks.chat)
             truthy(hooks.damage and hooks.invasion_start and hooks.select_invaders)
             truthy(bridge.periodic_active)
-            equal(bridge:native_start_guard(), false)
+            truthy(bridge:native_start_guard())
+            equal(bridge.preflight_diagnostic, nil)
             poll()
-            equal(ticks, 0)
+            equal(ticks, 1)
             hooks.chat({}, "ordinary chat")
             equal(principal_calls, 0)
             hooks.chat({}, "!siege status")
             equal(received, "!siege status")
             equal(principal_calls, 1)
-            bridge.preflight_diagnostic = { completed = true, native_ready = true, ready_world = { IsValid = function() return true end } }
-            truthy(bridge:native_start_guard())
             poll()
-            equal(ticks, 1)
+            equal(ticks, 2)
             bridge:unregister()
             equal(bridge:native_start_guard(), false)
             poll()
-            equal(ticks, 1)
+            equal(ticks, 2)
         end)
         _G.RegisterConsoleCommandGlobalHandler, _G.LoopInGameThreadWithDelay, os.getenv = old_console, old_loop, old_getenv
         truthy(ok, failure)
     end)
 
-    test("chat queries work before readiness while every mutating command remains blocked", function()
+    test("chat queries work while mutations are blocked by incomplete startup", function()
         local config = Config.defaults()
         for name in pairs(config.capabilities) do config.capabilities[name] = name ~= "grantItems" end
         local now, writes, replies = 100, 0, {}

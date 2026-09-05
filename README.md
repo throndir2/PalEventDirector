@@ -1,6 +1,6 @@
 # Pal Event Director
 
-> **Guarded laboratory testing.** IMOUTO's `575a9f52` build crashed inside native preflight. The `laboratory-native-test` profile restores in-game chat and gameplay hooks, but every invasion start stays locked until a fresh local stepped preflight completes in that server session. The oversized `GetOptionWorldSettings` getter is prohibited; the adapter reads the invasion flag through the world-scoped option subsystem instead. Recurring schedules, item delivery, and native-all comparison remain disabled. Follow [the test runbook](docs/15-preflight-crash-diagnostics.md), not the historical quick start below.
+> **Direct laboratory testing.** IMOUTO's `575a9f52` build crashed inside native preflight. The `laboratory-native-test` profile enables in-game chat and invasion commands without a manual preflight prerequisite. Normal start validation and dispatch write flushed native-operation breadcrumbs automatically. The oversized `GetOptionWorldSettings` getter is prohibited; the adapter reads the invasion flag through the world-scoped option subsystem instead. Recurring schedules, item delivery, and native-all comparison remain disabled. Follow [the test runbook](docs/15-preflight-crash-diagnostics.md), not the historical quick start below.
 
 Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
@@ -93,7 +93,7 @@ Read these in order:
 14. [IMOUTO DEV deployment](docs/14-imouto-dev-deployment.md) — local clean builds, stopped-server deployment, dependency pins, rollback, and vanilla-client checks without touching MIKO Production.
 15. [Preflight crash diagnostics](docs/15-preflight-crash-diagnostics.md) — guarded gameplay testing, the isolated diagnostic profile, pinned-source buffer audit, and one-operation procedure.
 
-For the guarded test profile, the installed preparation command enables chat and the event observation/substitution capabilities, while leaving native starts gated on session-local preflight. In-game queries (`!siege status`, `!siege profiles`, `!siege schedule`, `!siege score`, and `!siege leaderboard`) work before that gate opens. Starts return a clear blocked response until it does. After preflight completion, use an explicitly authorized `!siege start native 0` for the native baseline; completion of preflight itself never starts an invasion. Restarting closes the gate again.
+The installed test-profile preparation command enables chat and the event observation/substitution capabilities. Use `!siege status` and an authorized `!siege start native 0` or `!siege start all-bounty 0` directly. Standard authorization, version, world-setting, base-eligibility, and active-incident checks still apply automatically. A native Lua error or failed breadcrumb write stops further native starts until the server is restarted after investigation. The stepped diagnostic remains available for isolated troubleshooting, but is not required for gameplay.
 
 ## Feasibility language
 

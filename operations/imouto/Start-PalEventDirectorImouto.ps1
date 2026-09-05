@@ -199,8 +199,8 @@ $launch = [ordered]@{
     QueryPort = $QueryPort
     EnvironmentScope = 'child-process-only'
     DeliveryProfile = [string]$deployment.deliveryProfile
-    NativeStartsQuarantined = $true
-    NativePreflightRequired = ($deployment.deliveryProfile -eq 'laboratory-native-test')
+    NativeStartsQuarantined = ($deployment.deliveryProfile -ne 'laboratory-native-test')
+    NativePreflightRequired = $false
     Ue4ssTag = $ExpectedRuntimeTag
     Ue4ssApiVersion = $ExpectedRuntimeApi
 }

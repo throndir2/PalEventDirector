@@ -99,8 +99,9 @@ try {
     $profileRecord.deliveryProfile = 'laboratory-native-test'
     [IO.File]::WriteAllText($profileRecordPath, ($profileRecord | ConvertTo-Json -Depth 8))
     $profileResult = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -ValidateOnly
-    if ($profileResult.DeliveryProfile -ne 'laboratory-native-test' -or $profileResult.NativePreflightRequired -ne $true) {
-        throw 'Laboratory launch did not retain its preflight requirement.'
+    if ($profileResult.DeliveryProfile -ne 'laboratory-native-test' -or $profileResult.NativePreflightRequired -ne $false -or
+        $profileResult.NativeStartsQuarantined -ne $false) {
+        throw 'Laboratory launch unexpectedly required manual preflight.'
     }
 
     $installerMatching = New-LauncherFixture -Name 'matching' -ManifestBuildId '24575149' `

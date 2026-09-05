@@ -242,6 +242,9 @@ function Bridge.new(options)
         loop_handle = nil,
         registered = false,
         periodic_active = false,
+        native_fault = nil,
+        native_trace_ordinal = 0,
+        native_trace_run = os.time(),
         diagnostic_command_directory = options.diagnostic_command_directory,
         delivery_profile = options.delivery_profile or require("ped.version").delivery_profile,
     }, Bridge)
@@ -257,11 +260,41 @@ function Bridge:native_start_guard()
     end
     if not self.config.capabilities.startAllInvasions then return false, "capabilities.startAllInvasions is disabled." end
     if not self.registered or not self.periodic_active then return false, "Laboratory hooks and polling are not ready." end
-    local diagnostic = self.preflight_diagnostic
-    if not diagnostic or not diagnostic.completed or not diagnostic.native_ready or not valid(diagnostic.ready_world) then
-        return false, "Native starts are locked until the local stepped preflight completes for the current world."
-    end
+    if self.native_fault then return false, self.native_fault end
     return true
+end
+
+function Bridge:_native_step(label, operation)
+    if self.native_fault then return false, self.native_fault end
+    self.native_trace_ordinal = self.native_trace_ordinal + 1
+    local step = string.format("%d-%04d-start-%s", self.native_trace_run, self.native_trace_ordinal, label)
+    local function fail(code)
+        self.native_fault = "Native operation stopped [" .. code .. "]; preserve server logs and restart after investigation. Do not retry."
+        if self.logger and type(self.logger.error) == "function" then self.logger:error(self.native_fault, { step = step }) end
+        return false, self.native_fault
+    end
+    local function record(phase)
+        if not self.logger or type(self.logger.preflight_breadcrumb) ~= "function" then return false end
+        -- False means this boundary does not make a separate object-validity claim.
+        local ok, saved = pcall(self.logger.preflight_breadcrumb, self.logger, step .. "." .. phase,
+            require("ped.version").tested_server_build_id, false)
+        return ok and saved == true
+    end
+    if not record("before") then return fail("breadcrumb-before") end
+    local result = table.pack(pcall(operation))
+    if not result[1] then return fail(PreflightDiagnostic.classify_error(result[2])) end
+    if self.native_fault then return false, self.native_fault end
+    if not record("after") then return fail("breadcrumb-after") end
+    return true, table.unpack(result, 2, result.n)
+end
+
+function Bridge:_native_call(label, object, method, ...)
+    local arguments = table.pack(...)
+    return self:_native_step(label, function()
+        local ok, result = call(object, method, table.unpack(arguments, 1, arguments.n))
+        if not ok then error(result, 0) end
+        return result
+    end)
 end
 
 function Bridge:diagnose_preflight(confirmation, expected_step)
@@ -426,15 +459,11 @@ function Bridge:_resolve_world_manager(roster)
         if not valid(player.world) then
             return nil, nil, "online player world is invalid for " .. util.mask_uid(player.uid)
         end
-        if self.preflight_diagnostic and self.preflight_diagnostic.native_ready
-            and not same_object(player.world, self.preflight_diagnostic.ready_world) then
-            return nil, nil, "player world differs from the world approved by the local preflight"
-        end
-        local manager_ok, candidate = call(utility, "GetInvaderManager", player.world)
+        local manager_ok, candidate = self:_native_call("get-invader-manager", utility, "GetInvaderManager", player.world)
         if not manager_ok or not valid(candidate) then
             return nil, nil, "world-scoped PalInvaderManager lookup failed for " .. util.mask_uid(player.uid)
         end
-        local candidate_world_ok, candidate_world = call(candidate, "GetWorld")
+        local candidate_world_ok, candidate_world = self:_native_call("manager-world", candidate, "GetWorld")
         if not candidate_world_ok or not same_object(candidate_world, player.world) then
             return nil, nil, "world-scoped PalInvaderManager returned a different world for " .. util.mask_uid(player.uid)
         end
@@ -455,15 +484,18 @@ end
 
 function Bridge:_world_invaders_enabled(world)
     if not valid(world) then return false, "world is invalid for invasion settings" end
-    local ok, options = call(self:_utility(), "GetOptionSubsystem", world)
+    local ok, options = self:_native_call("get-option-subsystem", self:_utility(), "GetOptionSubsystem", world)
     if not ok or not valid(options) then return false, "world-scoped option subsystem is unavailable" end
-    local world_ok, options_world = call(options, "GetWorld")
+    local world_ok, options_world = self:_native_call("option-world", options, "GetWorld")
     if not world_ok or not same_object(options_world, world) then
         return false, "option subsystem belongs to a different world"
     end
     -- This is a reflected property view, not the oversized by-value UFunction.
-    local settings = property(options, "OptionWorldSettings")
-    local enabled = property(settings, "bEnableInvaderEnemy")
+    local read_ok, enabled = self:_native_step("invasion-enable-flag", function()
+        local settings = property(options, "OptionWorldSettings")
+        return property(settings, "bEnableInvaderEnemy")
+    end)
+    if not read_ok then return false, enabled end
     if type(enabled) ~= "boolean" then return false, "native invasion setting is unreadable" end
     if not enabled then return false, "native enemy invasions are disabled in world settings" end
     return true
@@ -1399,7 +1431,7 @@ function Bridge:register()
         end
     end
     self.registered = true
-    if laboratory then self.logger:warn("Laboratory test controls loaded; native starts require completed local preflight. No invasion starts automatically.") end
+    if laboratory then self.logger:warn("Laboratory test controls loaded; in-game starts run automatic validation with native breadcrumbs. No manual preflight is required.") end
     return true
 end
 
@@ -1491,16 +1523,23 @@ function Bridge:preflight_start(profile_id)
     if not environment_ok then
         return false, environment_error
     end
-    local roster = self:list_online_players()
-    local manager, world, manager_error = self:_resolve_world_manager(roster)
+    local roster_ok, roster = self:_native_step("online-roster", function() return self:list_online_players() end)
+    if not roster_ok then return false, roster end
+    local resolved, manager, world, manager_error = self:_native_step("world-manager", function() return self:_resolve_world_manager(roster) end)
+    if not resolved then return false, manager end
     if not manager then return false, manager_error end
-    local invaders_enabled, settings_error = self:_world_invaders_enabled(world)
+    local settings_ok, invaders_enabled, settings_error =
+        self:_native_step("world-invasion-settings", function() return self:_world_invaders_enabled(world) end)
+    if not settings_ok then return false, invaders_enabled end
     if not invaders_enabled then return false, settings_error end
-    local registered_ids, registration_error = self:_registered_base_ids(manager)
+    local registry_ok, registered_ids, registration_error = self:_native_step("registered-bases", function() return self:_registered_base_ids(manager) end)
+    if not registry_ok then return false, registered_ids end
     if not registered_ids then
         return false, registration_error
     end
-    if self:active_invasion_count(world) > 0 then
+    local scan_ok, active_count = self:_native_step("active-incidents", function() return self:active_invasion_count(world) end)
+    if not scan_ok then return false, active_count end
+    if active_count > 0 then
         return false, "a native invasion/visitor incident is already active; one incident per base is assumed and this alpha uses a global mutex"
     end
     local profile = bounties.profile(profile_id)
@@ -1511,12 +1550,15 @@ function Bridge:preflight_start(profile_id)
         if not self.config.capabilities.substituteBountyMembers then
             return false, "bounty substitution capability is disabled"
         end
-        local selection_function = self:_static_find(HOOKS.select_invaders)
+        local lookup_ok, selection_function = self:_native_step("selection-function", function() return self:_static_find(HOOKS.select_invaders) end)
+        if not lookup_ok then return false, selection_function end
         if not valid(selection_function) then
             return false, "SelectInvaders is unavailable for bounty substitution"
         end
     end
-    local base_set, native_ids, base_guilds, resolved_roster, eligibility_error = self:_eligible_online_guild_bases(manager, roster)
+    local eligible_ok, base_set, native_ids, base_guilds, resolved_roster, eligibility_error =
+        self:_native_step("eligible-bases", function() return self:_eligible_online_guild_bases(manager, roster) end)
+    if not eligible_ok then return false, base_set end
     if not base_set then return false, eligibility_error end
     if #resolved_roster > self.config.limits.maxPlayers then
         return false, string.format("online roster count %d exceeds configured maximum %d", #resolved_roster, self.config.limits.maxPlayers)
@@ -1532,7 +1574,9 @@ function Bridge:preflight_start(profile_id)
     self.pending_roster = resolved_roster
     self.pending_manager = manager
     self.pending_world = world
-    local function_object = self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchForBaseCamp")
+    local lookup_ok, function_object = self:_native_step("dispatch-function",
+        function() return self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchForBaseCamp") end)
+    if not lookup_ok then return false, function_object end
     if not valid(function_object) then
         return false, "StartInvaderMarchForBaseCamp is unavailable for this revision"
     end
@@ -1672,7 +1716,9 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     if not valid(manager) then
         return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = "pinned world invasion manager is unavailable" }
     end
-    local before, target, target_error = self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-before")
+    local snapshot_ok, before, target, target_error = self:_native_step("dispatch-before",
+        function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-before") end)
+    if not snapshot_ok then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = before } end
     self:_log_dispatch_snapshot(before)
     if not target then
         return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = target_error, before = before }
@@ -1697,11 +1743,9 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     }
     self.dispatching_base_id = base_id
     self.selection_open = true
-    local ok, result = call(manager, "StartInvaderMarchForBaseCamp", target.nativeId)
+    local ok, result = self:_native_call("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
     self.selection_open = false
     self.dispatching_base_id = nil
-    local after = self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-after")
-    self:_log_dispatch_snapshot(after)
     local request = self.request_windows[base_id]
     if not ok then
         request.status = "dispatch_call_failed"
@@ -1712,9 +1756,15 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
             status = "dispatch_call_failed",
             error = tostring(result),
             before = before,
-            after = after,
         }
     end
+    local after_ok, after = self:_native_step("dispatch-after",
+        function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-after") end)
+    if not after_ok then
+        request.status = "dispatch_call_failed"
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = after, before = before }
+    end
+    self:_log_dispatch_snapshot(after)
     local status = request.status == "started" and "lifecycle_confirmed" or dispatch_phase .. "_call_returned"
     request.status = status
     return {

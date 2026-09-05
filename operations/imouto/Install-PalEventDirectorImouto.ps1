@@ -536,8 +536,8 @@ try {
     [pscustomobject]@{
         Status = 'Installed'
         DeliveryProfile = $Record.deliveryProfile
-        NativeStartsQuarantined = $true
-        NativePreflightRequired = ($Record.deliveryProfile -eq 'laboratory-native-test')
+        NativeStartsQuarantined = ($Record.deliveryProfile -ne 'laboratory-native-test')
+        NativePreflightRequired = $false
         ServerRoot = $ServerRoot
         ClientRootUntouched = $ClientRoot
         Version = $Record.version

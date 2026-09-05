@@ -78,7 +78,7 @@ local function boot()
         grantItems = config.capabilities.grantItems,
     })
     if created then
-        logger:warn("Native starts require the laboratory profile, enabled capabilities, and a completed local preflight; schedules and item grants remain disabled")
+        logger:warn("In-game starts require enabled laboratory capabilities; native boundaries are recorded automatically. Schedules and item grants remain disabled")
     end
 end
 

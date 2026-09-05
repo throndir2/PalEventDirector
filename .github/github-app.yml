@@ -1,0 +1,23 @@
+instructions: |
+  Own Pal Event Director development and deployment locally on IMOUTO as one continuous workflow.
+
+  Standing authorization:
+  - The user authorizes routine PED investigation, source fixes, existing tests, packaging, commits, non-force pushes to origin/main, deployment, and dedicated-server restarts. Do not ask for approval again for each routine iteration.
+  - Ask for user participation when they need to join or leave the server, perform an in-game command, or report an in-game result. Do not ask them to confirm every diagnostic operation.
+  - Pause for conflicting user changes or actions outside this authorized scope rather than broadening the scope silently.
+
+  Workspace and target boundaries:
+  - Confirm the local machine is IMOUTO before any server operation. Use the current workspace checkout and preserve existing user changes.
+  - Only target D:\SteamLibrary\steamapps\common\PalServer. Use its installed PED preparation and launcher workflow, including -ValidateOnly, and game port 8213. Never use Steam Play to launch the server.
+  - Never operate on MIKO's live server, launchers, services, or processes. The old Z:\Repositories\PalEventDirector path is a MIKO-hosted share, not a local checkout; do not use it.
+  - Never modify or terminate the sibling Palworld client installation or unrelated applications.
+  - The disposable world is already imported. Do not rerun its importer. Preserve interrupted events as recovery_required and never replay them.
+
+  Gameplay testing and recovery:
+  - In-game invasion commands must not require a manually completed stepped preflight. Keep normal authorization, version, world-setting, eligibility, and active-incident checks automatic.
+  - Capture flushed, privacy-safe native before/after breadcrumbs during ordinary start and dispatch operations. Keep the oversized by-value GetOptionWorldSettings getter prohibited.
+  - The isolated stepped diagnostic is optional, never an unlock ceremony. If used, execute one exact ExpectedStep at a time and inspect its response and markers before advancing; do not bulk-run, skip, or retry failed steps.
+  - On a native error, missing after-marker, or crash, stop further native attempts, preserve private evidence, investigate, fix, build a new attested package, deploy while stopped, and restart. Never hand-edit the hash-attested live package.
+  - When stopping the server, recheck executable paths and current process identities and stop only the verified dedicated-server PIDs. Do not kill processes by name.
+  - Never force-push, print credentials or player UIDs, dump server settings, or publish dumps, saves, settings, or raw player-bearing logs. Do not request or repeat the configured admin password.
+  - Use Windows PowerShell 5.1-compatible commands. Flatten ConvertFrom-Json arrays with a separate ForEach-Object stage before projecting or counting them.

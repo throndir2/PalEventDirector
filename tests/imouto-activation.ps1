@@ -130,13 +130,14 @@ try {
     foreach ($capability in @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')) {
         if ($config.capabilities.$capability -ne $true) { throw "Laboratory activation did not enable $capability." }
     }
-    if ($result.Status -ne 'LaboratoryTestPreflightRequired' -or $result.NativePreflightRequired -ne $true -or
+    if ($result.Status -ne 'LaboratoryTestEnabled' -or $result.NativePreflightRequired -ne $false -or
+        $result.NativeStartsQuarantined -ne $false -or
         $config.capabilities.grantItems -ne $false -or
         @($config.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count -ne 0 -or
         (Get-FileHash $journalPath -Algorithm SHA256).Hash -ne $journalHash) {
-        throw 'Laboratory activation lost preflight, reward, schedule or recovery protections.'
+        throw 'Laboratory activation did not enable direct tests with reward, schedule and recovery protections.'
     }
-    Write-Output 'PASS IMOUTO preparation handles isolated diagnostics and preflight-gated gameplay without changing recovery'
+    Write-Output 'PASS IMOUTO preparation enables direct gameplay tests or isolated diagnostics without changing recovery'
 } finally {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
