@@ -18,6 +18,14 @@ Ordinary eligibility rejections return an error normally. A native Lua error, mi
 
 Authorized admin starts now use the exact-base `RequestIncidentInvaderEnemy(Guid, Observer)` entry point, with `admin-request-incident` and `admin-admission-result` trace boundaries. Ordinary starts retain the march path and cooldown veto. Admin cooldown flags/timers are not altered: the native Boolean admission result and lifecycle callbacks decide whether the request actually worked. This direct admission path is source-audited but still requires live confirmation.
 
+### Native pathfinding boundary observed on IMOUTO
+
+The `9141b3d4b46c` test reached the direct native request and returned Boolean `true`. The probe observer changed from not path-searching to path-searching, and the manager acquired a pathfinder. Its incident map stayed empty, and no declaration, selection, or invasion-start callback was observed before the discovery timeout. All automatic before/after markers returned; this was not another stack-cookie crash. Ten hash-verified files remain private under `PalEventDirectorDiagnosticBackups/native-admission-1788633154-pathfinding-timeout`.
+
+That probe was the first GUID-sorted target among ten bases and had no cached players in its base. Probe selection now prefers an eligible base with observed player presence, with deterministic ID ordering as the fallback; it does not remove any other target or dispatch fanout before confirmation. This avoids choosing an unoccupied remote base ahead of a known occupied one, but does not prove that navigation was the cause of the timeout.
+
+Timeout handling now captures the native state at the deadline, not just immediately after submission. It records observer/pathfinding/incident state, hook-entry counters, and aggregate loaded start-point actor/navigation-invoker counts, including invokers waiting for world partition. No positions, player IDs, or invoker state are changed. `InvadeStartLocationList` is a start-point inventory: a key not matching a base ID is not proof that the base lacks a usable start point.
+
 ## Preserved IMOUTO evidence
 
 Operator-provided evidence, not independently read from IMOUTO in the MIKO coding session:

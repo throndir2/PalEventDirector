@@ -174,4 +174,72 @@ return function(test, equal, truthy)
             if acceptance == "invalid" then truthy(bridge.native_fault) end
         end
     end)
+
+    test("the probe prefers an occupied eligible base without removing other targets", function()
+        local config = Config.defaults()
+        config.capabilities.startAllInvasions = true
+        local bridge = Bridge.new({ config = config, logger = {
+            preflight_breadcrumb = function() return true end, error = function() end,
+        } })
+        bridge.registered, bridge.periodic_active = true, true
+        bridge.expected_bases = { ["a-empty"] = true, ["z-occupied"] = true, ["m-empty"] = true }
+        bridge.event_manager = { IsValid = function() return true end, Observers = {
+            ForEach = function(_, callback)
+                callback("a-empty", { PlayerHandlesCache = {}, PlayerInBaseCampTimer = 0 })
+                callback("z-occupied", { PlayerHandlesCache = { {} }, PlayerInBaseCampTimer = 5 })
+                callback("m-empty", { PlayerHandlesCache = {}, PlayerInBaseCampTimer = 0 })
+            end,
+        } }
+        local calls = {}
+        bridge._dispatch_selected_base = function(_, id, phase)
+            calls[#calls + 1] = id
+            return { baseId = id, status = phase .. "_call_returned" }
+        end
+        local ok, result = bridge:start_all_invasions()
+        truthy(ok)
+        equal(calls[1], "z-occupied")
+        equal(#calls, 1)
+        equal(#result.requests, 3)
+        equal(bridge.dispatch_order[2], "a-empty")
+        equal(bridge.dispatch_order[3], "m-empty")
+        equal(bridge:continue_invasion_dispatch(), false)
+        equal(#calls, 1)
+    end)
+
+    test("timeout capture records current probe state without starting another invasion", function()
+        local bridge = Bridge.new({ config = Config.defaults(), logger = {
+            preflight_breadcrumb = function() return true end, info = function() end,
+        } })
+        bridge.event_manager = { IsValid = function() return true end }
+        bridge.probe_base_id = "fixture"
+        local snapshots = 0
+        bridge._dispatch_snapshot = function(_, _, base, phase)
+            equal(base, "fixture")
+            equal(phase, "probe-timeout")
+            snapshots = snapshots + 1
+            return { observerPathSearching = true, incidentForBase = false, startHookCalls = 0 }
+        end
+        local ok, snapshot = bridge:capture_start_timeout()
+        truthy(ok)
+        equal(snapshot.observerPathSearching, true)
+        equal(snapshot.startHookCalls, 0)
+        equal(snapshots, 1)
+    end)
+
+    test("native hook counters observe post callbacks without overriding return values", function()
+        local previous = _G.RegisterHook
+        local pre, post, calls = nil, nil, 0
+        _G.RegisterHook = function(_, before, after) pre, post = before, after; return 1, 2 end
+        local bridge = Bridge.new({ config = Config.defaults(), logger = {} })
+        local ok, failure = pcall(function()
+            truthy(bridge:_register_hook("invasion_start", "/Script/Fixture:Start", function() calls = calls + 1; return true end))
+            equal(pre(), nil)
+            equal(bridge.hook_observed.invasion_start, nil)
+            equal(post(), nil)
+            equal(bridge.hook_observed.invasion_start, 1)
+            equal(calls, 1)
+        end)
+        _G.RegisterHook = previous
+        truthy(ok, failure)
+    end)
 end

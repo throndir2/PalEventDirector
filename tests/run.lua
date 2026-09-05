@@ -1976,6 +1976,9 @@ test("all returned void calls without lifecycle abort as start failure without r
         announce = function(self, message) self.announcements[#self.announcements + 1] = message; return true end,
         send_chat = function(self, message) self.chats[#self.chats + 1] = message; return true end,
         active_invasion_count = function() return 0 end,
+        capture_start_timeout = function() return true, {
+            observerPathSearching = true, incidentForBase = false, startHookCalls = 0,
+        } end,
     }
     local logger = { info = function() end, warn = function() end, error = function() end }
     local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger, clock = function() return now end })
@@ -1990,6 +1993,8 @@ test("all returned void calls without lifecycle abort as start failure without r
     equal(director.state.status, "aborted")
     equal(scheduler_occurrence.status, "failed")
     equal(director.state.event.status, "aborted")
+    truthy(director.state.event.startTimeoutDiagnostics.observerPathSearching)
+    truthy(director.state.event.abortReason:match("pathfinding remained pending"))
     equal(director.state.event.bases["base-a"].status, "native_start_missing")
     equal(director.state.event.bases["base-b"].status, "dispatch_skipped_probe_unconfirmed")
     equal(director.state.event.finalRankings, nil)

@@ -740,6 +740,19 @@ end
 function Director:_fail_unconfirmed_start(reason)
     local event = self.state.event
     if not event or event.startConfirmedAt then return false, "start already confirmed" end
+    if type(self.bridge.capture_start_timeout) == "function" then
+        local captured, diagnostic = self.bridge:capture_start_timeout()
+        if captured then
+            event.startTimeoutDiagnostics = diagnostic
+            if diagnostic.incidentForBase == true then
+                reason = "native incident exists but its start lifecycle was not confirmed"
+            elseif diagnostic.observerPathSearching == true then
+                reason = "native pathfinding remained pending without a confirmed invasion"
+            end
+        else
+            event.startTimeoutInspectionError = diagnostic
+        end
+    end
     local now = self.clock()
     for _, base in pairs(event.bases) do
         if base.status == "pending" then
@@ -771,6 +784,8 @@ function Director:_fail_unconfirmed_start(reason)
         reason = event.abortReason,
         expectedBases = util.count(event.bases),
         confirmedBases = 0,
+        diagnostic = event.startTimeoutDiagnostics,
+        inspectionError = event.startTimeoutInspectionError,
     })
     if not persisted then
         event.status = "recovery_required"
@@ -781,7 +796,7 @@ function Director:_fail_unconfirmed_start(reason)
     if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
     self:_notify(
         "SIEGE LEAGUE - START FAILED",
-        "No selected-base native invasion lifecycle was confirmed before the discovery timeout. No Siege League results or rewards were created; review the masked dispatch diagnostics before retrying."
+        "Siege League start failed: " .. event.abortReason .. ". No Siege League results or rewards were created; inspect the native diagnostics before retrying."
     )
     return true, event.abortReason
 end

@@ -243,6 +243,7 @@ function Bridge.new(options)
         utility = nil,
         loop_handle = nil,
         registered = false,
+        hook_observed = {},
         periodic_active = false,
         native_fault = nil,
         native_trace_ordinal = 0,
@@ -548,7 +549,10 @@ function Bridge:_register_hook(name, path, callback)
     if type(register) ~= "function" then
         return false, "RegisterHook is unavailable"
     end
-    local ok, pre_id, post_id = pcall(register, path, function() end, callback)
+    local ok, pre_id, post_id = pcall(register, path, function() end, function(...)
+        self.hook_observed[name] = (self.hook_observed[name] or 0) + 1
+        callback(...)
+    end)
     if not ok then
         return false, tostring(pre_id)
     end
@@ -1639,6 +1643,9 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
         observerTargetId = target and util.mask_uid(target.observerId) or "unavailable",
         modelId = target and util.mask_uid(target.modelId) or "unavailable",
         guidSourcesMatch = target and target.keyId == target.observerId and target.keyId == target.modelId or false,
+        declarationHookCalls = self.hook_observed.invasion_declaration or 0,
+        selectionHookCalls = self.hook_observed.select_invaders or 0,
+        startHookCalls = self.hook_observed.invasion_start or 0,
     }
     if target then
         local available_ok, available = call(target.base, "IsAvailable")
@@ -1692,6 +1699,29 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
     local start_log_id = guid_string(property(manager, "StartInvaderLogId"))
     diagnostic.managerStartLogId = start_log_id and util.mask_uid(start_log_id) or "unavailable"
     diagnostic.managerPathFinder = valid(property(manager, "PathFinder"))
+    if phase == "probe-timeout" then
+        local points = property(manager, "InvadeStartLocationList")
+        local source_actors, invokers, waiting = 0, 0, 0
+        local inspected = points ~= nil and pcall(function()
+            points:ForEach(function(_, point)
+                local actor = property(point, "SourceActor")
+                if valid(actor) then
+                    source_actors = source_actors + 1
+                    local invoker = property(actor, "NavInvokerComponent")
+                    if valid(invoker) then
+                        invokers = invokers + 1
+                        if property(invoker, "bIsWaitWorldPartition") == true then waiting = waiting + 1 end
+                    end
+                end
+            end)
+        end)
+        diagnostic.startPointNavigationReadable = inspected == true
+        if inspected then
+            diagnostic.startPointActorsLoaded = source_actors
+            diagnostic.startPointInvokersLoaded = invokers
+            diagnostic.startPointInvokersWaitingForPartition = waiting
+        end
+    end
     local function summarize_keyed_map(map_name)
         local map = property(manager, map_name)
         if not map then return nil, nil, map_name .. " unavailable" end
@@ -1806,7 +1836,28 @@ function Bridge:start_all_invasions()
     if not valid(self.event_manager) then
         return false, "pinned world invasion manager became unavailable before dispatch"
     end
-    self.dispatch_order = util.sorted_keys(self.expected_bases)
+    local selected, order = self:_native_step("probe-selection", function()
+        local occupied = {}
+        local observers = property(self.event_manager, "Observers")
+        if not observers then error("Observer map is unavailable for probe selection", 0) end
+        observers:ForEach(function(key, value)
+            local id = guid_string(key)
+            if id and self.expected_bases[id] then
+                local observer = unwrap(value)
+                local handles = container_count(property(observer, "PlayerHandlesCache"))
+                local timer = property(observer, "PlayerInBaseCampTimer")
+                occupied[id] = (type(handles) == "number" and handles > 0) or (type(timer) == "number" and timer > 0)
+            end
+        end)
+        local ids = util.sorted_keys(self.expected_bases)
+        table.sort(ids, function(left, right)
+            if (occupied[left] == true) ~= (occupied[right] == true) then return occupied[left] == true end
+            return left < right
+        end)
+        return ids
+    end)
+    if not selected then return false, order end
+    self.dispatch_order = order
     self.probe_base_id = self.dispatch_order[1]
     self.probe_confirmed = false
     self.fanout_dispatched = false
@@ -1825,6 +1876,17 @@ function Bridge:start_all_invasions()
         return false, { requested = 0, requests = requests, error = probe.error or "probe dispatch failed" }
     end
     return true, { requested = 1, requests = requests, phase = "probe" }
+end
+
+function Bridge:capture_start_timeout()
+    if not self.probe_base_id or not valid(self.event_manager) then
+        return false, "Probe manager or target is unavailable at timeout."
+    end
+    local ok, snapshot = self:_native_step("dispatch-timeout",
+        function() return self:_dispatch_snapshot(self.event_manager, self.probe_base_id, "probe-timeout") end)
+    if not ok then return false, snapshot end
+    self:_log_dispatch_snapshot(snapshot)
+    return true, snapshot
 end
 
 function Bridge:continue_invasion_dispatch()
