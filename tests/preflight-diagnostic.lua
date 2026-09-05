@@ -23,14 +23,39 @@ return function(test, equal, truthy)
                 operations[#operations + 1] = name
                 local before = records[#records]
                 truthy(before and before.step:match("%.before$"), "native operation had no flushed before-marker")
-                if options.failure == name then error(setmetatable({}, { __tostring = function() error("native error was stringified") end })) end
+                if options.failure == name then
+                    local value = options.failure_value
+                    if value == nil then value = setmetatable({}, { __tostring = function() error("native error was stringified") end }) end
+                    error(value, 0)
+                end
                 return callback(...)
             end
         end
         local function object(name, methods)
             methods = methods or {}
             methods.IsValid = call(name .. ".IsValid", function() return options.invalid ~= name end)
-            return setmetatable(methods, { __tostring = function() error("native object was stringified") end })
+            local iterator = methods.ForEachProperty
+            methods.ForEachProperty = nil
+            local enumerator = iterator
+            if type(iterator) == "function" then
+                enumerator = call(name .. ".ForEachProperty", function(receiver, callback)
+                    equal(receiver, methods, "ForEachProperty requires the explicit wrapper receiver")
+                    equal(type(callback), "function")
+                    return iterator(callback)
+                end)
+            end
+            local lookup = call(name .. ".ForEachProperty.lookup", function() return enumerator end)
+            return setmetatable(methods, {
+                __tostring = function() error("native object was stringified") end,
+                __index = function(_, key) if key == "ForEachProperty" then return lookup() end end,
+            })
+        end
+        local function enumerate_values(callback, values)
+            for _, value in ipairs(values) do
+                local stop = callback(value)
+                truthy(stop == nil or stop == true, "false continuation triggers the pinned double-removal hazard")
+                if stop then break end
+            end
         end
         local world = object("world", { GetAddress = call("world.GetAddress", function() return 123 end) })
         local manager = object("manager", {
@@ -47,10 +72,7 @@ return function(test, equal, truthy)
         }) }
         local settings_type = object("settings-type", {
             GetFullName = call("settings-type.GetFullName", function() return "ScriptStruct /Script/Pal.PalOptionWorldSettings" end),
-            ForEachProperty = call("settings-type.ForEachProperty", function(callback)
-                equal(type(callback), "function", "ForEachProperty requires dot-call callback syntax")
-                for _, value in ipairs(fields) do if callback(value) then break end end
-            end),
+            ForEachProperty = function(callback) enumerate_values(callback, fields) end,
         })
         local function class(name)
             return object(name, { GetFullName = call(name .. ".GetFullName", function() return "Class " .. name end) })
@@ -70,12 +92,9 @@ return function(test, equal, truthy)
             })
             local enumerate
             if not options.missing_enumerator then
-                enumerate = call(method .. ".ForEachProperty", function(callback)
-                    equal(type(callback), "function", "ForEachProperty requires dot-call callback syntax")
-                    callback(input)
-                    callback(output)
-                end)
+                enumerate = function(callback) enumerate_values(callback, { input, output }) end
             end
+            if options.noncallable_enumerator then enumerate = {} end
             return object(method, {
                 type = call(method .. ".type", function() return "UFunction" end),
                 GetFunctionFlags = call(method .. ".flags", function() return options.flags or 0x2400 end),
@@ -176,7 +195,7 @@ return function(test, equal, truthy)
     end)
 
     test("diagnostic rejects mismatched UFunction shape before invoking manager", function()
-        for _, options in ipairs({ { flags = 0 }, { return_offset = 16 }, { invalid = "utility" }, { bad_api = true }, { missing_enumerator = true } }) do
+        for _, options in ipairs({ { flags = 0 }, { return_offset = 16 }, { invalid = "utility" }, { bad_api = true }, { missing_enumerator = true }, { noncallable_enumerator = true } }) do
             local diagnostic, _, operations = fixture(options)
             finish(diagnostic, operations)
             for _, name in ipairs(operations) do truthy(name ~= "utility.GetInvaderManager") end
@@ -203,7 +222,7 @@ return function(test, equal, truthy)
     test("diagnostic loses no boundary to error formatting or failed breadcrumb writes", function()
         local diagnostic, records, operations = fixture({ failure = "utility.GetInvaderManager" })
         local reason = finish(diagnostic, operations)
-        truthy(reason:match("%[lua%-operation%].*raw error suppressed"))
+        truthy(reason:match("%[lua%-operation/non%-string%-error%].*raw error suppressed"))
         truthy(records[#records].step:match("get%-invader%-manager.before$"))
         local count = #operations
         equal(diagnostic:run(TOKEN), false)
@@ -224,11 +243,65 @@ return function(test, equal, truthy)
     test("metadata enumeration failures use a bounded privacy-safe classification", function()
         local diagnostic, records, operations = fixture({ failure = "GetInvaderManager.ForEachProperty" })
         local reason = finish(diagnostic, operations)
-        truthy(reason:match("%[metadata%-enumeration%].*raw error suppressed"))
+        truthy(reason:match("%[metadata%-enumeration/non%-string%-error%].*raw error suppressed"))
         truthy(records[#records].step:match("manager%-properties.before$"))
         for _, record in ipairs(records) do
             equal(record.failure, nil)
             equal(util.count(record), 3)
+        end
+    end)
+
+    test("property method exposure has its own boundary and never falls back to another wrapper", function()
+        for _, options in ipairs({
+            { failure = "GetInvaderManager.ForEachProperty.lookup" },
+            { missing_enumerator = true },
+            { noncallable_enumerator = true },
+        }) do
+            local diagnostic, records, operations = fixture(options)
+            local reason = finish(diagnostic, operations)
+            if options.failure then
+                truthy(reason:match("%[metadata%-method%-lookup/non%-string%-error%]"))
+                truthy(records[#records].step:match("manager%-properties%-method.before$"))
+            else
+                truthy(reason:match("method is unavailable or not callable"))
+                truthy(records[#records].step:match("manager%-properties%-method.after$"))
+            end
+            for _, name in ipairs(operations) do
+                truthy(name ~= "GetInvaderManager.ForEachProperty" and name ~= "utility.GetInvaderManager")
+            end
+            local count = #operations
+            equal(diagnostic:run(TOKEN), false)
+            equal(#operations, count)
+        end
+    end)
+
+    test("diagnostic error details are bounded allowlisted and retained after halt", function()
+        local marker = "DO_NOT_EMIT_FIXTURE_PAYLOAD"
+        for _, case in ipairs({
+            { value = "A function requiring userdata as param #1 was called without userdata at param #1", code = "receiver-required" },
+            { value = "has no instance inside lua_instances unordered map", code = "unregistered-lua-state" },
+            { value = "userdata_internal_type", code = "invalid-userdata" },
+            { value = "[Lua::call_function] attempt to call a nil value", code = "non-callable-value" },
+            { value = "[Lua::call_function] unexpected callback failure", code = "callback-error" },
+            { value = string.rep("x", 1024) .. "userdata_internal_type", code = "unclassified-lua-error" },
+            { value = "unrecognized failure", code = "unclassified-lua-error" },
+            { value = false, code = "non-string-error" },
+        }) do
+            local value = case.value
+            if type(value) == "string" then value = value .. " " .. marker end
+            local diagnostic, records, operations = fixture({
+                failure = "GetInvaderManager.ForEachProperty", failure_value = value,
+            })
+            local reason = finish(diagnostic, operations)
+            truthy(reason:find("[metadata-enumeration/" .. case.code .. "]", 1, true))
+            equal(reason:find(marker, 1, true), nil)
+            truthy(#reason < 240)
+            truthy(records[#records].step:match("manager%-properties.before$"))
+            local count = #operations
+            local ok, halted_reason = diagnostic:run(TOKEN)
+            equal(ok, false)
+            equal(halted_reason, reason)
+            equal(#operations, count)
         end
     end)
 

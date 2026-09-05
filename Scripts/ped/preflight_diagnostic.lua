@@ -8,8 +8,25 @@ local TOKEN = "confirm-disposable-readonly"
 local CALL_BUFFER_BYTES = 0x200 -- Verified in the pinned UE4SS LuaUFunction.hpp.
 local FAILURE_CLASSES = {
     ["lua-operation"] = true,
+    ["metadata-method-lookup"] = true,
     ["metadata-enumeration"] = true,
 }
+local ERROR_SIGNATURES = {
+    { text = "A function requiring userdata as param #1 was called without userdata at param #1", code = "receiver-required" },
+    { text = "has no instance inside lua_instances unordered map", code = "unregistered-lua-state" },
+    { text = "userdata_internal_type", code = "invalid-userdata" },
+    { text = "attempt to call a nil value", code = "non-callable-value" },
+    { text = "[Lua::call_function]", code = "callback-error" },
+}
+
+local function failure_detail(value)
+    if type(value) ~= "string" then return "non-string-error" end
+    local prefix = value:sub(1, 1024)
+    for _, signature in ipairs(ERROR_SIGNATURES) do
+        if prefix:find(signature.text, 1, true) then return signature.code end
+    end
+    return "unclassified-lua-error"
+end
 
 local function integer(value)
     return type(value) == "number" and value == math.floor(value) and value == value
@@ -70,22 +87,26 @@ function Diagnostic:_lookup(name, path)
 end
 
 function Diagnostic:_properties(name, owner, maximum)
+    local enumerate = self:_op(name .. "-properties-method", true, function()
+        return owner.ForEachProperty
+    end, false, "metadata-method-lookup")
+    self:_require(type(enumerate) == "function",
+        "Property enumeration method is unavailable or not callable on this wrapper; signature validation stopped.")
     local result = self:_op(name .. "-properties", true, function()
-        local enumerate = owner.ForEachProperty
-        if type(enumerate) ~= "function" then return { status = "method-unavailable" } end
         local properties = {}
         -- This callback only retains metadata handles; it calls no reflected methods.
-        -- Pinned UE4SS binds the owner and reads the callback from argument 1.
-        enumerate(function(property)
+        -- LuaMadeSimple consumes the explicit receiver before reading the callback.
+        enumerate(owner, function(property)
             properties[#properties + 1] = property
-            return #properties > maximum
+            if #properties > maximum then return true end
+            -- get_bool(false) pops the result before the pinned iterator's discard.
+            -- Nil continuation avoids that double removal; true still bounds work.
+            return nil
         end)
-        return { status = "ok", properties = properties }
+        return properties
     end, false, "metadata-enumeration")
-    self:_require(type(result) == "table" and result.status == "ok" and type(result.properties) == "table",
-        "Pinned UE4SS wrapper does not expose compatible property enumeration; signature validation stopped.")
-    self:_require(#result.properties <= maximum, "Unexpected property inventory; signature validation stopped.")
-    return result.properties
+    self:_require(type(result) == "table" and #result <= maximum, "Unexpected property inventory; signature validation stopped.")
+    return result
 end
 
 function Diagnostic:_signature(label, function_name, result_kind, result_class)
@@ -254,9 +275,10 @@ function Diagnostic:run(confirmation, expected_step)
     -- pcall only contains ordinary Lua errors. Stack-cookie fail-fast is NOT catchable.
     local ok, result = pcall(self.pending.callback)
     if not ok then
-        local failure_class = self.pending.failure_class
+        self.stop_reason = "Read-only operation failed [" .. self.pending.failure_class .. "/" .. failure_detail(result)
+            .. "]; raw error suppressed. Preserve the before-marker; do not retry."
         self:_halt()
-        return false, "Read-only operation failed [" .. failure_class .. "]; raw error suppressed. Preserve the before-marker; do not retry."
+        return false, self.stop_reason
     end
     local object_valid = self.pending.object_valid
     if self.pending.is_validity_check then object_valid = result == true end
