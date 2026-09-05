@@ -94,6 +94,14 @@ try {
         $result.EnvironmentScope -ne 'child-process-only') {
         throw 'Matching launcher validation returned the wrong launch contract.'
     }
+    $profileRecordPath = Join-Path $matching.ServerRoot 'PalEventDirectorDeployments\deployment.json'
+    $profileRecord = Get-Content $profileRecordPath -Raw | ConvertFrom-Json
+    $profileRecord.deliveryProfile = 'laboratory-native-test'
+    [IO.File]::WriteAllText($profileRecordPath, ($profileRecord | ConvertTo-Json -Depth 8))
+    $profileResult = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -ValidateOnly
+    if ($profileResult.DeliveryProfile -ne 'laboratory-native-test' -or $profileResult.NativePreflightRequired -ne $true) {
+        throw 'Laboratory launch did not retain its preflight requirement.'
+    }
 
     $installerMatching = New-LauncherFixture -Name 'matching' -ManifestBuildId '24575149' `
         -DeploymentBuildId '24575149' -Root $InstallerFixtureRoot

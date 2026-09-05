@@ -1170,6 +1170,11 @@ end
 
 function Director:_handle_chat_start(principal, requested_profile, countdown_minutes, now)
     local uid = principal.uid
+    local ready, readiness_error = native_start_guard(self.bridge)
+    if not ready then
+        self:_chat("Siege League start blocked: " .. readiness_error, uid)
+        return true
+    end
     local authorized, denial, authority = self:_authorize_chat_command(principal, "start")
     if not authorized then
         self:_chat("Siege League start denied: " .. tostring(denial) .. ".", uid)
@@ -1225,7 +1230,6 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
 end
 
 function Director:handle_chat(principal, message)
-    if not native_start_guard(self.bridge) then return false end
     principal = self:_normalize_chat_principal(principal)
     if not principal then return false end
     local uid = principal.uid
@@ -1243,7 +1247,8 @@ function Director:handle_chat(principal, message)
     if words[1] == "!siege" then
         local action = words[2] or "status"
         if action == "status" then
-            self:_chat(self:status_text(), uid)
+            local ready, reason = native_start_guard(self.bridge)
+            self:_chat(self:status_text() .. (ready and "" or " " .. reason), uid)
             return true
         elseif action == "profiles" then
             self:_chat(self:profiles_text(), uid)
@@ -1295,10 +1300,12 @@ function Director:handle_operator_command(command, source, principal)
     end
     local allowed, quarantine_reason = native_start_guard(self.bridge)
     if not allowed then
-        if action == "status" and source == "console" then
-            return true, quarantine_reason .. " " .. self:status_text()
+        if action ~= "status" and action ~= "profiles" and action ~= "schedule" and action ~= "leaderboard" then
+            if source and source:match("^chat:") then
+                self:_chat("PED blocked: " .. quarantine_reason, principal and principal.uid)
+            end
+            return false, quarantine_reason
         end
-        return false, quarantine_reason
     end
     if source and source:match("^chat:") then
         local authorized, denial = self:_authorize_chat_command(principal, action)
@@ -1311,7 +1318,7 @@ function Director:handle_operator_command(command, source, principal)
     if action == "start" then
         ok, result = self:arm_start(source or "console", words[2], words[3])
     elseif action == "status" then
-        ok, result = true, self:status_text()
+        ok, result = true, self:status_text() .. (allowed and "" or " " .. quarantine_reason)
     elseif action == "leaderboard" then
         ok, result = true, self:leaderboard_text()
     elseif action == "profiles" then

@@ -105,15 +105,22 @@ const packageJson = JSON.parse(await readFile(path.join(root, 'package.json'), '
 if (info && packageJson.version !== info.Version) failures.push('package.json and Info.json versions differ');
 const versionLua = await readFile(path.join(root, 'Scripts/ped/version.lua'), 'utf8');
 if (info && !versionLua.includes(`version = "${info.Version}"`)) failures.push('Lua runtime and Info.json versions differ');
+const deliveryProfile = versionLua.match(/delivery_profile\s*=\s*"([^"]+)"/)?.[1];
+if (!['preflight-diagnostic-only', 'laboratory-native-test'].includes(deliveryProfile)) failures.push('unsupported Lua delivery profile');
 const palworldAdapter = await readFile(path.join(root, 'Scripts/ped/palworld.lua'), 'utf8');
 for (const requiredGuard of [
   'function Bridge:native_start_guard()',
   'Native starts are quarantined',
+  'diagnostic.native_ready',
+  'function Bridge:_world_invaders_enabled',
   'function Bridge:diagnose_preflight',
-  'if not native_enabled then',
+  'if not hooks_enabled then',
   'function(context, return_value, grade, biome, out_members)',
 ]) {
   if (!palworldAdapter.includes(requiredGuard)) failures.push(`Palworld adapter is missing required guard: ${requiredGuard}`);
+}
+if (/call\([^,\n]+,\s*["']GetOptionWorldSettings["']|:\s*GetOptionWorldSettings\s*\(/.test(palworldAdapter)) {
+  failures.push('runtime adapter may not invoke the oversized by-value settings getter');
 }
 const directorSource = await readFile(path.join(root, 'Scripts/ped/director.lua'), 'utf8');
 for (const requiredGuard of [
@@ -211,7 +218,7 @@ if (await exists('operations/imouto/Start-PalEventDirectorImouto.ps1')) {
     '$env:PAL_EVENT_DIRECTOR_UE4SS_TAG = $ExpectedRuntimeTag',
     '$env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = $ExpectedRuntimeApi',
     'Get-FileHash $RuntimeDll -Algorithm SHA256',
-    "deliveryProfile -ne 'preflight-diagnostic-only'",
+    "deliveryProfile -notin @('preflight-diagnostic-only', 'laboratory-native-test')",
     "$deployment.version -ne '0.1.0-alpha.3'",
     "$deployment.ue4ssTag -ne '2281fa31'",
   ]) {
@@ -226,12 +233,13 @@ if (await exists('operations/imouto/Enable-PalEventDirectorLaboratory.ps1')) {
     "ExpectedUe4ssApiVersion = '3.0.1'",
     "ExpectedBuildId = '24575149'",
     "AuthorizationPolicy = 'operatorOrPalworldAdmin'",
-    '$config.capabilities.chatCommands = $false',
-    '$config.capabilities.observeCombat = $false',
-    '$config.capabilities.observeInvasions = $false',
-    '$config.capabilities.startAllInvasions = $false',
-    '$config.capabilities.substituteBountyMembers = $false',
-    "Status = 'PreflightDiagnosticsOnly'",
+    "$NativeTest = $deployment.deliveryProfile -eq 'laboratory-native-test'",
+    '$config.capabilities.chatCommands = $NativeTest',
+    '$config.capabilities.observeCombat = $NativeTest',
+    '$config.capabilities.observeInvasions = $NativeTest',
+    '$config.capabilities.startAllInvasions = $NativeTest',
+    '$config.capabilities.substituteBountyMembers = $NativeTest',
+    "'LaboratoryTestPreflightRequired'",
     '$config.capabilities.grantItems = $false',
     '$schedule.enabled = $false',
     "MandatoryWarnings = '600,300,60'",

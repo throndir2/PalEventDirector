@@ -236,7 +236,7 @@ if ($VerifiedBuildId -ne $ExpectedBuildId) { throw "Laboratory activation requir
 
 $deployment = Get-Content $DeploymentPath -Raw | ConvertFrom-Json
 if ($deployment.schemaVersion -ne 1 -or [string]$deployment.packageName -ne 'PalEventDirector' -or
-    [string]$deployment.deliveryProfile -ne 'preflight-diagnostic-only' -or
+    [string]$deployment.deliveryProfile -notin @('preflight-diagnostic-only', 'laboratory-native-test') -or
     [string]$deployment.serverBuildId -ne $VerifiedBuildId -or [string]$deployment.ue4ssApiVersion -ne $ExpectedUe4ssApiVersion -or
     [string]$deployment.ue4ssDllSha256 -ine $ExpectedUe4ssDllSha256 -or
     (Get-FileHash $Ue4ssDllPath -Algorithm SHA256).Hash -ine $ExpectedUe4ssDllSha256) {
@@ -262,9 +262,15 @@ catch { throw "PED configuration is invalid JSON: $($_.Exception.Message)" }
 Assert-PedConfigSchema3 -Config $config
 if ([string]$config.mode -ne 'laboratory') { throw 'Laboratory activation requires laboratory mode.' }
 
+$NativeTest = $deployment.deliveryProfile -eq 'laboratory-native-test'
+$PreparationAction = if ($NativeTest) {
+    'enable laboratory chat/combat/invasion controls; require a fresh local preflight before any start; disable schedules and rewards'
+} else {
+    'prepare read-only preflight diagnostics; disable every gameplay capability and recurring schedule'
+}
 if (-not $PSCmdlet.ShouldProcess(
         $ConfigPath,
-    "prepare read-only preflight diagnostics; disable every gameplay capability and recurring schedule")) {
+        $PreparationAction)) {
     return
 }
 
@@ -279,11 +285,11 @@ if (-not $PSCmdlet.ShouldProcess(
     $config.compatibility.allowedServerBuildIds = @($VerifiedBuildId)
     $config.compatibility.allowedUe4ssVersions = @($ExpectedUe4ssApiVersion)
     $config.siegeLeague.chatStartPolicy = $AuthorizationPolicy
-    $config.capabilities.chatCommands = $false
-    $config.capabilities.observeCombat = $false
-    $config.capabilities.observeInvasions = $false
-    $config.capabilities.startAllInvasions = $false
-    $config.capabilities.substituteBountyMembers = $false
+    $config.capabilities.chatCommands = $NativeTest
+    $config.capabilities.observeCombat = $NativeTest
+    $config.capabilities.observeInvasions = $NativeTest
+    $config.capabilities.startAllInvasions = $NativeTest
+    $config.capabilities.substituteBountyMembers = $NativeTest
     $config.capabilities.grantItems = $false
     $config.diagnostics.traceHooks = $false
     $config.diagnostics.observationProbe = $false
@@ -294,9 +300,9 @@ if (-not $PSCmdlet.ShouldProcess(
         [IO.File]::WriteAllText($temporary, (($config | ConvertTo-Json -Depth 30) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         $verified = Get-Content $temporary -Raw | ConvertFrom-Json
         Assert-PedConfigSchema3 -Config $verified
-        $disabledCapabilities = @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers', 'grantItems')
-        foreach ($capability in $disabledCapabilities) {
-            if ($verified.capabilities.$capability -ne $false) { throw "Diagnostic preparation failed to disable $capability." }
+        $gameplayCapabilities = @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')
+        foreach ($capability in $gameplayCapabilities) {
+            if ($verified.capabilities.$capability -ne $NativeTest) { throw "Preparation failed to configure $capability for the attested profile." }
         }
         if ($verified.capabilities.grantItems -ne $false) { throw 'Activation must leave grantItems disabled.' }
         if (@(ConvertTo-FlatArray $verified.schedules | Where-Object { $_.enabled }).Count -ne 0) { throw 'Activation must leave all schedules disabled.' }
@@ -308,13 +314,14 @@ if (-not $PSCmdlet.ShouldProcess(
     }
 
     [pscustomobject]@{
-        Status = 'PreflightDiagnosticsOnly'
+        Status = $(if ($NativeTest) { 'LaboratoryTestPreflightRequired' } else { 'PreflightDiagnosticsOnly' })
         ServerBuildId = $VerifiedBuildId
         Ue4ssApiVersion = $ExpectedUe4ssApiVersion
         ConfigSchema = 3
         AuthorizationPolicy = $AuthorizationPolicy
-        EnabledCapabilities = ''
+        EnabledCapabilities = $(if ($NativeTest) { $gameplayCapabilities -join ',' } else { '' })
         NativeStartsQuarantined = $true
+        NativePreflightRequired = $NativeTest
         DiagnosticCommand = 'ped diagnose-preflight; then confirm-disposable-readonly with the exact previewed step'
         GrantItems = $false
         EnabledSchedules = 0

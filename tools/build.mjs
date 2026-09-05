@@ -11,6 +11,9 @@ const sourceRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, e
 const sourceDirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim() !== '';
 if (process.env.REQUIRE_CLEAN_BUILD === '1' && sourceDirty) throw new Error('clean source is required before build');
 const info = JSON.parse(await readFile(path.join(root, 'Info.json'), 'utf8'));
+const versionSource = await readFile(path.join(root, 'Scripts', 'ped', 'version.lua'), 'utf8');
+const deliveryProfile = versionSource.match(/delivery_profile\s*=\s*"([^"]+)"/)?.[1];
+if (!['preflight-diagnostic-only', 'laboratory-native-test'].includes(deliveryProfile)) throw new Error('unsupported delivery profile');
 const outputDirectory = path.join(root, 'dist');
 const archiveName = `${info.PackageName}-${info.Version}.zip`;
 const archivePath = path.join(outputDirectory, archiveName);
@@ -108,7 +111,7 @@ const manifest = {
   schemaVersion: 1,
   packageName: info.PackageName,
   version: info.Version,
-  deliveryProfile: 'preflight-diagnostic-only',
+  deliveryProfile,
   sourceRevision: revision,
   sourceDirty: dirty,
   fileCount: files.length,

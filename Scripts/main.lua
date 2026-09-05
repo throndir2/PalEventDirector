@@ -44,7 +44,7 @@ local function boot()
     if not config then
         error(config_error)
     end
-    config = Config.diagnostic_session(config)
+    config = Config.diagnostic_session(config, version.delivery_profile)
     logger.level = ({ debug = 10, info = 20, warn = 30, error = 40 })[config.runtime.logLevel] or 20
     local store = Store.new(data_directory, logger)
     local command_directory = path.join(data_directory, "preflight-commands")
@@ -78,7 +78,7 @@ local function boot()
         grantItems = config.capabilities.grantItems,
     })
     if created then
-        logger:warn("Native mutation is quarantined in this diagnostic-only revision; configuration cannot re-enable it")
+        logger:warn("Native starts require the laboratory profile, enabled capabilities, and a completed local preflight; schedules and item grants remain disabled")
     end
 end
 

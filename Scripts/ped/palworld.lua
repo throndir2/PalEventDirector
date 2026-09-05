@@ -61,6 +61,9 @@ local function property(object, name)
 end
 
 local function call(object, method_name, ...)
+    if method_name == "GetOptionWorldSettings" then
+        return false, "By-value world-settings getter is blocked by the pinned UE4SS call-buffer limit"
+    end
     object = unwrap(object)
     if not valid(object) then
         return false, "invalid object for " .. method_name
@@ -238,7 +241,9 @@ function Bridge.new(options)
         utility = nil,
         loop_handle = nil,
         registered = false,
+        periodic_active = false,
         diagnostic_command_directory = options.diagnostic_command_directory,
+        delivery_profile = options.delivery_profile or require("ped.version").delivery_profile,
     }, Bridge)
 end
 
@@ -247,8 +252,16 @@ function Bridge:attach_director(director)
 end
 
 function Bridge:native_start_guard()
-    -- Deliberately not a configuration switch. A new reviewed revision must lift this.
-    return false, "Native starts are quarantined after the IMOUTO preflight crash; use console diagnose-preflight only."
+    if self.delivery_profile ~= "laboratory-native-test" or self.config.mode ~= "laboratory" then
+        return false, "Native starts are quarantined outside the guarded laboratory test profile."
+    end
+    if not self.config.capabilities.startAllInvasions then return false, "capabilities.startAllInvasions is disabled." end
+    if not self.registered or not self.periodic_active then return false, "Laboratory hooks and polling are not ready." end
+    local diagnostic = self.preflight_diagnostic
+    if not diagnostic or not diagnostic.completed or not diagnostic.native_ready or not valid(diagnostic.ready_world) then
+        return false, "Native starts are locked until the local stepped preflight completes for the current world."
+    end
+    return true
 end
 
 function Bridge:diagnose_preflight(confirmation, expected_step)
@@ -258,6 +271,7 @@ function Bridge:diagnose_preflight(confirmation, expected_step)
     if not self.preflight_diagnostic then
         self.preflight_diagnostic = PreflightDiagnostic.new({
             config = self.config,
+            native_readiness = self.delivery_profile == "laboratory-native-test",
             record = function(step, build_id, object_valid)
                 return self.logger:preflight_breadcrumb(step, build_id, object_valid)
             end,
@@ -412,6 +426,10 @@ function Bridge:_resolve_world_manager(roster)
         if not valid(player.world) then
             return nil, nil, "online player world is invalid for " .. util.mask_uid(player.uid)
         end
+        if self.preflight_diagnostic and self.preflight_diagnostic.native_ready
+            and not same_object(player.world, self.preflight_diagnostic.ready_world) then
+            return nil, nil, "player world differs from the world approved by the local preflight"
+        end
         local manager_ok, candidate = call(utility, "GetInvaderManager", player.world)
         if not manager_ok or not valid(candidate) then
             return nil, nil, "world-scoped PalInvaderManager lookup failed for " .. util.mask_uid(player.uid)
@@ -433,6 +451,22 @@ function Bridge:_resolve_world_manager(roster)
         return nil, nil, "world or PalInvaderManager address is unavailable"
     end
     return manager, world
+end
+
+function Bridge:_world_invaders_enabled(world)
+    if not valid(world) then return false, "world is invalid for invasion settings" end
+    local ok, options = call(self:_utility(), "GetOptionSubsystem", world)
+    if not ok or not valid(options) then return false, "world-scoped option subsystem is unavailable" end
+    local world_ok, options_world = call(options, "GetWorld")
+    if not world_ok or not same_object(options_world, world) then
+        return false, "option subsystem belongs to a different world"
+    end
+    -- This is a reflected property view, not the oversized by-value UFunction.
+    local settings = property(options, "OptionWorldSettings")
+    local enabled = property(settings, "bEnableInvaderEnemy")
+    if type(enabled) ~= "boolean" then return false, "native invasion setting is unreadable" end
+    if not enabled then return false, "native enemy invasions are disabled in world settings" end
+    return true
 end
 
 function Bridge:_manager_hook_scope(context)
@@ -1151,11 +1185,19 @@ function Bridge:register()
     end
     local required = {}
     local native_enabled = self:native_start_guard()
-    if native_enabled and self.config.capabilities.observeCombat then
+    local laboratory = self.delivery_profile == "laboratory-native-test"
+    local hooks_enabled = laboratory or native_enabled
+    if laboratory and (self.config.capabilities.chatCommands or self.config.capabilities.observeCombat
+        or self.config.capabilities.observeInvasions or self.config.capabilities.substituteBountyMembers) then
+        if os.getenv("COMPUTERNAME") ~= "IMOUTO" then return false, "Laboratory hooks are IMOUTO-only." end
+        local environment_ok, environment_error = self:preflight_environment()
+        if not environment_ok then return false, environment_error end
+    end
+    if hooks_enabled and self.config.capabilities.observeCombat then
         required[#required + 1] = { "damage", HOOKS.damage, function(_, parameter) self:_on_damage(parameter) end }
         required[#required + 1] = { "death", HOOKS.death, function(_, parameter) self:_on_death(parameter) end }
     end
-    if native_enabled and self.config.capabilities.observeInvasions then
+    if hooks_enabled and self.config.capabilities.observeInvasions then
         required[#required + 1] = { "invasion_declaration", HOOKS.invasion_declaration, function(context)
             local scope = self:_manager_hook_scope(context)
             if scope then
@@ -1228,30 +1270,24 @@ function Bridge:register()
             if self:_manager_hook_scope(context) == "event" and self.director then self.director:on_invasion_cancel() end
         end }
     end
-    if native_enabled and self.config.capabilities.substituteBountyMembers then
+    if hooks_enabled and self.config.capabilities.substituteBountyMembers then
         required[#required + 1] = { "select_invaders", HOOKS.select_invaders, function(context, return_value, grade, biome, out_members)
             self:_on_select_invaders_post(context, return_value, grade, biome, out_members)
         end }
     end
-    if native_enabled and self.config.capabilities.chatCommands then
+    if hooks_enabled and self.config.capabilities.chatCommands then
         required[#required + 1] = { "chat", HOOKS.chat, function(context, message)
             if not self.director then return end
+            local text = to_string(message)
+            if not util.starts_with(util.trim(text), "!") then return end
             local controller = unwrap(context)
             local principal, principal_error = self:command_principal(controller)
             if principal then
-                self.director:handle_chat(principal, to_string(message))
+                self.director:handle_chat(principal, text)
             else
                 self.logger:warn("Ignored chat command without an authoritative principal", { reason = principal_error })
             end
         end }
-    end
-
-    for _, specification in ipairs(required) do
-        local ok, hook_error = self:_register_hook(specification[1], specification[2], specification[3])
-        if not ok then
-            self:unregister()
-            return false, specification[1] .. " hook failed: " .. hook_error
-        end
     end
 
     local register_console = global("RegisterConsoleCommandGlobalHandler")
@@ -1281,6 +1317,13 @@ function Bridge:register()
         end)
         if not loop_ok then ingress.active = false; return false, "Local diagnostic ingress initialization failed" end
     end
+    for _, specification in ipairs(required) do
+        local ok, hook_error = self:_register_hook(specification[1], specification[2], specification[3])
+        if not ok then
+            self:unregister()
+            return false, specification[1] .. " hook failed: " .. hook_error
+        end
+    end
     if type(register_console) == "function" then
         local console_ok = pcall(register_console, "ped", function(command, parts, output)
             if not self.registered then return true end
@@ -1299,29 +1342,33 @@ function Bridge:register()
             return true
         end)
         if not console_ok and not native_enabled then
-            if self.diagnostic_ingress then self.diagnostic_ingress.active = false end
+            self:unregister()
             return false, "Preflight diagnostic console registration failed"
         end
     end
 
-    if not native_enabled then
+    if not hooks_enabled then
         self.registered = true
         self.logger:warn("Diagnostic-only build: no gameplay hooks or automatic native steps; local file ingress accepts one explicit operator request at a time")
         return true
     end
 
     local poll = function()
+        if not self.periodic_active then return true end
+        if not self.registered then return false end
         if self.director then
             local ok, tick_error = xpcall(function() self.director:tick() end, debug.traceback)
             if not ok then
                 self.logger:error("Director tick failed", { error = tick_error })
             end
         end
+        return false
     end
+    self.periodic_active = true
     local loop = global("LoopInGameThreadWithDelay")
     if type(loop) == "function" then
         local ok, handle = pcall(loop, self.config.runtime.pollIntervalMs, poll)
-        if ok then
+        if ok and handle ~= false then
             self.loop_handle = handle
         else
             self:unregister()
@@ -1331,20 +1378,33 @@ function Bridge:register()
         local legacy_loop = global("LoopAsync")
         local execute_game_thread = global("ExecuteInGameThread")
         if type(legacy_loop) == "function" and type(execute_game_thread) == "function" then
-            legacy_loop(self.config.runtime.pollIntervalMs, function()
-                execute_game_thread(poll)
+            local loop_ok, loop_result = pcall(legacy_loop, self.config.runtime.pollIntervalMs, function()
+                if not self.periodic_active then return true end
+                if not self.registered then return false end
+                local queued, accepted = pcall(execute_game_thread, poll)
+                if not queued or accepted == false then
+                    self.periodic_active = false
+                    self.logger:error("Game-thread polling stopped; native starts are locked.")
+                    return true
+                end
                 return false
             end)
+            if not loop_ok or loop_result == false then
+                self:unregister()
+                return false, "periodic scheduler registration failed"
+            end
         else
             self:unregister()
             return false, "no supported periodic game-thread scheduler"
         end
     end
     self.registered = true
+    if laboratory then self.logger:warn("Laboratory test controls loaded; native starts require completed local preflight. No invasion starts automatically.") end
     return true
 end
 
 function Bridge:unregister()
+    self.periodic_active = false
     if self.diagnostic_ingress then self.diagnostic_ingress.active = false end
     local unregister = global("UnregisterHook")
     if type(unregister) == "function" then
@@ -1434,10 +1494,8 @@ function Bridge:preflight_start(profile_id)
     local roster = self:list_online_players()
     local manager, world, manager_error = self:_resolve_world_manager(roster)
     if not manager then return false, manager_error end
-    local utility = self:_utility()
-    local settings_ok, settings = call(utility, "GetOptionWorldSettings", world)
-    local invaders_enabled = settings_ok and property(settings, "bEnableInvaderEnemy") or nil
-    if invaders_enabled ~= true then return false, "native enemy invasions are disabled or unreadable in world settings" end
+    local invaders_enabled, settings_error = self:_world_invaders_enabled(world)
+    if not invaders_enabled then return false, settings_error end
     local registered_ids, registration_error = self:_registered_base_ids(manager)
     if not registered_ids then
         return false, registration_error
@@ -1599,14 +1657,7 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
     diagnostic.startLocationCount, diagnostic.startLocationForBase, diagnostic.startLocationInspectionError = summarize_keyed_map("InvadeStartLocationList")
     diagnostic.savedInvaderStateCount, diagnostic.savedInvaderStateForBase, diagnostic.savedInvaderStateInspectionError = summarize_keyed_map("InvaderSaveDataMapCache")
     diagnostic.negotiatorRow = scalar(property(manager, "NegotiatorRowName")) or "unavailable"
-    local utility = self:_utility()
-    if valid(utility) and valid(self.event_world) then
-        local settings_ok, settings = call(utility, "GetOptionWorldSettings", self.event_world)
-        if settings_ok then diagnostic.worldInvaderEnabled = or_unavailable(scalar(property(settings, "bEnableInvaderEnemy")))
-        else diagnostic.worldInvaderEnabled = "unavailable" end
-    else
-        diagnostic.worldInvaderEnabled = "unavailable"
-    end
+    diagnostic.worldInvaderEnabled = self:_world_invaders_enabled(self.event_world)
     return diagnostic, target, target_error
 end
 
@@ -1724,6 +1775,9 @@ function Bridge:continue_invasion_dispatch()
 end
 
 function Bridge:diagnose_native_start_all(confirmation)
+    if self.delivery_profile == "laboratory-native-test" then
+        return false, "Native-all comparison remains disabled; use the guarded selected-base start command."
+    end
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
     self.native_all_diagnostic_until = 0

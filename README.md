@@ -1,6 +1,6 @@
 # Pal Event Director
 
-> **Native-crash quarantine — diagnostic-only revision.** IMOUTO's `575a9f52` build crashed inside native preflight. Normal starts (including `0`), recurring starts, chat/gameplay hooks, native-all comparison, and automatic polling are disabled. Do not follow the historical gameplay quick start below. Use [the crash-diagnostic runbook](docs/15-preflight-crash-diagnostics.md) for explicitly stepped, read-only console diagnostics. The large settings return is blocked pending exact layout verification.
+> **Guarded laboratory testing.** IMOUTO's `575a9f52` build crashed inside native preflight. The `laboratory-native-test` profile restores in-game chat and gameplay hooks, but every invasion start stays locked until a fresh local stepped preflight completes in that server session. The oversized `GetOptionWorldSettings` getter is prohibited; the adapter reads the invasion flag through the world-scoped option subsystem instead. Recurring schedules, item delivery, and native-all comparison remain disabled. Follow [the test runbook](docs/15-preflight-crash-diagnostics.md), not the historical quick start below.
 
 Pal Event Director is a server-only event platform for a Palworld dedicated server. It runs on the server while every player connects with an unmodified Palworld client, including cross-play clients that cannot install mods.
 
@@ -22,7 +22,7 @@ Prerequisite: one Palworld-compatible `UE4SS` package managed by Pocketpair's of
 6. Enable `diagnostics.observationProbe` and one observation capability at a time, restart, and complete the checklist in [the alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md). Use `traceHooks` only for short focused troubleshooting.
 7. Enable `startAllInvasions` and `substituteBountyMembers` only after observation and substitution probes pass. Live `grantItems` is intentionally rejected in this build; rewards remain durable pending obligations until the next persistence gate is implemented.
 
-For the current laboratory topology, MIKO performs source validation and clean builds while IMOUTO hosts the disposable dedicated server and vanilla client. After each clean pushed build, run `npm run build:imouto` on MIKO and invoke the installer from the generated `dist/IMOUTO-*` bundle on IMOUTO. It defaults to `D:\SteamLibrary\steamapps\common\PalServer`, backs up repeat deployments, and never touches MIKO Production or the sibling Palworld client. For one-time realistic progression, `npm run build:world-seed` creates a separate sensitive bundle from the newest stable managed MIKO backup, containing only active world/base/guild and player save data—never the live save or Production configuration. See [the IMOUTO deployment runbook](docs/14-imouto-dev-deployment.md).
+Development, validation, packaging, and deployment now run locally on IMOUTO from the workspace checkout, not the old MIKO-hosted network share. From approved, clean, pushed source, run `npm run build` and `npm run build:imouto`, then use the generated bundle's installer. Its target is `D:\SteamLibrary\steamapps\common\PalServer`; it backs up repeat deployments and never touches MIKO Production or the sibling Palworld client. The disposable world is already imported: do not rerun its importer. See [the IMOUTO deployment runbook](docs/14-imouto-dev-deployment.md).
 
 The installer configures `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` and `Start-PalEventDirectorImouto.ps1`. With the server stopped, confirm the activation command once to enable chat/combat/invasion/bounty capabilities, native-admin-or-operator authorization, and compatibility pins while keeping rewards and schedules disabled. Then start IMOUTO with the generated launcher, not Steam Play: it reads the verified build ID from the local dedicated-server manifest and supplies both PED environment variables only to the child server process. Run it with `-ValidateOnly` to verify launch integration without starting Palworld.
 
@@ -90,8 +90,10 @@ Read these in order:
 11. [Mandatory invasions and bounty sieges](docs/11-invasion-and-bounty-design.md) — all-base targeting, exact invasion groups, bounty-token farming, and required proof.
 12. [Alpha laboratory runbook](docs/12-alpha-laboratory-runbook.md) — implemented scope, fail-closed switches, installation, and staged live validation.
 13. [Alpha.3 administration and scheduling](docs/13-admin-and-scheduling.md) — all chat/console commands, profiles, schedules, warnings, eligibility, and configuration fields.
-14. [IMOUTO DEV deployment](docs/14-imouto-dev-deployment.md) — continuous stopped-server deployment from MIKO builds, dependency pins, rollback, and manual vanilla-client checks without touching MIKO Production.
-15. [Preflight crash diagnostics](docs/15-preflight-crash-diagnostics.md) — current diagnostic-only quarantine, pinned-source buffer audit, and one-operation console procedure.
+14. [IMOUTO DEV deployment](docs/14-imouto-dev-deployment.md) — local clean builds, stopped-server deployment, dependency pins, rollback, and vanilla-client checks without touching MIKO Production.
+15. [Preflight crash diagnostics](docs/15-preflight-crash-diagnostics.md) — guarded gameplay testing, the isolated diagnostic profile, pinned-source buffer audit, and one-operation procedure.
+
+For the guarded test profile, the installed preparation command enables chat and the event observation/substitution capabilities, while leaving native starts gated on session-local preflight. In-game queries (`!siege status`, `!siege profiles`, `!siege schedule`, `!siege score`, and `!siege leaderboard`) work before that gate opens. Starts return a clear blocked response until it does. After preflight completion, use an explicitly authorized `!siege start native 0` for the native baseline; completion of preflight itself never starts an invasion. Restarting closes the gate again.
 
 ## Feasibility language
 

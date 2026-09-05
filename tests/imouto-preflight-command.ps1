@@ -30,6 +30,12 @@ try {
     [IO.File]::WriteAllText((Join-Path $directory 'response.json'), (@{ id = $queued.RequestId; success = $true; message = 'Next: fixture' } | ConvertTo-Json))
     $result = & $command -ServerRoot $serverRoot -SyntheticTestFixture -ReadResult
     if ($result.RequestId -ne $queued.RequestId -or $result.Success -ne $true) { throw 'Local response did not match the request.' }
+    $recordPath = Join-Path $deployRoot 'deployment.json'
+    $record = Get-Content $recordPath -Raw | ConvertFrom-Json
+    $record.deliveryProfile = 'laboratory-native-test'
+    [IO.File]::WriteAllText($recordPath, ($record | ConvertTo-Json))
+    $preview = & $command -ServerRoot $serverRoot -SyntheticTestFixture -Preview
+    if ($preview.PreviewOnly -ne $true) { throw 'Laboratory profile did not retain explicit preview ingress.' }
     Write-Output 'PASS IMOUTO local-only preflight command queues preview/explicit steps, rejects duplicates, and reads matched responses'
 } finally {
     Remove-Item $root -Recurse -Force -ErrorAction SilentlyContinue

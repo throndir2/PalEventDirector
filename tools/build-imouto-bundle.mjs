@@ -20,7 +20,7 @@ const git = (...args) => execFileSync('git', args, { cwd: root, encoding: 'utf8'
 if (manifest.sourceDirty !== false) throw new Error('IMOUTO bundle requires a clean-source artifact manifest');
 if (manifest.packageName !== 'PalEventDirector') throw new Error('unexpected artifact package name');
 if (manifest.version !== '0.1.0-alpha.3') throw new Error('IMOUTO bundle requires alpha.3');
-if (manifest.deliveryProfile !== 'preflight-diagnostic-only') throw new Error('IMOUTO bundle requires the quarantined diagnostic profile');
+if (!['preflight-diagnostic-only', 'laboratory-native-test'].includes(manifest.deliveryProfile)) throw new Error('IMOUTO bundle requires an audited laboratory profile');
 if (!/^[a-f0-9]{40}$/i.test(manifest.sourceRevision ?? '')) throw new Error('artifact source revision is invalid');
 if (git('status', '--porcelain') !== '') throw new Error('IMOUTO bundle requires a clean current worktree');
 const head = git('rev-parse', 'HEAD');
@@ -34,6 +34,9 @@ if (head !== git('ls-remote', '--exit-code', 'origin', 'refs/heads/main').split(
 
 const archivePath = path.join(dist, manifest.archive);
 const trackedBytes = (relative) => execFileSync('git', ['show', `${head}:${relative}`], { cwd: root, maxBuffer: 4 * 1024 * 1024 });
+if (trackedBytes('Scripts/ped/version.lua').toString('utf8').match(/delivery_profile\s*=\s*"([^"]+)"/)?.[1] !== manifest.deliveryProfile) {
+  throw new Error('artifact profile differs from the selected source revision');
+}
 const [archive, installer, launcher, activation, manifestBytes, guide, preflightCommand] = await Promise.all([
   readFile(archivePath),
   trackedBytes('operations/imouto/Install-PalEventDirectorImouto.ps1'),

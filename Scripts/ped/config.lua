@@ -270,10 +270,13 @@ function M.validate(config)
     return ok, ok and nil or tostring(message)
 end
 
-function M.diagnostic_session(config)
+function M.diagnostic_session(config, profile)
     -- In-memory safety overlay; never discard or rewrite the operator's existing config.
     local effective = util.deep_copy(config)
-    for name in pairs(effective.capabilities) do effective.capabilities[name] = false end
+    if profile ~= "laboratory-native-test" then
+        for name in pairs(effective.capabilities) do effective.capabilities[name] = false end
+    end
+    effective.capabilities.grantItems = false
     for _, schedule in ipairs(effective.schedules) do schedule.enabled = false end
     effective.diagnostics.traceHooks = false
     effective.diagnostics.observationProbe = false

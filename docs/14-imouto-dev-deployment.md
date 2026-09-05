@@ -1,15 +1,17 @@
 # IMOUTO DEV deployment
 
-> **Diagnostic-only override:** the current bundle follows [the preflight crash runbook](15-preflight-crash-diagnostics.md). Normal siege and native-all tests below are suspended. Installation preserves recovery evidence; activation prepares all capabilities/schedules disabled; launch validates the exact UE4SS DLL and exports child-only diagnostic pins. No automatic native operations run at startup.
+> **Guarded test-profile override:** follow [the preflight crash runbook](15-preflight-crash-diagnostics.md). The `laboratory-native-test` bundle restores chat and prepares gameplay hooks, but invasions require a fresh, completed local preflight in the current server session. Schedules, rewards, and native-all comparison stay disabled. The older isolated diagnostic profile still disables all capabilities. Installation preserves recovery evidence and validates the pinned runtime; startup never requests an invasion.
 
 ## Host roles
 
-The laboratory is intentionally split across two Windows machines:
+Current development and deployment are local to IMOUTO:
 
 | Host | Role |
 |---|---|
-| MIKO | Pal Event Director source, tests, clean builds, canonical Git delivery, and the existing Production Palworld server. |
-| IMOUTO | Disposable Palworld dedicated-server deployment and manual testing with its locally installed vanilla Palworld client. |
+| MIKO | Protected Production host; not part of this development/deployment workflow. |
+| IMOUTO | Workspace source, tests, approved clean builds/Git delivery, disposable dedicated server, and vanilla-client testing. |
+
+The former `Z:\Repositories\PalEventDirector` checkout was a MIKO-hosted share, not a local workspace. Do not use it. The disposable world is already imported; the historical world-seed instructions below are not a step to repeat.
 
 No Pal Event Director operation starts, stops, updates, edits, or deploys into MIKO's Palworld installation. In particular, the existing MIKO Production launchers under `D:\scripts` remain external protected operator assets. The IMOUTO installer contains no MIKO server path or launcher reference, and repository validation rejects any deployment script that gains one.
 
@@ -29,7 +31,7 @@ The sibling Palworld client directory is not a valid target. The installer requi
 - the dedicated-server executable and `Pal-WindowsServer.pak` match the validated hashes;
 - no process whose executable is below the dedicated-server root is running;
 - the target path does not traverse an NTFS reparse point;
-- the mod archive matches a clean MIKO build manifest; and
+- the mod archive matches a clean, approved source build manifest; and
 - any existing UE4SS runtime is either the exact pinned runtime or explicitly approved for backed-up replacement.
 
 The installer never modifies the Palworld client, Steam manifests, server configuration, world saves, Windows firewall, router, or MIKO. It does not start or stop the IMOUTO server. It installs separate launcher and laboratory-activation commands, but it leaves gameplay capabilities disabled until the explicit activation command is confirmed.

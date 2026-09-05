@@ -233,7 +233,7 @@ if ((Get-FileHash -LiteralPath $ServerPak -Algorithm SHA256).Hash -ine $Expected
 if (-not $ArtifactPath) {
     $BuildManifestPath = Join-Path $PSScriptRoot 'manifest.json'
     if (-not (Test-Path -LiteralPath $BuildManifestPath -PathType Leaf)) {
-        throw 'No deployment manifest exists beside the installer. Build the IMOUTO bundle on MIKO first or pass ArtifactPath.'
+        throw 'No deployment manifest exists beside the installer. Build the IMOUTO bundle from the local workspace first or pass ArtifactPath.'
     }
     $BuildManifest = Get-Content -LiteralPath $BuildManifestPath -Raw | ConvertFrom-Json
     $ArtifactPath = Join-Path (Split-Path $BuildManifestPath -Parent) ([string]$BuildManifest.archive)
@@ -250,7 +250,7 @@ $ArtifactPath = (Resolve-Path -LiteralPath $ArtifactPath).Path
 $ArtifactHash = (Get-FileHash -LiteralPath $ArtifactPath -Algorithm SHA256).Hash
 if ($BuildManifest.sourceDirty -ne $false -or [string]$BuildManifest.sha256 -ine $ArtifactHash -or
     [string]$BuildManifest.archive -ine (Split-Path $ArtifactPath -Leaf)) {
-    throw 'Artifact does not match a clean MIKO build manifest.'
+    throw 'Artifact does not match a clean source build manifest.'
 }
 if ([string]$BuildManifest.packageName -ne 'PalEventDirector' -or
     -not ([string]$BuildManifest.sourceRevision -match '^[a-fA-F0-9]{40}$')) {
@@ -259,8 +259,8 @@ if ([string]$BuildManifest.packageName -ne 'PalEventDirector' -or
 if ([string]$BuildManifest.version -ne '0.1.0-alpha.3') {
     throw 'This installer requires the alpha.3 package; stale alpha artifacts are rejected.'
 }
-if ([string]$BuildManifest.deliveryProfile -ne 'preflight-diagnostic-only') {
-    throw 'This installer requires the quarantined preflight diagnostic build.'
+if ([string]$BuildManifest.deliveryProfile -notin @('preflight-diagnostic-only', 'laboratory-native-test')) {
+    throw 'This installer requires an audited laboratory delivery profile.'
 }
 if ([string]$BuildManifest.sourceRevision -eq '575a9f521977069dcfcb244994f6c017044e9604') {
     throw 'This source revision is revoked after a confirmed IMOUTO native preflight crash.'
@@ -277,7 +277,7 @@ foreach ($required in @($InstallerSource, $LauncherSource, $ActivationSource, $P
 }
 $BundleManifest = Get-Content -LiteralPath $BundleManifestPath -Raw | ConvertFrom-Json
 if ($BundleManifest.schemaVersion -ne 1 -or [string]$BundleManifest.packageName -ne 'PalEventDirector' -or
-    [string]$BundleManifest.deliveryProfile -ne 'preflight-diagnostic-only' -or
+    [string]$BundleManifest.deliveryProfile -ne [string]$BuildManifest.deliveryProfile -or
     [string]$BundleManifest.preflightCommand -ne (Split-Path $PreflightSource -Leaf) -or
     [string]$BundleManifest.preflightCommandSha256 -ine (Get-FileHash $PreflightSource -Algorithm SHA256).Hash -or
     [string]$BundleManifest.version -ne [string]$BuildManifest.version -or
@@ -370,7 +370,7 @@ try {
         (Get-FileHash $LocalLauncher -Algorithm SHA256).Hash -ine [string]$BundleManifest.launcherSha256 -or
         (Get-FileHash $LocalActivation -Algorithm SHA256).Hash -ine [string]$BundleManifest.activationSha256 -or
         (Get-FileHash $LocalPreflight -Algorithm SHA256).Hash -ine [string]$BundleManifest.preflightCommandSha256) {
-        throw 'The local immutable artifact snapshot differs from the validated MIKO source.'
+        throw 'The local immutable artifact snapshot differs from the validated source.'
     }
     New-Item -ItemType Directory -Path $ArtifactStage -Force | Out-Null
     Expand-Archive -LiteralPath $LocalArtifact -DestinationPath $ArtifactStage
@@ -378,6 +378,11 @@ try {
         if (-not (Test-Path -LiteralPath (Join-Path $ArtifactStage $required) -PathType Leaf)) { throw "Artifact is missing $required" }
     }
     $Info = Get-Content -LiteralPath (Join-Path $ArtifactStage 'Info.json') -Raw | ConvertFrom-Json
+    $VersionSource = [IO.File]::ReadAllText((Join-Path $ArtifactStage 'Scripts\ped\version.lua'))
+    $ProfileMatch = [regex]::Matches($VersionSource, 'delivery_profile\s*=\s*"([^"]+)"')
+    if ($ProfileMatch.Count -ne 1 -or $ProfileMatch[0].Groups[1].Value -ne [string]$BuildManifest.deliveryProfile) {
+        throw 'Packaged Lua profile differs from the attested delivery profile.'
+    }
     if ($Info.PackageName -ne 'PalEventDirector' -or $Info.Version -ne $BuildManifest.version -or
         @($Info.InstallRule).Count -ne 1 -or $Info.InstallRule[0].IsServer -ne $true) {
         throw 'Artifact is not the expected server-only package.'
@@ -483,7 +488,7 @@ try {
         schemaVersion = 1
         packageName = 'PalEventDirector'
         version = [string]$BuildManifest.version
-        deliveryProfile = 'preflight-diagnostic-only'
+        deliveryProfile = [string]$BuildManifest.deliveryProfile
         startupFiles = $StartupFiles
         sourceRevision = ([string]$BuildManifest.sourceRevision).ToLowerInvariant()
         artifactSha256 = $ArtifactHash.ToLowerInvariant()
@@ -530,8 +535,9 @@ try {
 
     [pscustomobject]@{
         Status = 'Installed'
-        DeliveryProfile = 'preflight-diagnostic-only'
+        DeliveryProfile = $Record.deliveryProfile
         NativeStartsQuarantined = $true
+        NativePreflightRequired = ($Record.deliveryProfile -eq 'laboratory-native-test')
         ServerRoot = $ServerRoot
         ClientRootUntouched = $ClientRoot
         Version = $Record.version

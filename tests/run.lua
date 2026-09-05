@@ -965,7 +965,7 @@ end)
 test("selected-base dispatch probes one base before confirmed fanout and records masked state", function()
     local calls = {}
     local logs = {}
-    local world = { IsValid = function() return true end }
+    local world = { IsValid = function() return true end, GetAddress = function() return 123 end }
     local function base(id)
         return {
             IsValid = function() return true end,
@@ -1020,7 +1020,12 @@ test("selected-base dispatch probes one base before confirmed fanout and records
     }
     local utility = {
         IsValid = function() return true end,
-        GetOptionWorldSettings = function() return { bEnableInvaderEnemy = true } end,
+        GetOptionWorldSettings = function() error("unsafe by-value settings getter invoked") end,
+        GetOptionSubsystem = function() return {
+            IsValid = function() return true end,
+            GetWorld = function() return world end,
+            OptionWorldSettings = { bEnableInvaderEnemy = true },
+        } end,
     }
     local bridge = Bridge.new({
         config = Config.defaults(),

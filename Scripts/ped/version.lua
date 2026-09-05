@@ -5,5 +5,5 @@ return {
     config_schema = 3,
     adapter = "palworld-1.0.3-lab",
     tested_server_build_id = "24575149",
-    delivery_profile = "preflight-diagnostic-only",
+    delivery_profile = "laboratory-native-test",
 }

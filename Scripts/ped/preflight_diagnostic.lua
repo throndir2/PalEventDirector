@@ -47,6 +47,9 @@ function Diagnostic.new(options)
         completed = false,
         stop_reason = nil,
         live_objects = {},
+        native_readiness = options.native_readiness == true,
+        native_ready = false,
+        ready_world = nil,
     }, Diagnostic)
     assert(integer(self.run_id) and self.run_id >= 0)
     self.thread = coroutine.create(function() self:_plan() end)
@@ -109,6 +112,23 @@ function Diagnostic:_properties(name, owner, maximum)
     return result
 end
 
+function Diagnostic:_metadata_value(name, expected_kind, callback)
+    local value = self:_op(name, true, callback)
+    self:_require(value ~= nil, "Copied metadata value is unavailable; signature validation stopped.")
+    -- Pinned FName/FieldClass values have no IsValid method. Their remote owners
+    -- remain in live_objects; validate the copied wrapper before reading it.
+    local kind = self:_op(name .. "-type", true, function() return value:type() end)
+    self:_require(kind == expected_kind, "Copied metadata wrapper type differs from the pinned binding.")
+    return value
+end
+
+function Diagnostic:_metadata_name(name, owner)
+    local value = self:_metadata_value(name .. "-fname", "FName", function() return owner:GetFName() end)
+    local text = self:_op(name .. "-name", true, function() return value:ToString() end)
+    self:_require(type(text) == "string", "Metadata name is unavailable; signature validation stopped.")
+    return text
+end
+
 function Diagnostic:_signature(label, function_name, result_kind, result_class)
     local path = "/Script/Pal.PalUtility:" .. function_name
     local fn = self:_lookup(label .. "-function", path)
@@ -122,11 +142,14 @@ function Diagnostic:_signature(label, function_name, result_kind, result_class)
     for index, property in ipairs(properties) do
         local prefix = label .. "-parameter-" .. index
         self:_valid(prefix, property)
-        local name = self:_op(prefix .. "-name", true, function() return property:GetFullName() end)
-        self:_require(type(name) == "string", "UFunction property metadata is unavailable.")
-        local is_input = name == "ObjectProperty " .. path .. ".WorldContextObject"
-        local is_return = name == result_kind .. " " .. path .. ".ReturnValue"
-        self:_require(is_input or is_return, "UFunction parameter/return names or types differ from the audited declaration.")
+        local name = self:_metadata_name(prefix, property)
+        local is_input = name == "WorldContextObject"
+        local is_return = name == "ReturnValue"
+        self:_require(is_input or is_return, "UFunction parameter/return names differ from the audited declaration.")
+        local field_class = self:_metadata_value(prefix .. "-field-class", "FieldClass", function() return property:GetClass() end)
+        local field_kind = self:_metadata_name(prefix .. "-field-class", field_class)
+        self:_require(field_kind == (is_input and "ObjectProperty" or result_kind),
+            "UFunction parameter/return property types differ from the audited declaration.")
         local offset = self:_op(prefix .. "-offset", true, function() return property:GetOffset_Internal() end)
         self:_require(integer(offset) and offset == (is_input and 0 or 8), "UFunction parameter/return offsets differ from the expected Windows x64 pointer layout.")
         if is_input then
@@ -149,6 +172,24 @@ function Diagnostic:_signature(label, function_name, result_kind, result_class)
         self:_require(output_name == "Class /Script/Pal." .. result_class, "UFunction return class differs from the audited pointer type.")
     end
     return output, return_offset
+end
+
+function Diagnostic:_option_readiness(utility, world)
+    self:_signature("options", "GetOptionSubsystem", "ObjectProperty", "PalOptionSubsystem")
+    self:_valid("utility-before-options", utility)
+    self:_valid("world-before-options", world)
+    local options = self:_op("get-option-subsystem", true, function() return utility:GetOptionSubsystem(world) end)
+    self:_valid("options-subsystem", options)
+    local options_world = self:_op("options-get-world", true, function() return options:GetWorld() end)
+    self:_valid("options-world", options_world)
+    local expected_address = self:_op("options-expected-world-address", true, function() return world:GetAddress() end)
+    local actual_address = self:_op("options-world-address", true, function() return options_world:GetAddress() end)
+    self:_require(integer(expected_address) and expected_address > 0 and actual_address == expected_address,
+        "Option subsystem belongs to a different world; addresses will not be logged.")
+    local settings = self:_metadata_value("options-settings-view", "UScriptStruct", function() return options.OptionWorldSettings end)
+    local enabled = self:_op("options-invasion-enabled", true, function() return settings.bEnableInvaderEnemy end)
+    self:_require(enabled == true, "Native enemy invasions are disabled or unreadable in the world-scoped option subsystem.")
+    self.native_ready, self.ready_world = true, world
 end
 
 function Diagnostic:_plan()
@@ -176,6 +217,11 @@ function Diagnostic:_plan()
     local manager_world_address = self:_op("manager-world-get-address", true, function() return manager_world:GetAddress() end)
     self:_require(integer(world_address) and world_address > 0 and world_address == manager_world_address, "Manager world identity check failed; addresses will not be logged.")
     manager_address, world_address, manager_world_address = nil, nil, nil
+
+    if self.native_readiness then
+        self:_option_readiness(utility, world)
+        return
+    end
 
     local result_property, return_offset = self:_signature("settings", "GetOptionWorldSettings", "StructProperty")
     local settings_type = self:_op("settings-return-type", true, function() return result_property:GetStruct() end)
@@ -215,6 +261,7 @@ function Diagnostic:_advance(value)
     local ok, yielded = coroutine.resume(self.thread, value)
     if not ok then
         self.halted = true
+        self.native_ready, self.ready_world = false, nil
         self.pending = nil
         self.thread = nil -- Drop every retained native handle; do not stringify yielded errors.
         self.live_objects = {}
@@ -237,6 +284,7 @@ end
 
 function Diagnostic:_halt()
     self.halted, self.running, self.thread, self.pending = true, false, nil, nil
+    self.native_ready, self.ready_world = false, nil
     self.live_objects = {}
 end
 
@@ -245,7 +293,7 @@ function Diagnostic:run(confirmation, expected_step)
     if not allowed then return false, reason end
     if self.running then return false, "A diagnostic operation is already in progress." end
     if self.halted then return false, self.stop_reason or "Diagnostic session halted; preserve breadcrumbs. No retry is permitted." end
-    if self.completed then return false, "Diagnostic session is complete; no native dispatch is available." end
+    if self.completed then return false, "Diagnostic session is complete; no diagnostic operation will run again." end
     if confirmation ~= nil and confirmation ~= TOKEN then return false, "Use diagnose-preflight confirm-disposable-readonly <expected-step>." end
     if not self.pending then
         local ready, advance_error = self:_advance()
@@ -290,6 +338,9 @@ function Diagnostic:run(confirmation, expected_step)
     local advanced, advance_error = self:_advance(result)
     self.running = false
     if not advanced then return false, advance_error end
+    if self.completed then
+        return true, "Returned: " .. completed_step .. ". Inspect its after-marker. Native preflight completed for this world; only an explicit enabled start command can request an invasion. No dispatch ran."
+    end
     return true, "Returned: " .. completed_step .. ". Inspect its after-marker. Next: " .. self.pending.step .. ". No dispatch ran."
 end
 

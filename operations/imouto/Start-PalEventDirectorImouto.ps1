@@ -95,7 +95,7 @@ if (-not $buildMatch.Success -or [string]::IsNullOrWhiteSpace($buildMatch.Groups
 $VerifiedBuildId = $buildMatch.Groups['Value'].Value
 $deployment = Get-Content -LiteralPath $DeploymentPath -Raw | ConvertFrom-Json
 if ($deployment.schemaVersion -ne 1 -or [string]$deployment.packageName -ne 'PalEventDirector' -or
-    [string]$deployment.deliveryProfile -ne 'preflight-diagnostic-only' -or
+    [string]$deployment.deliveryProfile -notin @('preflight-diagnostic-only', 'laboratory-native-test') -or
     [string]$deployment.serverAppId -ne $ExpectedAppId -or $deployment.launchIntegrationConfigured -ne $true -or
     [string]$deployment.launchEnvironmentSource -ne 'verified-steam-manifest' -or
     [string]$deployment.version -ne '0.1.0-alpha.3' -or [string]$deployment.ue4ssTag -ne '2281fa31' -or
@@ -198,8 +198,9 @@ $launch = [ordered]@{
     GamePort = $GamePort
     QueryPort = $QueryPort
     EnvironmentScope = 'child-process-only'
-    DeliveryProfile = 'preflight-diagnostic-only'
+    DeliveryProfile = [string]$deployment.deliveryProfile
     NativeStartsQuarantined = $true
+    NativePreflightRequired = ($deployment.deliveryProfile -eq 'laboratory-native-test')
     Ue4ssTag = $ExpectedRuntimeTag
     Ue4ssApiVersion = $ExpectedRuntimeApi
 }

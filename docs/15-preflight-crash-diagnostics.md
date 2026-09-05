@@ -4,9 +4,11 @@
 
 **Diagnostic-only quarantine. Do not issue another siege start on revision `575a9f521977069dcfcb244994f6c017044e9604`.**
 
-That revision produced a dedicated-server native crash, not client desynchronization. This replacement preserves the event implementation for simulation but blocks manual, recurring, direct, fanout, and native-all start routes before unsafe preflight. There are no chat/combat/invasion hooks or gameplay polling. A file-only poll accepts explicit trusted-local requests and transfers one requested diagnostic step to the game thread; it does not advance or retry native diagnostics automatically. Existing enabled persistent capabilities are ignored through an in-memory safety overlay; configuration cannot lift the native-start quarantine.
+That revision produced a dedicated-server native crash, not client desynchronization. The original `preflight-diagnostic-only` profile remains fully quarantined. The new `laboratory-native-test` profile restores chat, combat/invasion observation, and substitution hooks for testing, but manual, direct, and fanout starts remain locked until the current server session completes its stepped read-only preflight. Native-all comparison remains unavailable. No diagnostic or restart automatically starts an event, and configuration alone cannot mark the preflight complete.
 
-The package version remains alpha.3 to preserve configuration and state schemas; the clean commit SHA, artifact hash, and `deliveryProfile=preflight-diagnostic-only` distinguish this diagnostic revision. Installing it is **not** evidence that the native ABI or gameplay adapter is safe.
+The package version remains alpha.3 to preserve configuration and state schemas. The clean commit SHA, artifact hash, and attested delivery profile identify the package. Both profiles force recurring schedules and item delivery off. Installing the test profile is **not** evidence that an invasion has worked: acceptance still requires its native lifecycle callback.
+
+In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. A start requested too early receives an explicit blocked response, without a countdown intent, cooldown write, or native preflight call. Each restart requires a fresh local preflight; readiness is never loaded from a snapshot or response file.
 
 ## Preserved IMOUTO evidence
 
@@ -34,10 +36,12 @@ Pins:
 
 | Boundary | Audited declaration / binding | Diagnostic treatment |
 |---|---|---|
-| `GetInvaderManager` | Static native UFunction: `(const UObject* WorldContextObject) -> UPalInvaderManager*` | Before invoking, inspect current UFunction flags, two parameter/return properties, names, object-property types/classes, and expected Windows x64 offsets 0/8. Each metadata read is a separate command step. |
+| `GetInvaderManager` | Static native UFunction: `(const UObject* WorldContextObject) -> UPalInvaderManager*` | Before invoking, inspect current UFunction flags, exactly two parameter/return properties, their exact FNames and field-class FNames, object-property classes, and expected Windows x64 offsets 0/8. Each metadata read is a separate command step. |
 | `manager:GetWorld()` | Zero-argument UE4SS UObject binding returning a UWorld wrapper; **not a Palworld UFunction** | Invoke only after the manager-call after-marker and a separate validity step. |
 | `GetAddress()` | Zero-argument UE4SS object binding returning a pointer-sized integer; **not a Palworld UFunction** | Separate manager/world operations. Compare only in memory; never print or persist the numbers. |
 | `GetOptionWorldSettings` | Static native UFunction: `(const UObject* WorldContextObject) -> FPalOptionWorldSettings` **by value** | Metadata-only inspection. Do not materialize settings in this diagnostic revision. |
+| `GetOptionSubsystem` | Static native UFunction: `(const UObject* WorldContextObject) -> UPalOptionSubsystem*` | Test-profile preflight audits the same two-property pointer signature, then calls it in a separate step and verifies the returned object's world. |
+| `OptionWorldSettings.bEnableInvaderEnemy` | Reflected struct property on the world-scoped option subsystem, then a Boolean field | Read through a `UScriptStruct` property view, never through a by-value UFunction. Do not enumerate, format, or log settings values. |
 | `bEnableInvaderEnemy` | Reflected Boolean inside the settings struct | Not read until the large return is proven safe in a later revision. No credential-bearing settings object is created here. |
 | World-filtered incident scan | Per-incident `GetWorld`, `GetAddress`, reflected `IsExecuting() -> bool` | Deferred; never batch-run after the unverified settings boundary. |
 | Eligibility | Guild lookup, observer map, base GUID returns and Boolean property reads | Deferred; exact per-call ABI review is still required before advancing beyond the blocked settings boundary. |
@@ -48,7 +52,11 @@ The exact pinned [LuaUFunction header](https://github.com/Okaetsu/RE-UE4SS/blob/
 
 The generated `FPalOptionWorldSettings` header contains 120 reflected fields, including strings and arrays. An x64 estimate using 16-byte FString/TArray and 8-byte FName is **520 bytes for the struct**, roughly 528 bytes including the world-context argument. That estimate is not a measured runtime `sizeof`, but it exceeds the fixed buffer and is a concrete reason **not to reproduce the settings getter blindly**.
 
-The diagnostic inspects only the return struct's metadata handles and field offsets, from the last field backwards. If `returnOffset + fieldOffset + 1 > 512`, it stops with an explicit oversized-return finding. A smaller observed lower bound is not a safe upper bound: the pinned [UFunction Lua bindings](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUFunction.cpp) do not expose exact `ParmsSize`/return extent, so that case also stops rather than guessing. The metadata inspection itself is native code and still requires a disposable run.
+The isolated diagnostic profile inspects only the return struct's metadata handles and field offsets, from the last field backwards. If `returnOffset + fieldOffset + 1 > 512`, it stops with an explicit oversized-return finding. A smaller observed lower bound is not a safe upper bound: the pinned [UFunction Lua bindings](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUFunction.cpp) do not expose exact `ParmsSize`/return extent, so that case also stops rather than guessing.
+
+The guarded gameplay adapter removes **both** calls to this getter, including the dispatch snapshot's call. It uses the audited [GetOptionSubsystem declaration](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalUtility.h) and the [OptionWorldSettings property](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalOptionSubsystem.h). A property view does not pass the large struct through `ProcessEvent`'s fixed call buffer. The subsystem must belong to the selected world, and only a readable, Boolean `true` invasion-enable flag passes. Missing data, a different world, or a disabled flag fails closed; there is no fallback to the old getter.
+
+In the test profile, the stepped sequence therefore follows manager verification with the option-subsystem pointer-signature audit, a separately bracketed getter call, world identity checks, the struct-view wrapper check, and the single Boolean read. Only successful completion opens the session-local start gate. This validates the preflight path, not native invasion acceptance or subsequent gameplay behavior.
 
 `GetWorld` and `GetAddress` behavior is documented by the pinned [UObject binding source](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/include/LuaType/LuaUObject.hpp). Metadata property enumeration and offsets use only methods exposed by the pinned [UStruct](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUStruct.cpp) and [property](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaXProperty.cpp) bindings. No raw-memory offsets, custom-property hacks, or invented size getters are used.
 
@@ -62,15 +70,23 @@ An isolated fixture using the existing Fengari C API reproduces the receiver req
 
 Method lookup now has its own `*-properties-method` before/after boundary, separate from `*-properties` iteration. Missing/non-callable methods halt without trying another API. An ordinary Lua error identifies the operation and a fixed, privacy-safe classification; it never permits a retry or skip.
 
+### Exact declaration checks without display-path assumptions
+
+On IMOUTO, revision `a7165dfc403e`, run `1788579044` passed the separate method-exposure and property-enumeration operations. It then halted at `0015-manager-parameter-1-name` because the compound `GetFullName()` string did not match the assumed declaration text. Both markers exist for that read. The server survived, the journal stayed at sequence 16, and no manager getter ran. Ten hash-verified evidence files remain private under `PalEventDirectorDiagnosticBackups/preflight-1788579044-parameter-name-mismatch`. Do not resume that halted run.
+
+The mismatch did not reveal the actual field name or type. Rather than guess alternate separators or accept arbitrary suffixes, the diagnostic now checks the declaration directly: `FProperty:GetFName()` identifies the exact `WorldContextObject` or `ReturnValue` symbol, and `FProperty:GetClass():GetFName()` identifies the exact `ObjectProperty` or `StructProperty` kind. These are separately stepped bindings exposed by the pinned [property source](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaXProperty.cpp), [field-class source](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaXFieldClass.cpp), and [FName source](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaFName.cpp). `ToString()` is a separate step for each copied FName.
+
+FName and FieldClass wrappers expose `type()` but not `IsValid()` in this pin. Their copied wrapper types are checked separately, while the owning UFunction and property remain subject to the existing liveness checks. The exact function lookup, flags, property count, field names/types, offsets, and pointed-to classes are still mandatory. A fresh run must demonstrate that they match; a display-name mismatch is not taken as permission to invoke a getter.
+
 **Unresolved evidence:** no permitted local build-stamped runtime UFunction dump, exact struct size/alignment, or decoded crash stack beyond the operator's report was available. Header inspection and mocked tests do not establish exact ABI safety. The new IMOUTO breadcrumb run and a build-specific layout audit remain required.
 
 ## Install on the disposable IMOUTO server
 
 1. Preserve the crash evidence directory unchanged. Stop only IMOUTO through the existing managed/operator shutdown procedure. Do not restart or change MIKO Production.
 2. Run the installer from the new diagnostic-profile bundle. Existing UE4SS installations require the explicit `-ReplaceExistingUe4ss` switch. It backs up and replaces the entire runtime from the hash-pinned archive rather than adopting existing files; enabled unrelated mods still require separate review. It rejects an older normal-profile artifact and retains rollback evidence.
-3. Run the installed laboratory activation command. In this revision its result is `PreflightDiagnosticsOnly`: it backs up configuration, turns **all six** gameplay capabilities off, disables every recurring schedule, and leaves event recovery files untouched.
+3. Run the installed laboratory activation command. The isolated profile reports `PreflightDiagnosticsOnly` and disables all six capabilities. The test profile reports `LaboratoryTestPreflightRequired` and enables chat/combat/invasion/substitution capabilities; starts remain locked by the runtime gate. Both back up configuration, disable recurring schedules and item delivery, and leave event recovery files untouched.
 4. Run the installed launcher with `-ValidateOnly`, then without that switch. The launcher verifies the installed PED scripts, runtime/proxy/layout/settings/mod-control inventory, operator scripts, and pinned DLL; it exports the verified build, runtime API, and runtime tag only into the child server process.
-5. Use the installed `PalEventDirectorDeployments/Invoke-PalEventDirectorPreflight.ps1` on IMOUTO. `-Preview` queues a no-native-call preview; `-ReadResult` reads its result. Submit one step with `-ExpectedStep` set to the exact identifier returned by preview and explicitly confirm the prompt. Use `-ReadResult` again after processing. There is no bulk-run option. The helper is fixed to IMOUTO and is hash-attested with the deployment.
+5. Join and remain in-world, then use the installed `PalEventDirectorDeployments/Invoke-PalEventDirectorPreflight.ps1` on IMOUTO. `-Preview` queues a no-native-call preview; `-ReadResult` reads its result. Submit one step with `-ExpectedStep` set to the exact next identifier. Use `-ReadResult` again after processing. The operator may delegate confirmations to the agent, but it must still execute only one step and inspect its response and markers before submitting another. There is no bulk-run option or automatic retry.
 6. If a trusted engine console is already available, the equivalent `ped diagnose-preflight` commands below also work and return output to its output device. No player/chat variant or debug-console enabling is needed.
 
 Local ingress is confined to `Pal/Saved/PalEventDirector/preflight-commands`. The file is renamed to `in-flight.json` before game-thread execution and cleared only after a response is written. A stale queued or in-flight request at startup blocks ingress and is never replayed. After a crash, preserve and archive that directory with the evidence while the server is stopped before beginning a deliberately new diagnostic run. Do not remove it as a way to retry automatically.
@@ -83,14 +99,14 @@ Local ingress is confined to `Pal/Saved/PalEventDirector/preflight-commands`. Th
 
 The third word is mandatory: use the exact step identifier shown by preview. A missing, stale, skipped, or repeated identifier is rejected without executing anything. Token-only confirmation does not execute the next step.
 
-The sequence is:
+The shared sequence is:
 
 1. UE4SS version, utility lookup/validity, controller lookup/validity, existing controller-world retrieval/validity.
 2. Individual `GetInvaderManager` UFunction signature metadata reads.
 3. `get-invader-manager` **only**, then a separate `manager-valid` operation.
 4. `manager-get-world`, its validity check, then separate manager/world address operations.
-5. Individual settings-function signature and return-struct metadata reads.
-6. The return-offset safety screen, ending in an explicit block. The settings getter, enable-flag read, incident scan, and eligibility traversal do **not** follow automatically.
+5. In the isolated profile, individual settings-function signature/return-struct metadata reads and the return-offset screen, ending in an explicit block.
+6. In the test profile, individual option-subsystem signature reads, its getter/world checks, the settings property-view type, and the invasion-enable Boolean. Successful completion permits a later explicit start command; it does not scan eligibility or dispatch automatically.
 
 The first missing after-marker identifies the exact operation that did not return. For example, a surviving `get-invader-manager.after` permits the next explicit validity command; it does not run `manager-get-world` for the operator. A metadata mismatch or unreadable size is a stop condition, not permission to weaken checks.
 

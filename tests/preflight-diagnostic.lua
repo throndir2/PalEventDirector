@@ -63,8 +63,18 @@ return function(test, equal, truthy)
             GetAddress = call("manager.GetAddress", function() return 456 end),
         })
         local controller = object("controller", { GetWorld = call("controller.GetWorld", function() return world end) })
+        local foreign_world = object("foreign-options-world", { GetAddress = call("foreign-options-world.GetAddress", function() return 789 end) })
+        local settings_view = setmetatable({
+            type = call("options-settings.type", function() return options.bad_settings_type and "UObject" or "UScriptStruct" end),
+            bEnableInvaderEnemy = options.invaders_enabled ~= false,
+        }, { __tostring = function() error("settings values were stringified") end })
+        local option_subsystem = object("options-subsystem", {
+            GetWorld = call("options-subsystem.GetWorld", function() return options.foreign_options_world and foreign_world or world end),
+            OptionWorldSettings = settings_view,
+        })
         local utility = object("utility", {
             GetInvaderManager = call("utility.GetInvaderManager", function(_, argument) equal(argument, world); return manager end),
+            GetOptionSubsystem = call("utility.GetOptionSubsystem", function(_, argument) equal(argument, world); return option_subsystem end),
             GetOptionWorldSettings = function() error("unsafe settings getter was invoked") end,
         })
         local fields = { object("settings-last-field", {
@@ -77,19 +87,37 @@ return function(test, equal, truthy)
         local function class(name)
             return object(name, { GetFullName = call(name .. ".GetFullName", function() return "Class " .. name end) })
         end
-        local function signature(method, result_kind)
-            local path = "/Script/Pal.PalUtility:" .. method
-            local input = object(method .. "-input", {
-                GetFullName = call(method .. ".input-name", function() return "ObjectProperty " .. path .. ".WorldContextObject" end),
-                GetOffset_Internal = call(method .. ".input-offset", function() return 0 end),
-                GetPropertyClass = call(method .. ".input-class", function() return class("/Script/CoreUObject.Object") end),
-            })
-            local output = object(method .. "-output", {
-                GetFullName = call(method .. ".return-name", function() return result_kind .. " " .. path .. ".ReturnValue" end),
-                GetOffset_Internal = call(method .. ".return-offset", function() return options.return_offset or 8 end),
-                GetPropertyClass = call(method .. ".return-class", function() return class("/Script/Pal.PalInvaderManager") end),
-                GetStruct = call(method .. ".return-struct", function() return settings_type end),
-            })
+        local function copied_name(label, text)
+            return setmetatable({
+                type = call(label .. ".type", function() return options.bad_fname_wrapper and "FString" or "FName" end),
+                ToString = call(label .. ".ToString", function() return text end),
+            }, { __tostring = function() error("copied metadata was stringified") end })
+        end
+        local function field_metadata(label, name, kind)
+            return {
+                GetFullName = function() error("compound property display names must not determine the signature") end,
+                GetFName = call(label .. ".GetFName", function()
+                    if options.missing_fname then return nil end
+                    return copied_name(label .. "-fname", name)
+                end),
+                GetClass = call(label .. ".GetClass", function()
+                    return setmetatable({
+                        type = call(label .. "-field-class.type", function() return options.bad_field_wrapper and "UClass" or "FieldClass" end),
+                        GetFName = call(label .. "-field-class.GetFName", function() return copied_name(label .. "-field-class-fname", kind) end),
+                    }, { __tostring = function() error("field class was stringified") end })
+                end),
+            }
+        end
+        local function signature(method, result_kind, result_class)
+            local input_methods = field_metadata(method .. "-input", options.input_name or "WorldContextObject", options.input_kind or "ObjectProperty")
+            input_methods.GetOffset_Internal = call(method .. ".input-offset", function() return 0 end)
+            input_methods.GetPropertyClass = call(method .. ".input-class", function() return class("/Script/CoreUObject.Object") end)
+            local input = object(method .. "-input", input_methods)
+            local output_methods = field_metadata(method .. "-output", options.output_name or "ReturnValue", options.output_kind or result_kind)
+            output_methods.GetOffset_Internal = call(method .. ".return-offset", function() return options.return_offset or 8 end)
+            output_methods.GetPropertyClass = call(method .. ".return-class", function() return class("/Script/Pal." .. (result_class or "PalInvaderManager")) end)
+            output_methods.GetStruct = call(method .. ".return-struct", function() return settings_type end)
+            local output = object(method .. "-output", output_methods)
             local enumerate
             if not options.missing_enumerator then
                 enumerate = function(callback) enumerate_values(callback, { input, output }) end
@@ -105,6 +133,7 @@ return function(test, equal, truthy)
             ["/Script/Pal.Default__PalUtility"] = utility,
             ["/Script/Pal.PalUtility:GetInvaderManager"] = signature("GetInvaderManager", "ObjectProperty"),
             ["/Script/Pal.PalUtility:GetOptionWorldSettings"] = signature("GetOptionWorldSettings", "StructProperty"),
+            ["/Script/Pal.PalUtility:GetOptionSubsystem"] = signature("GetOptionSubsystem", "ObjectProperty", "PalOptionSubsystem"),
         }
         local engine = {
             UE4SS = { GetVersion = call("runtime.GetVersion", function() return 3, 0, options.bad_api and 2 or 1 end) },
@@ -116,6 +145,7 @@ return function(test, equal, truthy)
             engine = engine,
             getenv = function(name) return env[name] end,
             run_id = 100,
+            native_readiness = options.native_readiness,
             record = function(step, build, valid)
                 if options.record_failure and step:match(options.record_failure .. "$") then return false end
                 records[#records + 1] = { step = step, buildId = build, objectValid = valid }
@@ -125,7 +155,7 @@ return function(test, equal, truthy)
         return diagnostic, records, operations, env
     end
 
-    local function finish(diagnostic, operations)
+    local function finish(diagnostic, operations, allow_completion)
         local reason
         for _ = 1, 160 do
             local previous = #operations
@@ -137,11 +167,79 @@ return function(test, equal, truthy)
             end
             truthy(#operations > previous)
             truthy(target_operations <= 1, "one confirmation executed more than one requested operation")
+            if allow_completion and diagnostic.completed then reason = result; break end
             if not ok then reason = result; break end
         end
         truthy(reason, "diagnostic did not stop before settings materialization")
         return reason
     end
+
+    test("laboratory readiness completes without dispatch or a by-value settings getter", function()
+        local diagnostic, records, operations = fixture({ native_readiness = true })
+        local result = finish(diagnostic, operations, true)
+        truthy(diagnostic.completed and diagnostic.native_ready)
+        truthy(result:match("Native preflight completed"))
+        truthy(records[#records].step:match("options%-invasion%-enabled.after$"))
+        local count = #operations
+        equal(diagnostic:run(TOKEN), false)
+        equal(#operations, count)
+        local bridge = Bridge.new({ config = Config.defaults(), logger = {}, delivery_profile = "laboratory-native-test" })
+        equal(bridge:native_start_guard(), false)
+        diagnostic.ready_world = { IsValid = function() return true end }
+        bridge.preflight_diagnostic = diagnostic
+        bridge.config.capabilities.startAllInvasions = true
+        bridge.registered, bridge.periodic_active = true, true
+        truthy(bridge:native_start_guard())
+        bridge.config.capabilities.startAllInvasions = false
+        equal(bridge:native_start_guard(), false)
+        bridge.config.capabilities.startAllInvasions = true
+        bridge.periodic_active = false
+        equal(bridge:native_start_guard(), false)
+        bridge.periodic_active = true
+        equal(bridge:diagnose_native_start_all("confirm-disposable-start-all"), false)
+        diagnostic.ready_world = nil
+        equal(bridge:native_start_guard(), false)
+        equal(Bridge.new({ config = Config.defaults(), logger = {} }):native_start_guard(), false, "restart reused readiness")
+    end)
+
+    test("laboratory readiness rejects wrong-world options disabled invasions and wrong struct wrappers", function()
+        for _, options in ipairs({
+            { foreign_options_world = true }, { invaders_enabled = false }, { bad_settings_type = true },
+            { failure = "utility.GetOptionSubsystem" },
+        }) do
+            options.native_readiness = true
+            local diagnostic, _, operations = fixture(options)
+            finish(diagnostic, operations, true)
+            equal(diagnostic.native_ready, false)
+            equal(diagnostic.completed, false)
+            equal(diagnostic.ready_world, nil)
+        end
+    end)
+
+    test("world invasion setting uses the option subsystem property and never its large getter", function()
+        local world = { IsValid = function() return true end, GetAddress = function() return 123 end }
+        local foreign = { IsValid = function() return true end, GetAddress = function() return 456 end }
+        local options_world = world
+        local settings = { bEnableInvaderEnemy = true }
+        local options = { IsValid = function() return true end, GetWorld = function() return options_world end, OptionWorldSettings = settings }
+        local bridge = Bridge.new({ config = Config.defaults(), logger = {} })
+        bridge.utility = {
+            IsValid = function() return true end,
+            GetOptionSubsystem = function(_, context) equal(context, world); return options end,
+            GetOptionWorldSettings = function() error("unsafe by-value getter invoked") end,
+        }
+        truthy(bridge:_world_invaders_enabled(world))
+        settings.bEnableInvaderEnemy = false
+        equal(bridge:_world_invaders_enabled(world), false)
+        settings.bEnableInvaderEnemy = nil
+        equal(bridge:_world_invaders_enabled(world), false)
+        settings.bEnableInvaderEnemy = true
+        options_world = foreign
+        equal(bridge:_world_invaders_enabled(world), false)
+        options_world = world
+        options.OptionWorldSettings = nil
+        equal(bridge:_world_invaders_enabled(world), false)
+    end)
 
     test("preflight diagnostic is inert until exact host build runtime and console confirmation", function()
         local diagnostic, records, operations, env = fixture()
@@ -199,6 +297,50 @@ return function(test, equal, truthy)
             local diagnostic, _, operations = fixture(options)
             finish(diagnostic, operations)
             for _, name in ipairs(operations) do truthy(name ~= "utility.GetInvaderManager") end
+        end
+    end)
+
+    test("signature uses exact field names and classes rather than compound display paths", function()
+        for _, options in ipairs({
+            { input_name = "NotWorldContextObject" }, { output_name = "NotReturnValue" },
+            { input_kind = "ClassProperty" }, { output_kind = "StructProperty" },
+            { input_name = 0 }, { input_kind = 0 },
+            { bad_fname_wrapper = true }, { bad_field_wrapper = true }, { missing_fname = true },
+        }) do
+            local diagnostic, _, operations = fixture(options)
+            finish(diagnostic, operations)
+            for _, name in ipairs(operations) do truthy(name ~= "utility.GetInvaderManager") end
+        end
+        local diagnostic, _, operations = fixture()
+        truthy(finish(diagnostic, operations):match("exceed.*512%-byte"))
+        local seen = {}
+        for _, name in ipairs(operations) do seen[name] = true end
+        truthy(seen["GetInvaderManager-input.GetFName"])
+        truthy(seen["GetInvaderManager-input.GetClass"])
+        truthy(seen["GetInvaderManager-input-field-class.GetFName"])
+        truthy(seen["GetInvaderManager-input-field-class-fname.ToString"])
+    end)
+
+    test("copied metadata reads still recheck their owning property after an operator pause", function()
+        for _, boundary in ipairs({
+            { step = "manager-parameter-1-fname-type", operation = "GetInvaderManager-input-fname.type" },
+            { step = "manager-parameter-1-field-class-name", operation = "GetInvaderManager-input-field-class-fname.ToString" },
+        }) do
+            local options = {}
+            local diagnostic, _, operations = fixture(options)
+            for _ = 1, 80 do
+                truthy(diagnostic:run())
+                if diagnostic.pending.name == boundary.step then break end
+                truthy(diagnostic:run(TOKEN, diagnostic.pending.step))
+            end
+            equal(diagnostic.pending.name, boundary.step)
+            options.invalid = "GetInvaderManager-input"
+            local previous = #operations
+            local ok, reason = diagnostic:run(TOKEN, diagnostic.pending.step)
+            equal(ok, false)
+            truthy(reason:match("no longer valid"))
+            for index = previous + 1, #operations do truthy(operations[index] ~= boundary.operation) end
+            equal(diagnostic.thread, nil)
         end
     end)
 
@@ -333,13 +475,16 @@ return function(test, equal, truthy)
         bridge.preflight_environment = function() error("quarantine reached environment calls") end
         bridge._find_first = function() error("quarantine reached native lookup") end
         bridge._resolve_world_manager = function() error("quarantine reached native manager") end
+        local replies = {}
+        bridge.send_chat = function(_, message) replies[#replies + 1] = message; return true end
         local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger })
         for _, command in ipairs({ "start native 0", "start native 10", "diagnose-native-all confirm-disposable-start-all", "reset", "abort", "resolve", "rewards" }) do
             equal(director:handle_operator_command(command, "console"), false)
         end
         equal(director:arm_start("console", "native", 0), false)
         equal(director:start("schedule", "native", director.scheduler_start_token, "x"), false)
-        equal(director:handle_chat("admin", "!siege start native 0"), false)
+        truthy(director:handle_chat("admin", "!siege start native 0"))
+        truthy(replies[#replies]:match("start blocked"))
         director:tick()
         equal(bridge:preflight_start("native"), false)
         equal(bridge:begin_event_discovery("native", "x"), nil)
@@ -359,13 +504,84 @@ return function(test, equal, truthy)
         _G.RegisterConsoleCommandGlobalHandler = function(_, handler) callback = handler end
         _G.RegisterHook = function() error("quarantined hook registered") end
         _G.LoopInGameThreadWithDelay = function() error("quarantined automatic poll registered") end
-        local bridge = Bridge.new({ config = config, logger = { warn = function() end } })
+        local bridge = Bridge.new({ config = config, logger = { warn = function() end }, delivery_profile = "preflight-diagnostic-only" })
         local ok, result = pcall(function() truthy(bridge:register()); truthy(callback) end)
         _G.RegisterConsoleCommandGlobalHandler, _G.RegisterHook, _G.LoopInGameThreadWithDelay = previous_console, previous_hook, previous_loop
         truthy(ok, result)
         local effective = Config.diagnostic_session(config)
         for _, value in pairs(effective.capabilities) do equal(value, false) end
         equal(config.capabilities.startAllInvasions, true, "in-memory quarantine modified persistent configuration")
+        local laboratory = Config.diagnostic_session(config, "laboratory-native-test")
+        truthy(laboratory.capabilities.chatCommands and laboratory.capabilities.startAllInvasions)
+        equal(laboratory.capabilities.grantItems, false)
+        equal(laboratory.schedules[1].enabled, false)
+    end)
+
+    test("laboratory chat registers while invasion readiness stays locked", function()
+        local old_console, old_loop, old_getenv = _G.RegisterConsoleCommandGlobalHandler, _G.LoopInGameThreadWithDelay, os.getenv
+        local config = Config.defaults()
+        for name in pairs(config.capabilities) do config.capabilities[name] = name ~= "grantItems" end
+        local hooks, received, principal_calls, poll, ticks = {}, nil, 0, nil, 0
+        local bridge = Bridge.new({ config = config, logger = { warn = function() end }, delivery_profile = "laboratory-native-test" })
+        bridge.preflight_environment = function() return true end
+        bridge._register_hook = function(_, name, _, callback) hooks[name] = callback; return true end
+        bridge.command_principal = function() principal_calls = principal_calls + 1; return { uid = "fixture" } end
+        bridge.director = { handle_chat = function(_, _, text) received = text end,
+            tick = function() if bridge:native_start_guard() then ticks = ticks + 1 end end }
+        _G.RegisterConsoleCommandGlobalHandler = function() end
+        _G.LoopInGameThreadWithDelay = function(_, callback) poll = callback; return 1 end
+        os.getenv = function(name) if name == "COMPUTERNAME" then return "IMOUTO" end; return old_getenv(name) end
+        local ok, failure = pcall(function()
+            truthy(bridge:register())
+            truthy(hooks.chat)
+            truthy(hooks.damage and hooks.invasion_start and hooks.select_invaders)
+            truthy(bridge.periodic_active)
+            equal(bridge:native_start_guard(), false)
+            poll()
+            equal(ticks, 0)
+            hooks.chat({}, "ordinary chat")
+            equal(principal_calls, 0)
+            hooks.chat({}, "!siege status")
+            equal(received, "!siege status")
+            equal(principal_calls, 1)
+            bridge.preflight_diagnostic = { completed = true, native_ready = true, ready_world = { IsValid = function() return true end } }
+            truthy(bridge:native_start_guard())
+            poll()
+            equal(ticks, 1)
+            bridge:unregister()
+            equal(bridge:native_start_guard(), false)
+            poll()
+            equal(ticks, 1)
+        end)
+        _G.RegisterConsoleCommandGlobalHandler, _G.LoopInGameThreadWithDelay, os.getenv = old_console, old_loop, old_getenv
+        truthy(ok, failure)
+    end)
+
+    test("chat queries work before readiness while every mutating command remains blocked", function()
+        local config = Config.defaults()
+        for name in pairs(config.capabilities) do config.capabilities[name] = name ~= "grantItems" end
+        local now, writes, replies = 100, 0, {}
+        local bridge = Bridge.new({ config = config, logger = {}, delivery_profile = "laboratory-native-test" })
+        bridge.send_chat = function(_, text) replies[#replies + 1] = text; return true end
+        bridge._resolve_world_manager = function() error("locked chat reached native preflight") end
+        local director = Director.new({
+            config = config, bridge = bridge, clock = function() return now end,
+            logger = { info = function() end, warn = function() end, error = function() end },
+            store = { load_snapshot = function() return nil end,
+                append = function() writes = writes + 1; return true end, save_snapshot = function() return true end },
+        })
+        local principal = { uid = "fixture-admin", palworldAdminReadable = true, palworldAdmin = true }
+        for _, command in ipairs({
+            "!siege status", "!siege profiles", "!siege schedule", "!siege score", "!siege leaderboard",
+            "!ped status", "!siege start native 0", "!ped start native 0",
+            "!siege cancel", "!siege abort", "!siege resolve", "!siege reset",
+        }) do
+            local previous = #replies
+            truthy(director:handle_chat(principal, command))
+            truthy(#replies > previous, "chat command had no response")
+            equal(writes, 0, "locked command wrote an event or cooldown intent")
+            now = now + 3
+        end
     end)
 
     test("interrupted local ingress blocks console registration before any diagnostic can run", function()

@@ -21,7 +21,7 @@ if ($SyntheticTestFixture) {
 $deployRoot = Join-Path $ServerRoot 'PalEventDirectorDeployments'
 $record = Get-Content -LiteralPath (Join-Path $deployRoot 'deployment.json') -Raw | ConvertFrom-Json
 $installed = Join-Path $deployRoot 'Invoke-PalEventDirectorPreflight.ps1'
-if ($record.deliveryProfile -ne 'preflight-diagnostic-only' -or $record.serverBuildId -ne '24575149' -or
+if ($record.deliveryProfile -notin @('preflight-diagnostic-only', 'laboratory-native-test') -or $record.serverBuildId -ne '24575149' -or
     [IO.Path]::GetFullPath($MyInvocation.MyCommand.Path) -ine $installed -or
     (Get-FileHash -LiteralPath $installed -Algorithm SHA256).Hash -ine $record.preflightCommandSha256) {
     throw 'Installed diagnostic command does not match the quarantined deployment provenance.'

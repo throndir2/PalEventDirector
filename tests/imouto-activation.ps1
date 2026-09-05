@@ -117,7 +117,26 @@ try {
         throw 'Activation did not report restart/backup requirements.'
     }
 
-    Write-Output 'PASS IMOUTO diagnostic preparation disables all gameplay and schedules while preserving configuration backup and warnings'
+    $deploymentPath = Join-Path $DeployRoot 'deployment.json'
+    $deployment = Get-Content $deploymentPath -Raw | ConvertFrom-Json
+    $deployment.deliveryProfile = 'laboratory-native-test'
+    [IO.File]::WriteAllText($deploymentPath, ($deployment | ConvertTo-Json))
+    $journalPath = Join-Path $DataRoot 'journal.ndjson'
+    [IO.File]::WriteAllText($journalPath, 'synthetic recovery-required evidence')
+    $journalHash = (Get-FileHash $journalPath -Algorithm SHA256).Hash
+    $result = & $Activation -ServerRoot $ServerRoot -SyntheticTestFixture `
+        -SyntheticExpectedUe4ssDllSha256 $ue4ssHash -Confirm:$false
+    $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    foreach ($capability in @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')) {
+        if ($config.capabilities.$capability -ne $true) { throw "Laboratory activation did not enable $capability." }
+    }
+    if ($result.Status -ne 'LaboratoryTestPreflightRequired' -or $result.NativePreflightRequired -ne $true -or
+        $config.capabilities.grantItems -ne $false -or
+        @($config.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count -ne 0 -or
+        (Get-FileHash $journalPath -Algorithm SHA256).Hash -ne $journalHash) {
+        throw 'Laboratory activation lost preflight, reward, schedule or recovery protections.'
+    }
+    Write-Output 'PASS IMOUTO preparation handles isolated diagnostics and preflight-gated gameplay without changing recovery'
 } finally {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
