@@ -16,6 +16,8 @@ local ERROR_SIGNATURES = {
     { text = "has no instance inside lua_instances unordered map", code = "unregistered-lua-state" },
     { text = "userdata_internal_type", code = "invalid-userdata" },
     { text = "attempt to call a nil value", code = "non-callable-value" },
+    { text = "attempt to call a userdata value", code = "non-callable-value" },
+    { text = "FName constructor unavailable", code = "fname-constructor-unavailable" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 

@@ -24,6 +24,13 @@ local function global(name)
     return rawget(_G, name)
 end
 
+local function fname_constructor()
+    local constructor = global("FName")
+    -- Pinned UE4SS exposes a callable FName userdata, not a Lua function.
+    if type(constructor) == "userdata" or type(constructor) == "function" then return constructor end
+    return nil
+end
+
 local function unwrap(value)
     if value == nil then
         return nil
@@ -275,7 +282,7 @@ function Bridge:_native_step(label, operation)
     self.native_trace_ordinal = self.native_trace_ordinal + 1
     local step = string.format("%d-%04d-start-%s", self.native_trace_run, self.native_trace_ordinal, label)
     local function fail(code)
-        self.native_fault = "Native operation stopped [" .. code .. "]; preserve server logs and restart after investigation. Do not retry."
+        self.native_fault = "Native operation stopped at " .. label .. " [" .. code .. "]; preserve server logs and restart after investigation. Do not retry."
         if self.logger and type(self.logger.error) == "function" then self.logger:error(self.native_fault, { step = step }) end
         return false, self.native_fault
     end
@@ -1124,8 +1131,8 @@ function Bridge:_on_select_invaders(context, out_members)
         if self.director then self.director:on_composition_result(base_id, 0, 0, "output_array_unavailable") end
         return
     end
-    local name_constructor = global("FName")
-    if type(name_constructor) ~= "function" then
+    local name_constructor = fname_constructor()
+    if not name_constructor then
         self.logger:error("Bounty substitution requires FName construction")
         if self.director then self.director:on_composition_result(base_id, 0, 0, "fname_unavailable") end
         return
@@ -1838,8 +1845,8 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
             ok, result = false, target_error or "requester moved away from the selected native-test base"
         else
             local name_ok, group = self:_native_step("test-native-group", function()
-                local constructor = global("FName")
-                if type(constructor) ~= "function" then error("FName constructor unavailable", 0) end
+                local constructor = fname_constructor()
+                if not constructor then error("FName constructor unavailable", 0) end
                 return constructor(NATIVE_PROBE_GROUP)
             end)
             if name_ok then
@@ -2125,8 +2132,8 @@ function Bridge:grant_item(obligation)
     if not inventory_ok or not valid(inventory) then
         return { status = "pending", reason = "inventory unavailable" }
     end
-    local name_constructor = global("FName")
-    if type(name_constructor) ~= "function" then
+    local name_constructor = fname_constructor()
+    if not name_constructor then
         return { status = "operator_review", reason = "FName constructor unavailable" }
     end
     local name_ok, item_name = pcall(name_constructor, obligation.itemId, 1)

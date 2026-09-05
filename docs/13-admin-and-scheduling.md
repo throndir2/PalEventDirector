@@ -163,7 +163,7 @@ Unknown commands print the bounded help form. Ordinary users retain the two-seco
 
 Admin starts carry an internal, persisted `adminOverride` selected by the authorization result, never from chat text. Their selected-base request uses `RequestIncidentInvaderEnemy(Guid, Observer)`, does not veto solely on a readable cooldown flag, and never rewrites cooldown timers. Native rejection is reported explicitly; acceptance still requires lifecycle confirmation. Current status prioritizes the latest failed manual attempt over an unrelated historical completed event.
 
-Chat start requests also retain their requester privately so PED can report bounded progress directly: request received, target count validated, native call returned, and lifecycle outcome. A returned call is explicitly not called a confirmed raid. Timeout replies summarize pathfinding, incident presence, and hook counts without exposing player IDs or world positions.
+Chat start requests also retain their requester privately so PED can report bounded progress directly: request received, target count validated, native call returned, and lifecycle outcome. A returned call is explicitly not called a confirmed raid. A zero countdown skips the deliberate wait; `startDiscoverySeconds` (default 60) only bounds the subsequent wait for lifecycle confirmation, not a guaranteed spawn delay. Timeout replies summarize pathfinding, incident presence, and hook counts without exposing player IDs or world positions. Native-error replies identify the fixed operation label and a bounded failure classification, never the raw error; further native calls remain locked until investigation and a fresh server process.
 
 ## Server-console commands
 

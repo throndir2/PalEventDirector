@@ -515,6 +515,8 @@ return function(test, equal, truthy)
             { value = "has no instance inside lua_instances unordered map", code = "unregistered-lua-state" },
             { value = "userdata_internal_type", code = "invalid-userdata" },
             { value = "[Lua::call_function] attempt to call a nil value", code = "non-callable-value" },
+            { value = "attempt to call a userdata value", code = "non-callable-value" },
+            { value = "FName constructor unavailable", code = "fname-constructor-unavailable" },
             { value = "[Lua::call_function] unexpected callback failure", code = "callback-error" },
             { value = string.rep("x", 1024) .. "userdata_internal_type", code = "unclassified-lua-error" },
             { value = "unrecognized failure", code = "unclassified-lua-error" },

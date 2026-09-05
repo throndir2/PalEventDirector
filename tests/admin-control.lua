@@ -1,4 +1,4 @@
-return function(test, equal, truthy)
+return function(test, equal, truthy, native_fname_constructor)
     local Config = require("ped.config")
     local Director = require("ped.director")
     local Bridge = require("ped.palworld")
@@ -261,16 +261,18 @@ return function(test, equal, truthy)
 
     test("nearest native RPC uses only the validated requester and stock group", function()
         local old_fname = _G.FName
-        local calls, moved = 0, false
+        local calls, moved, records = 0, false, {}
         local world = { IsValid = function() return true end }
         local controller = { IsValid = function() return true end,
             Debug_InvaderMarchForNearCamp = function(_, group, skip)
-                equal(group, "Invader_Group_NPC_Grade5_Hunter")
+                if native_fname_constructor then equal(type(group), "userdata") end
+                equal(type(group) == "string" and group or group:ToString(), "Invader_Group_NPC_Grade5_Hunter")
                 equal(skip, true)
                 calls = calls + 1
             end }
         local bridge = Bridge.new({ config = Config.defaults(), logger = {
-            info = function() end, error = function() end, preflight_breadcrumb = function() return true end,
+            info = function() end, error = function() end,
+            preflight_breadcrumb = function(_, step) records[#records + 1] = step; return true end,
         } })
         bridge.config.capabilities.startAllInvasions = true
         bridge.registered, bridge.periodic_active, bridge.event_admin_override = true, true, true
@@ -287,7 +289,8 @@ return function(test, equal, truthy)
                 observerInvading = false, observerPathSearching = false, observerCoolTime = true, incidentForBase = false },
                 { nativeId = "native-guid", observer = { IsValid = function() return true end } }
         end
-        _G.FName = function(name) return name end
+        local constructor = native_fname_constructor or function(name) return name end
+        _G.FName = constructor
         local ok, failure = pcall(function()
             local result = bridge:_dispatch_selected_base("base", "probe")
             equal(result.status, "probe_call_returned")
@@ -296,6 +299,17 @@ return function(test, equal, truthy)
             moved = true
             equal(bridge:_dispatch_selected_base("base", "probe").status, "dispatch_call_failed")
             equal(calls, 1, "moved requester dispatched against another base")
+            moved = false
+            _G.FName = nil
+            local failed = bridge:_dispatch_selected_base("base", "probe")
+            equal(failed.status, "dispatch_call_failed")
+            truthy(failed.error:find("at test-native-group [fname-constructor-unavailable]", 1, true))
+            truthy(records[#records]:match("test%-native%-group.before$"))
+            local record_count = #records
+            _G.FName = constructor
+            equal(bridge:_dispatch_selected_base("base", "probe").status, "dispatch_quarantined")
+            equal(#records, record_count, "failed construction was retried")
+            equal(calls, 1)
         end)
         _G.FName = old_fname
         truthy(ok, failure)

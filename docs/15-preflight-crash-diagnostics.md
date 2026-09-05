@@ -34,6 +34,14 @@ The command records a normal durable native-profile occurrence with exactly one 
 
 Requester-only chat states the one-base scope and emits validation/return/outcome progress. A void return is not success; native lifecycle confirmation remains required. Normal `start` commands retain their existing scope and route. This control is never an automatic fallback and must not be run in parallel with another pending start.
 
+### Callable FName binding correction
+
+On `29125a8b34c0`, request 6 was another ten-target `all-bounty` attempt: its probe started and then stopped pathfinding without an incident, and the other nine targets were not dispatched. The separate request 7 correctly selected one native-test base and completed both sets of requester/world/base checks, but stopped at `1788642873-0064-start-test-native-group.before`. No matching after-marker or `debug-nearest-native` invocation exists. The server survived, native calls were locked, and the journal ended at sequence 45. Ten hash-verified files for each attempt are private under `PalEventDirectorDiagnosticBackups\20260905-142854-request-6-all-bounty-timeout-29125a8b34c0` and `PalEventDirectorDiagnosticBackups\20260905-143319-request-7-fname-construction-29125a8b34c0`.
+
+The pinned [global registration](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/Mod/LuaMod.cpp#L5742-L5748) publishes a **userdata instance** as `FName`. Its [call metamethod](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaFName.cpp) implements construction. PED incorrectly rejected it because `type(FName)` was not `"function"`; its function-only mocks hid that mismatch.
+
+The shared lookup now accepts the pinned userdata binding as well as function-based fixtures. The same correction applies to bounty substitution and item-name preparation without enabling item grants or changing event scope. The regression fixture uses real Lua userdata with a call metamethod and verifies both ordinary construction and `pcall` invocation. Native failure replies now include the fixed operation label and an allowlisted classification; raw errors remain suppressed, missing after-markers remain preserved, and a failure still prohibits further native calls in that process. Request 7 is evidence of a construction failure, not evidence that the higher-level raid RPC failed.
+
 ## Preserved IMOUTO evidence
 
 Operator-provided evidence, not independently read from IMOUTO in the MIKO coding session:

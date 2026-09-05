@@ -53,6 +53,7 @@ const required = [
   'tests/preflight-failfast.lua',
   'tests/preflight-failfast.mjs',
   'tests/preflight-property-binding.mjs',
+  'tests/fname-binding.mjs',
   'docs/15-preflight-crash-diagnostics.md',
   'tools/build-imouto-bundle.mjs',
   'tools/build-imouto-world-seed.mjs',
@@ -362,6 +363,11 @@ if (!await exists(path.relative(root, luaRunner))) {
     process.stdout.write(execFileSync(process.execPath, ['tests/preflight-property-binding.mjs'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
   } catch (error) {
     failures.push(`Preflight property binding contract failed: ${error.stderr?.toString().trim() || error.message}`);
+  }
+  try {
+    process.stdout.write(execFileSync(process.execPath, ['tests/fname-binding.mjs'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }));
+  } catch (error) {
+    failures.push(`FName userdata binding contract failed: ${error.stderr?.toString().trim() || error.message}`);
   }
   const luaFiles = sourceFiles.filter((candidate) => candidate.endsWith('.lua'));
   try {
