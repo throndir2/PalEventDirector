@@ -248,7 +248,7 @@ function Director:_profile_allowed(profile_id)
     return nil, "profile is not enabled: " .. profile_id
 end
 
-function Director:arm_start(source, requested_profile, countdown_minutes)
+function Director:arm_start(source, requested_profile, countdown_minutes, admin_override)
     local allowed, reason = native_start_guard(self.bridge)
     if not allowed then return false, reason end
     if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
@@ -279,7 +279,8 @@ function Director:arm_start(source, requested_profile, countdown_minutes)
     if not util.is_integer(countdown_minutes) or countdown_minutes < 0 or countdown_minutes > 60 then
         return false, "countdown must be an integer from 0 through 60 minutes"
     end
-    local armed, result = self.scheduler:arm_manual(profile_id, source or "operator", countdown_minutes * 60, bounties.profile(profile_id).name)
+    local armed, result = self.scheduler:arm_manual(profile_id, source or "operator", countdown_minutes * 60,
+        bounties.profile(profile_id).name, admin_override == true)
     if not armed then return false, result end
     return true, result.key
 end
@@ -344,7 +345,8 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     if profile_id ~= "native" and not self.config.capabilities.substituteBountyMembers then
         return false, "capabilities.substituteBountyMembers is disabled"
     end
-    local healthy, health_error = self.bridge:preflight_start(profile_id)
+    local admin_override = scheduler_occurrence.manual == true and scheduler_occurrence.adminOverride == true
+    local healthy, health_error = self.bridge:preflight_start(profile_id, { admin = admin_override })
     if not healthy then
         return false, health_error
     end
@@ -360,6 +362,7 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         profileName = bounties.profile(profile_id).name,
         status = "starting",
         source = source or "operator",
+        adminOverride = admin_override,
         schedulerOccurrenceKey = scheduler_occurrence_key,
         startedAt = now,
         startConfirmationDeadline = now + self.config.siegeLeague.startDiscoverySeconds,
@@ -1018,6 +1021,20 @@ end
 
 function Director:status_text()
     local event = self.state.event
+    if self.state.status ~= "active" and self.state.status ~= "starting" and self.scheduler and self.scheduler.state then
+        local latest
+        for _, occurrence in pairs(self.scheduler.state.occurrences) do
+            if occurrence.manual and (not latest or (occurrence.plannedAt or 0) > (latest.plannedAt or 0)
+                or ((occurrence.plannedAt or 0) == (latest.plannedAt or 0)
+                    and (occurrence.manualOrder or 0) > (latest.manualOrder or 0))) then
+                latest = occurrence
+            end
+        end
+        if latest and (latest.status == "failed" or latest.status == "blocked")
+            and (latest.plannedAt or 0) >= (event and event.startedAt or 0) then
+            return "Latest Siege League start failed: " .. tostring(latest.reason or "native start was not accepted") .. ". No new invasion started."
+        end
+    end
     local rewards = self.rewards:summary()
     if not event then
         return string.format("Pal Event Director: %s. Rewards pending=%d review=%d.", self.state.status, rewards.pending, rewards.operator_review)
@@ -1032,7 +1049,8 @@ function Director:status_text()
         end
     end
     local stats = self.scoreboard and self.scoreboard:stats() or { players = 0, targets = 0 }
-    return string.format("%s (%s) %s: bases active=%d completed=%d, players=%d, tracked invaders=%d.", event.name, event.profileName or event.profileId or "unknown", self.state.status, active_bases, completed_bases, stats.players, stats.targets)
+    local history = (self.state.status == "completed" or self.state.status == "aborted") and "Last event: " or ""
+    return history .. string.format("%s (%s) %s: bases active=%d completed=%d, players=%d, tracked invaders=%d.", event.name, event.profileName or event.profileId or "unknown", self.state.status, active_bases, completed_bases, stats.players, stats.targets)
 end
 
 function Director:profiles_text()
@@ -1105,7 +1123,7 @@ function Director:_normalize_chat_principal(principal)
     return principal
 end
 
-function Director:_authorize_chat_command(principal, action)
+function Director:_authorize_chat_command(principal, action, skip_audit)
     principal = self:_normalize_chat_principal(principal)
     if not principal then
         return false, "authoritative chat principal is unavailable"
@@ -1160,11 +1178,11 @@ function Director:_authorize_chat_command(principal, action)
         policy = policy,
     }
     if allowed then
-        self.logger:info("Privileged chat command authorized", audit)
+        if not skip_audit then self.logger:info("Privileged chat command authorized", audit) end
         return true, nil, authority
     end
     audit.reason = denial
-    self.logger:warn("Privileged chat command denied", audit)
+    if not skip_audit then self.logger:warn("Privileged chat command denied", audit) end
     return false, denial
 end
 
@@ -1189,11 +1207,11 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
             return true
         end
     end
-    if now - self.last_start_attempt < 10 then
+    if ordinary_user and now - self.last_start_attempt < 10 then
         self:_chat("Siege League start requests are temporarily rate-limited.", uid)
         return true
     end
-    self.last_start_attempt = now
+    if ordinary_user then self.last_start_attempt = now end
     local profile_id, profile_error = self:_profile_allowed(requested_profile)
     if not profile_id then
         self:_chat("Siege League start failed: " .. tostring(profile_error), uid)
@@ -1216,7 +1234,7 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
             return true
         end
     end
-    local ok, result = self:arm_start("chat:" .. util.mask_uid(uid), profile_id, countdown_minutes)
+    local ok, result = self:arm_start("chat:" .. util.mask_uid(uid), profile_id, countdown_minutes, not ordinary_user)
     if not ok and ordinary_user then
         self.state.lastUserStartAt = previous_user_start
         local rollback_ok = self:_persist("user_start_cooldown_rollback", {
@@ -1239,11 +1257,13 @@ function Director:handle_chat(principal, message)
         return false
     end
     local now = self.clock()
-    if self.command_times[uid] and now - self.command_times[uid] < 2 then
+    local _, _, authority = self:_authorize_chat_command(principal, "priority", true)
+    local admin = authority == "palworld-admin" or authority == "configured-operator"
+    if not admin and self.command_times[uid] and now - self.command_times[uid] < 2 then
         return true
     end
     local words = util.split_words(lowered)
-    self.command_times[uid] = now
+    if not admin then self.command_times[uid] = now end
     if words[1] == "!siege" then
         local action = words[2] or "status"
         if action == "status" then
@@ -1307,16 +1327,18 @@ function Director:handle_operator_command(command, source, principal)
             return false, quarantine_reason
         end
     end
+    local admin_override = source == nil or source == "console"
     if source and source:match("^chat:") then
-        local authorized, denial = self:_authorize_chat_command(principal, action)
+        local authorized, denial, authority = self:_authorize_chat_command(principal, action)
         if not authorized then
             self:_chat("PED ERROR: command denied: " .. tostring(denial) .. ".", principal and principal.uid)
             return false, denial
         end
+        admin_override = authority == "palworld-admin" or authority == "configured-operator"
     end
     local ok, result
     if action == "start" then
-        ok, result = self:arm_start(source or "console", words[2], words[3])
+        ok, result = self:arm_start(source or "console", words[2], words[3], admin_override)
     elseif action == "status" then
         ok, result = true, self:status_text() .. (allowed and "" or " " .. quarantine_reason)
     elseif action == "leaderboard" then

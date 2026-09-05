@@ -2254,6 +2254,7 @@ test("reward grant never runs when durable intent fails", function()
 end)
 
 dofile(join(root, "tests", "preflight-diagnostic.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "admin-control.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)

@@ -16,6 +16,8 @@ Start the installed test profile, join, and issue the ordinary in-game command. 
 
 Ordinary eligibility rejections return an error normally. A native Lua error, missing recorder, or failed before/after write records a fixed error classification and disables further native starts for that process. There is no retry or fallback. Native fail-fast cannot be caught: preserve the last before-marker, private logs, and crash evidence, then stop/fix/redeploy/restart. Do not replay the interrupted event.
 
+Authorized admin starts now use the exact-base `RequestIncidentInvaderEnemy(Guid, Observer)` entry point, with `admin-request-incident` and `admin-admission-result` trace boundaries. Ordinary starts retain the march path and cooldown veto. Admin cooldown flags/timers are not altered: the native Boolean admission result and lifecycle callbacks decide whether the request actually worked. This direct admission path is source-audited but still requires live confirmation.
+
 ## Preserved IMOUTO evidence
 
 Operator-provided evidence, not independently read from IMOUTO in the MIKO coding session:

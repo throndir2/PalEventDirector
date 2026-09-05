@@ -187,16 +187,19 @@ function Scheduler:_materialize(schedule, intended_at)
     return occurrence
 end
 
-function Scheduler:arm_manual(profile, source, countdown_seconds, name)
+function Scheduler:arm_manual(profile, source, countdown_seconds, name, admin_override)
     countdown_seconds = countdown_seconds or 600
     if not util.is_integer(countdown_seconds) or countdown_seconds < 0 or countdown_seconds > 3600 then
         return false, "manual countdown must be from 0 through 60 minutes"
     end
+    local superseded = {}
     for _, occurrence in pairs(self.state.occurrences) do
         if occurrence.manual and occurrence.status == "planned" then
-            return false, "a manual Siege League countdown is already armed"
+            if admin_override ~= true then return false, "a manual Siege League countdown is already armed" end
+            superseded[#superseded + 1] = { occurrence = occurrence, status = occurrence.status, reason = occurrence.reason }
         end
     end
+    local previous_nonce = self.state.manualNonce
     self.state.manualNonce = (self.state.manualNonce or 0) + 1
     local now = self.clock()
     local schedule = {
@@ -221,12 +224,24 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name)
         plannedAt = now,
         countdownSeconds = countdown_seconds,
         manual = true,
+        manualOrder = self.state.manualNonce,
+        adminOverride = admin_override == true,
+        superseded = {},
         source = source,
         schedule = util.deep_copy(schedule),
     }
     self.state.occurrences[occurrence.key] = occurrence
+    for _, previous in ipairs(superseded) do
+        previous.occurrence.status = "cancelled"
+        previous.occurrence.reason = "superseded_by_admin"
+        occurrence.superseded[#occurrence.superseded + 1] = previous.occurrence.key
+    end
     if not self.persist("manual_countdown_armed", occurrence) then
         self.state.occurrences[occurrence.key] = nil
+        self.state.manualNonce = previous_nonce
+        for _, previous in ipairs(superseded) do
+            previous.occurrence.status, previous.occurrence.reason = previous.status, previous.reason
+        end
         return false, "unable to persist manual countdown"
     end
     if countdown_seconds > 0 then
@@ -496,12 +511,19 @@ function Scheduler:tick(now)
             end
         end
     end
+    local planned = {}
     for _, occurrence in pairs(self.state.occurrences) do
         if occurrence.status == "planned" and occurrence.schedule
             and (occurrence.manual or values_equal(occurrence.schedule, enabled[occurrence.scheduleId])) then
-            self:_process(occurrence.schedule, occurrence, now)
+            planned[#planned + 1] = occurrence
         end
     end
+    table.sort(planned, function(left, right)
+        if (left.adminOverride == true) ~= (right.adminOverride == true) then return left.adminOverride == true end
+        if left.intendedAt ~= right.intendedAt then return left.intendedAt < right.intendedAt end
+        return left.key < right.key
+    end)
+    for _, occurrence in ipairs(planned) do self:_process(occurrence.schedule, occurrence, now) end
     local terminal = {}
     for key, occurrence in pairs(self.state.occurrences) do
         if TERMINAL_STATUS[occurrence.status] then

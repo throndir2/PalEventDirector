@@ -221,6 +221,8 @@ function Bridge.new(options)
         pending_manager = nil,
         event_manager = nil,
         pending_world = nil,
+        pending_admin_override = false,
+        event_admin_override = false,
         event_world = nil,
         event_manager_address = nil,
         event_world_address = nil,
@@ -333,6 +335,8 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.pending_manager = nil
     self.event_world = self.pending_world
     self.pending_world = nil
+    self.event_admin_override = self.pending_admin_override == true
+    self.pending_admin_override = false
     self.event_manager_address = object_address(self.event_manager)
     self.event_world_address = object_address(self.event_world)
     if not self.event_manager_address or not self.event_world_address then
@@ -372,6 +376,7 @@ function Bridge:_request_window_open(base_id)
 end
 
 function Bridge:end_event_tracking()
+    self.pending_admin_override, self.event_admin_override = false, false
     self.event_open = false
     self.discovery_open = false
     self.selection_open = false
@@ -799,7 +804,7 @@ function Bridge:list_online_players()
     return players
 end
 
-function Bridge:_eligible_online_guild_bases(manager, roster)
+function Bridge:_eligible_online_guild_bases(manager, roster, admin_override)
     local utility = self:_utility()
     if not valid(utility) then
         return nil, nil, nil, nil, "PalUtility unavailable"
@@ -850,13 +855,14 @@ function Bridge:_eligible_online_guild_bases(manager, roster)
                     if not key_id or not observer_id or key_id ~= base_id or observer_id ~= base_id then
                         observer_error = "eligible base GUID sources disagree: " .. util.mask_uid(base_id)
                         return true
-                    elseif invading == nil or path_searching == nil or cooling_down == nil or ignore_invader == nil then
+                    elseif type(invading) ~= "boolean" or type(path_searching) ~= "boolean"
+                        or type(cooling_down) ~= "boolean" or type(ignore_invader) ~= "boolean" then
                         observer_error = "observer state is unavailable for eligible base " .. util.mask_uid(base_id)
                         return true
                     elseif invading or path_searching then
                         observer_error = "eligible base is already invading or path-searching: " .. util.mask_uid(base_id)
                         return true
-                    elseif cooling_down then
+                    elseif cooling_down and admin_override ~= true then
                         observer_error = "eligible base is in native invasion cooldown: " .. util.mask_uid(base_id)
                         return true
                     elseif ignore_invader then
@@ -1510,7 +1516,7 @@ function Bridge:preflight_environment()
     return true, { serverBuildId = observed_build_id, ue4ssVersion = current }
 end
 
-function Bridge:preflight_start(profile_id)
+function Bridge:preflight_start(profile_id, control)
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
     self.pending_expected_bases = {}
@@ -1519,6 +1525,7 @@ function Bridge:preflight_start(profile_id)
     self.pending_roster = {}
     self.pending_manager = nil
     self.pending_world = nil
+    self.pending_admin_override = type(control) == "table" and control.admin == true
     local environment_ok, environment_error = self:preflight_environment()
     if not environment_ok then
         return false, environment_error
@@ -1557,7 +1564,7 @@ function Bridge:preflight_start(profile_id)
         end
     end
     local eligible_ok, base_set, native_ids, base_guilds, resolved_roster, eligibility_error =
-        self:_native_step("eligible-bases", function() return self:_eligible_online_guild_bases(manager, roster) end)
+        self:_native_step("eligible-bases", function() return self:_eligible_online_guild_bases(manager, roster, self.pending_admin_override) end)
     if not eligible_ok then return false, base_set end
     if not base_set then return false, eligibility_error end
     if #resolved_roster > self.config.limits.maxPlayers then
@@ -1574,11 +1581,12 @@ function Bridge:preflight_start(profile_id)
     self.pending_roster = resolved_roster
     self.pending_manager = manager
     self.pending_world = world
+    local method = self.pending_admin_override and "RequestIncidentInvaderEnemy" or "StartInvaderMarchForBaseCamp"
     local lookup_ok, function_object = self:_native_step("dispatch-function",
-        function() return self:_static_find("/Script/Pal.PalInvaderManager:StartInvaderMarchForBaseCamp") end)
+        function() return self:_static_find("/Script/Pal.PalInvaderManager:" .. method) end)
     if not lookup_ok then return false, function_object end
     if not valid(function_object) then
-        return false, "StartInvaderMarchForBaseCamp is unavailable for this revision"
+        return false, method .. " is unavailable for this revision"
     end
     return true
 end
@@ -1723,8 +1731,12 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     if not target then
         return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = target_error, before = before }
     end
+    if self.event_admin_override and not valid(target.observer) then
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_precondition_failed", error = "native base observer is invalid", before = before }
+    end
     if before.worldInvaderEnabled ~= true or before.baseAvailable ~= true or before.baseIgnoreInvader ~= false
-        or before.observerInvading ~= false or before.observerPathSearching ~= false or before.observerCoolTime ~= false
+        or before.observerInvading ~= false or before.observerPathSearching ~= false
+        or type(before.observerCoolTime) ~= "boolean" or (before.observerCoolTime and not self.event_admin_override)
         or before.incidentForBase then
         return {
             baseId = base_id,
@@ -1743,7 +1755,19 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     }
     self.dispatching_base_id = base_id
     self.selection_open = true
-    local ok, result = self:_native_call("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
+    local ok, result
+    if self.event_admin_override then
+        ok, result = self:_native_call("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
+        if ok then
+            ok, result = self:_native_step("admin-admission-result", function()
+                if type(result) ~= "boolean" then error("Unexpected native enemy-incident admission result", 0) end
+                return result
+            end)
+            if ok and not result then ok, result = false, "Native enemy-incident request rejected the base; no invasion was accepted." end
+        end
+    else
+        ok, result = self:_native_call("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
+    end
     self.selection_open = false
     self.dispatching_base_id = nil
     local request = self.request_windows[base_id]

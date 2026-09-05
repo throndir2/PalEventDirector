@@ -97,6 +97,14 @@ Live IMOUTO evidence from build `24575149` proved that ten selected-base `void` 
 
 The word “all” still needs runtime confirmation. The generated Modding Kit implementation is a stub and cannot show whether Palworld internally excludes cooldown, unloaded, obstructed, or already-invaded bases.
 
+### Authorized admin admission
+
+The admin path uses `RequestIncidentInvaderEnemy(const FGuid& Guid, UPalInvaderBaseCampObserver* Observer)`, a reflected method declared by the pinned [manager header](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalInvaderManager.h). It submits an enemy-incident request for the exact selected base and observer and returns a Boolean admission result. This is distinct from the ordinary `StartInvaderMarchForBaseCamp` march path.
+
+Only authority validated by the director can set the persisted manual request's `adminOverride`; ordinary-user input cannot supply that bit. The flag is carried through the scheduler to eligibility and dispatch. For that path, the observer's cooldown remains readable diagnostic state rather than a PED veto. PED does not clear `bIsCoolTime`, `CoolTimeFinish`, or `CoolTimeElapsed`. Invalid observers, active/path-searching incidents, ignored/unavailable bases, wrong worlds, and disabled world invasions remain rejected.
+
+The method's existence and declaration are source-audited, not proof of native behavior. A Boolean `false` is reported as native rejection; a non-Boolean return is a native-contract fault; `true` still requires a correlated lifecycle callback before `RAID STARTED`, fanout, ranking, or rewards. There is no fallback or automatic retry if the direct request is unavailable or rejected. Live acceptance is a remaining test, not something inferred from a mock.
+
 ### Exact named group
 
 `APalPlayerController` exposes reliable server calls:
@@ -320,7 +328,7 @@ The `all-bounty` profile attempts to replace every concrete member in each inter
 
 ### Highest-priority admin chat control
 
-**Status: approved design, not yet fully implemented.** The deployed direct-test build still applies a native-cooldown veto and common chat/start throttles. Those are implementation gaps relative to this contract. Updating this document does not change live cooldowns or server behavior.
+**Status: partially implemented.** This revision adds admin exemptions from the ordinary chat/start throttles, trusted admin context through the scheduler, supersession of pending manual countdowns, admin-first processing of due work, the direct native enemy-incident request, and latest-failed-attempt status. Native admission still needs live confirmation. Scoped replacement of an already active incident and the broader cancellation/cleanup contract remain unimplemented; they must not be claimed as working.
 
 An admin command must do what its documented action says, at the highest command priority. Acknowledging or queuing a request is not completing it. If the engine cannot perform the action, PED must return a specific failure or partial result and preserve evidence; it must never silently ignore the command, report a no-op as success, or substitute an unrelated action.
 

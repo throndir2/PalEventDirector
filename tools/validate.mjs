@@ -49,6 +49,7 @@ const required = [
   'tools/verify-artifact.mjs',
   'tests/artifact-provenance.mjs',
   'tests/preflight-diagnostic.lua',
+  'tests/admin-control.lua',
   'tests/preflight-failfast.lua',
   'tests/preflight-failfast.mjs',
   'tests/preflight-property-binding.mjs',

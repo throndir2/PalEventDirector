@@ -1,6 +1,6 @@
 # Alpha.3 administration and scheduling
 
-> **Current runtime versus required design:** the direct laboratory profile enables ordinary in-game starts with automatic native breadcrumbs and no manual preflight prerequisite. The newly approved [highest-priority admin contract](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control) requires cooldown overrides, priority/preemption, and request-specific outcomes that are not yet fully implemented. The current runtime can still reject a start on native cooldown. See [the current test procedure](15-preflight-crash-diagnostics.md); do not mistake this design update for a deployment.
+> **Current code versus required design:** the direct laboratory profile enables in-game starts with automatic native breadcrumbs and no manual preflight prerequisite. This revision adds admin throttle exemptions, pending-countdown supersession, admin-first due-work processing, and direct native enemy-incident admission without rewriting cooldown timers. Native acceptance still requires a live test. Active-incident replacement and the complete [admin command contract](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control) remain future work.
 
 ## Scope and safety
 
@@ -158,7 +158,9 @@ Privileged chat forms:
 | `!siege reset` | Returns completed/aborted/recovery state to idle only when no native invasion is active. |
 | `!ped <operator command>` | Runs the corresponding console command below after the same fresh policy decision. |
 
-Unknown commands print the bounded help form. The current implementation has a two-second per-UID command limit and an additional ten-second process-local start limit. Under the required admin-priority design, these ordinary-user limits must not suppress authorized admin commands; the exemption is an implementation requirement, not yet a verified live capability.
+Unknown commands print the bounded help form. Ordinary users retain the two-second per-UID command limit, ten-second process-local start limit, and configured user-start cooldown. Authorized admins/operators bypass those limits. A newer admin manual countdown atomically supersedes an older pending manual countdown, and due admin work is processed before ordinary due work. Positive countdown duration is still honored.
+
+Admin starts carry an internal, persisted `adminOverride` selected by the authorization result, never from chat text. Their selected-base request uses `RequestIncidentInvaderEnemy(Guid, Observer)`, does not veto solely on a readable cooldown flag, and never rewrites cooldown timers. Native rejection is reported explicitly; acceptance still requires lifecycle confirmation. Current status prioritizes the latest failed manual attempt over an unrelated historical completed event.
 
 ## Server-console commands
 
