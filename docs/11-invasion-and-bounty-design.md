@@ -10,6 +10,8 @@ Palworld 1.0 has a native Negotiator phase that may let players buy off a declar
 
 Consent remains relevant to unrelated mechanics that directly take control of an individual player, such as forced teleportation or experimental PvP rules. It is not part of base-invasion targeting.
 
+**Administrative control decision (2026-09-05):** an authorized admin's chat command is authoritative, highest-priority control intent, not an ordinary event suggestion. Routine cooldowns, scheduled work, random-selection rules, and player throttles must not silently veto it. The [admin command contract](#highest-priority-admin-chat-control) below defines execution, preemption, and truthful outcomes. This is the required design; it is not a claim that all of it is already implemented.
+
 ## Evidence snapshot
 
 This design was checked on 2026-08-31 against:
@@ -79,7 +81,7 @@ Until that matrix is complete, documentation and player messaging may say “nat
 
 ## Native invasion controls
 
-> **Execution quarantined after the IMOUTO preflight stack-cookie crash.** The controls below describe the design, not permission to retest the crashing build. Use [the diagnostic-only procedure](15-preflight-crash-diagnostics.md); native-all fallback and normal starts are disabled.
+> **Runtime status:** the direct laboratory profile permits ordinary in-game start tests with automatic native breadcrumbs. The original crashing revision and oversized by-value settings getter remain prohibited, and native-all comparison is not a fallback. See [the current test procedure](15-preflight-crash-diagnostics.md). The admin-priority policy below still requires implementation.
 
 ### Scope
 
@@ -306,7 +308,7 @@ Health protection should reduce the per-base profile size before it excludes oth
 
 ### Chat activation
 
-Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. Zero dispatches the selected-base probe immediately. A positive value arms a durable countdown with its selected-duration notice and every 10/5/1-minute milestone that fits; recurring schedules retain all three mandatory offsets. The default `operatorOrPalworldAdmin` policy accepts either a stable UID in `operatorUids` or the current server-side `APalPlayerController.bAdmin` result from Palworld's built-in administrator authentication. Display names, passwords, and client claims never authorize a start. Authority is read again for every command and never bypasses active-event, recovery, compatibility, base-count, native-concurrency, lifecycle-confirmation, or persistence guards.
+Alpha.3 provides the fixed command `!siege start <profile> [countdown minutes]`. Zero requests immediate execution. A positive value explicitly requests a countdown with its selected-duration notice and every 10/5/1-minute milestone that fits; recurring schedules retain all three mandatory offsets. The default `operatorOrPalworldAdmin` policy accepts either a stable UID in `operatorUids` or the current server-side `APalPlayerController.bAdmin` result from Palworld's built-in administrator authentication. Display names, passwords, and client claims never authorize a start. Authority is read again for every command. Once authorized as an administrator, the command follows the priority contract below rather than ordinary-player cooldown and scheduling policy.
 
 The recommended live policy is configured-operator-or-native-admin start and, later, a separately implemented player vote. `anyUser` is useful only for a trusted private server because the unified policy also permits other privileged commands. User text can select only fixed profile IDs and cannot supply character IDs, Unreal paths, levels, item IDs, or function names.
 
@@ -315,6 +317,52 @@ The flagship command is:
 `!siege start all-bounty 10`
 
 The `all-bounty` profile attempts to replace every concrete member in each intercepted array Palworld selected. It does not enlarge that array. A deterministic cursor rotates through all 34 audited bounty IDs across base selections; therefore all 34 are attempted when the event supplies at least 34 concrete slots, while a smaller event receives a deterministic subset. The transform leaves native levels, companion fields, counts, waves, pathfinding, lifecycle, and completion context untouched; live tests must prove the game consumes those values as expected.
+
+### Highest-priority admin chat control
+
+**Status: approved design, not yet fully implemented.** The deployed direct-test build still applies a native-cooldown veto and common chat/start throttles. Those are implementation gaps relative to this contract. Updating this document does not change live cooldowns or server behavior.
+
+An admin command must do what its documented action says, at the highest command priority. Acknowledging or queuing a request is not completing it. If the engine cannot perform the action, PED must return a specific failure or partial result and preserve evidence; it must never silently ignore the command, report a no-op as success, or substitute an unrelated action.
+
+For this contract, "admin" means a sender with fresh server-validated administrative authority under the configured policy, including authorized PED operators. An ordinary user permitted by `anyUser` does not acquire admin priority or force privileges. `!siege`, `!ped`, and equivalent console forms must have consistent semantics.
+
+#### Priority and preemption
+
+- Admin control runs ahead of scheduled events, ordinary-user requests, automatic fanout work, and background/cosmetic work. Admin queries must not disappear into the ordinary two-second chat throttle or wait behind a long dispatch batch.
+- The ordinary-user start cooldown, process-wide start throttle, and routine native raid cooldown are not admin vetoes. No separate manual preflight, unlock ceremony, or redundant `force` flag is required to obtain admin semantics.
+- An admin's explicit timing remains authoritative: `start ... 0` executes at the next safe game-thread opportunity; `start ... N` honors the requested N-minute countdown rather than silently making it immediate or adding another delay.
+- Conflicting pending work is cancelled or superseded with a durable reason. A new admin intent supersedes older pending intent for the same controlled resource; unrelated resources are not cancelled.
+- `cancel` and `abort` interrupt pending work before another native request is issued. A synchronous native call already in progress is allowed to return; priority is not permission to interrupt it mid-instruction.
+- If the requested action requires replacing an active incident, perform an explicit, scoped cancel/cleanup/replace transition through a verified native control path. Do not merely return "event already active," silently skip the target, stack conflicting incidents, or cancel unrelated incidents.
+- Per-frame work budgets still bound execution, but large admin requests are serviced in highest-priority bounded batches with progress reporting rather than silently dropped or downgraded.
+
+#### Cooldown ownership and forced native execution
+
+`bIsCoolTime` is native observer state; it is distinct from PED's ordinary-user cooldown. IMOUTO reported it true on the first observed start attempt after startup, but the initialization/restoration cause has not been established. PED must not claim that it created a new timer merely because it first observed that flag.
+
+For an authorized admin start, a readable cooldown flag is diagnostic information, not a reason for PED to refuse to submit the command. The adapter must use the verified native administrative/forced-start route that implements the requested scope. If that route requires a supported temporary override, capture the baseline, restrict the override to that command's targets, and reconcile/restore it according to an explicit lease. Do not clear every base's cooldown at startup or alter timers indefinitely.
+
+Simply deleting a Lua veto is not proof that the native engine will accept the request. A native no-op, missing lifecycle callback, or unresolved engine restriction remains a failed implementation of that admin action and must be reported as such, with the precise boundary needed for investigation.
+
+#### Command outcomes
+
+| Admin command | Required behavior |
+|---|---|
+| Status, profile, schedule, score, and leaderboard queries | Reply promptly with the requested current information, independently of ordinary-user throttles. |
+| `start <profile> 0` | Execute the authorized start now, applying scoped preemption/force semantics where necessary. Report started only after native lifecycle evidence. |
+| `start <profile> N` | Install the explicitly requested countdown at admin priority and honor its deadline; do not postpone it behind lower-priority work. |
+| `cancel` | Cancel the pending countdown/start and prevent any not-yet-issued dispatch. Report exactly what was cancelled, or that nothing was pending. |
+| `abort` | Stop further dispatch and terminate the controlled event through its supported cleanup path. Report any native effects that could not be stopped; do not claim they disappeared. |
+| `resolve` | Finalize the actual controlled occurrence using recorded outcomes. Never invent a started invasion, rankings, or rewards for a request that did not start. |
+| `reset` | Perform a journaled reset of the documented PED control state, including required scoped cleanup. Preserve historical evidence and interrupted obligations; never replay unknown native effects or pretend an unresolved engine fault was repaired. |
+
+Every admin request needs an identity, normalized action/arguments, authoritative receipt order, and an outcome tied to that request. Report distinct accepted, executing, succeeded, failed, partial, and superseded states. `!siege status` must prioritize the active command/event and the latest start attempt; an older completed event must be explicitly labeled as history, never presented as the outcome of the latest failed start.
+
+#### Non-negotiable execution integrity
+
+Highest priority does not mean unchecked memory writes or fabricated success. Authentication, valid inputs/targets, verified native calling conventions, the vanilla-client boundary, durable intent/outcome recording, and truthful lifecycle confirmation remain mandatory. Required cleanup and server-integrity stops can interrupt work; routine policy must not be disguised as an integrity failure.
+
+If a verified native primitive is unavailable, a target is structurally invalid, or continuing would use a known-corrupting call, report that specific technical limitation immediately and treat it as a defect/investigation item. Do not route the admin back through an arbitrary diagnostic prerequisite. The original crashed occurrence and its evidence remain preserved and are never automatically replayed.
 
 ## Leaderboard and reward decision
 

@@ -263,7 +263,7 @@ All UObject access and game mutations execute through a bounded game-thread queu
 
 Jobs have:
 
-- priority: cleanup, safety, reward, event-critical, normal, cosmetic;
+- priority: required integrity/cleanup, admin control, reward settlement, event-critical, normal, cosmetic;
 - deadline and maximum attempts;
 - capability and event owner;
 - deduplication key;
@@ -272,6 +272,8 @@ Jobs have:
 - typed result and reconciliation step.
 
 Cleanup and safety work preempts spectacle. Per-frame work is prohibited; the queue processes a bounded number of jobs and time budget per cycle.
+
+Admin control is the highest command lane. It preempts scheduled, ordinary-user, and background work at safe native-call boundaries; a bounded execution budget is not a business-policy veto. Conflicting pending commands are explicitly superseded and journaled. Required integrity/cleanup work exists to execute or safely stop the command, not to reintroduce routine cooldowns as hidden admin restrictions. See [the admin command contract](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control).
 
 ### Layer 9: resource claims
 
@@ -414,6 +416,8 @@ Planned operator commands:
 - `!ped rewards pending`
 
 Administrative authority must derive from a configured UID allowlist and/or validated Palworld admin state. Display names are never authorization identities. Commands are parsed with strict token/length limits and sensitive values are never accepted through chat.
+
+Resolve authority before applying ordinary-user throttles or admission rules. Authorized administrative chat and console commands enter the same high-priority control plane, with request identity, scoped preemption, and explicit accepted/executing/terminal outcomes. Native cooldowns and scheduler contention do not silently veto admin intent. Force execution must use verified native operations or scoped, reversible overrides; it cannot fake lifecycle success or bypass memory/persistence integrity. These are required design semantics, not a claim of complete alpha.3 implementation.
 
 ## Persistence model
 

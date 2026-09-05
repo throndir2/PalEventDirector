@@ -1,20 +1,26 @@
 # Alpha.3 administration and scheduling
 
-> **Current revision is diagnostic-only after the IMOUTO native crash.** The gameplay commands described below are quarantined, not approved live test instructions. Only server-console `ped status`, `ped diagnose-preflight` preview, and `ped diagnose-preflight confirm-disposable-readonly <expected-step>` are available, plus the fixed local PowerShell ingress. The diagnostic executes one read-only operation per explicit step-bound confirmation and never dispatches an invasion. See [the crash-diagnostic procedure and ABI evidence](15-preflight-crash-diagnostics.md).
+> **Current runtime versus required design:** the direct laboratory profile enables ordinary in-game starts with automatic native breadcrumbs and no manual preflight prerequisite. The newly approved [highest-priority admin contract](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control) requires cooldown overrides, priority/preemption, and request-specific outcomes that are not yet fully implemented. The current runtime can still reject a start on native cooldown. See [the current test procedure](15-preflight-crash-diagnostics.md); do not mistake this design update for a deployment.
 
 ## Scope and safety
 
 Alpha.3 is a laboratory-only release. Its mutation preflight rejects any mode other than `laboratory`, and every capability is disabled in the generated configuration. It never requires a client mod: players connect with normal vanilla clients and use ordinary Palworld chat and server notices.
 
-On IMOUTO, the installed laboratory activation command now prepares **diagnostics only**. While the dedicated server is stopped, it backs up schema-3 configuration, pins build `24575149` and UE4SS API `3.0.1`, disables every gameplay capability and schedule, and preserves recovery evidence. The installed local preflight helper provides preview, explicit one-step submission, and result retrieval without player chat or debug consoles. See [the current procedure](15-preflight-crash-diagnostics.md).
+On IMOUTO, the installed preparation command configures the attested profile while stopped. The `laboratory-native-test` profile enables chat/combat/invasion/substitution capabilities, with schedules and item grants disabled. The older isolated diagnostic profile disables all capabilities. Both preserve configuration backups and recovery evidence and pin build `24575149` / UE4SS API `3.0.1`. The local stepped helper is optional, not a gameplay unlock ceremony.
 
 The persistent configuration is `Pal/Saved/PalEventDirector/config.json` below the dedicated-server root, or the directory selected by `PAL_EVENT_DIRECTOR_DATA_DIR`. It is strict JSON, not JSONC. Stop the laboratory server before editing it and restart after every edit; configuration is loaded only at mod startup.
 
 Schema 3 intentionally has no migration from earlier alpha configurations or state. Archive the complete `Pal/Saved/PalEventDirector` directory before an upgrade, start once to generate a safe schema-3 configuration, stop, and reapply reviewed values. Never copy the Production event-state directory into DEV.
 
-## Archived gameplay contract — unavailable while quarantined
+## Gameplay contract and implementation status
 
-Everything from Event boundary through the configuration reference below describes the pre-crash design and simulation contract. It is not a live operation checklist. The executable current workflow is exclusively [preflight diagnostics](15-preflight-crash-diagnostics.md).
+The command tables below describe the implemented alpha.3 behavior unless explicitly marked as required design. Direct testing follows [the laboratory runbook](15-preflight-crash-diagnostics.md). The admin-priority contract supersedes ordinary throttling/cooldown policy for authorized administrators as a design requirement; implementation must be completed before claiming those overrides work.
+
+### Required admin behavior
+
+An authorized admin chat command is highest-priority control intent. Routine native/PED cooldowns, scheduled work, and ordinary-user throttles must not veto or silently delay it. Zero minutes means execute now; a requested positive countdown must be honored. Conflicts require scoped cancellation/replacement, not a generic "already active" refusal. Admin queries must receive prompt replies, and aliases must behave consistently.
+
+Commands must report their own accepted, executing, succeeded, failed, partial, or superseded outcome. Native acceptance must be observed; "completed, zero invaders" is not success for a rejected start. Status must distinguish the latest attempt from historical completed events. See [the complete contract and integrity boundaries](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control).
 
 ### Event boundary
 
@@ -152,13 +158,13 @@ Privileged chat forms:
 | `!siege reset` | Returns completed/aborted/recovery state to idle only when no native invasion is active. |
 | `!ped <operator command>` | Runs the corresponding console command below after the same fresh policy decision. |
 
-Unknown commands print the bounded help form. Chat has a two-second per-UID command limit, and start attempts have an additional ten-second process-local limit.
+Unknown commands print the bounded help form. The current implementation has a two-second per-UID command limit and an additional ten-second process-local start limit. Under the required admin-priority design, these ordinary-user limits must not suppress authorized admin commands; the exemption is an implementation requirement, not yet a verified live capability.
 
 ## Server-console commands
 
-Currently permitted: `ped status`, `ped diagnose-preflight`, and `ped diagnose-preflight confirm-disposable-readonly <expected-step>`, or the installed local preflight helper. **All other commands in this archived reference are rejected before reflection**, including starts, reset, and native-all comparison.
+In the direct laboratory profile, ordinary console commands are available subject to their implemented state checks. The stepped diagnostic remains optional. Native-all comparison and item grants remain disabled in the current profile.
 
-Historical UE4SS command contract (not enabled):
+UE4SS command contract:
 
 | Command | Result |
 |---|---|
@@ -171,7 +177,7 @@ Historical UE4SS command contract (not enabled):
 | `ped resolve` | Resolves the current event. |
 | `ped abort` | Stops director scoring without destroying native actors. |
 | `ped reset` | Clears a terminal/recovery director state after native incidents finish. |
-| `ped diagnose-native-all confirm-disposable-start-all` | Console-only, explicit native `StartInvaderMarchAll()` comparison. Use only on a separately restored disposable IMOUTO world; it is never an event fallback. |
+| `ped diagnose-native-all confirm-disposable-start-all` | Disabled in the current direct-test profile. The historical comparison requires separately restored disposable-world evidence and is never an event fallback. |
 | `ped rewards` | Processes pending grants only when `grantItems` is available. Alpha.3 validation requires `grantItems=false`, so this command fails closed. |
 
 There is no separate `start-now` alias and no command that force-stops an unknown native invasion; use a zero-minute `start` explicitly. The native-all diagnostic may include offline-guild bases and is intentionally excluded from chat, scoring, bounty substitution, and automatic recovery. Never run selected-base and native-all comparisons in the same world state: restore the same disposable snapshot between runs and compare the masked logs.
@@ -231,7 +237,7 @@ Profiles never resize Palworld's native member array. A transformation failure l
 | `siegeLeague.defaultProfile` | Canonical enabled profile used when omitted. |
 | `siegeLeague.allowedProfiles` | Array of unique canonical profile IDs. Arbitrary character IDs/functions are never accepted. |
 | `siegeLeague.chatStartPolicy` | `operatorOnly`, `palworldAdminOnly`, `operatorOrPalworldAdmin`, or `anyUser`; applies to all privileged chat commands. |
-| `siegeLeague.userStartCooldownSeconds` | 60–604800, global and persistent for non-operator starts. |
+| `siegeLeague.userStartCooldownSeconds` | 60–604800, global and persistent for ordinary-user starts; authenticated admins and authorized operators are exempt. |
 | `siegeLeague.manualCountdownMinutes` | 0–60; zero starts immediately. |
 | `siegeLeague.allowCrossBaseRoaming` | Must be `true` in alpha.3; all eligible-base contribution accumulates globally. |
 | `siegeLeague.targetPoints` | 1–1,000,000 points budgeted across each target's immutable maximum HP. |

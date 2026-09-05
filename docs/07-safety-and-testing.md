@@ -44,11 +44,11 @@ Initial budgets are conservative and will be replaced by measured limits.
 | Generic scheduler tick | once per second | Skip noncritical presentation work. |
 | Zone sampling | once per second for active participants | Increase interval or pause zone events. |
 | Broad object reconciliation | no more than once per 5 seconds and only active classes | Stop the dependent adapter. |
-| Game-thread jobs | 4 normal jobs per cycle plus safety priority | Carry over; never burst unbounded work. |
+| Game-thread jobs | 4 normal jobs per cycle plus admin control and required safety priority | Carry over; never burst unbounded work. |
 | One normal job | target under 0.5 ms; hard warning at 2 ms | Disable or reduce adapter workload. |
 | Director game-thread total | target under 2 ms per second at normal load | Shed optional work and spawns. |
 | Public announcements | at most 1 per minute per event, with global burst cap | Coalesce and delay. |
-| Private responses | per-player token bucket | Return one cooldown notice, then suppress. |
+| Private responses | Ordinary-player token bucket; separate admin-control lane | Rate-limit ordinary replies; never silently suppress an authorized admin command's outcome. |
 | Alive spawned event actors | template cap under global cap; initial global cap 20 | Stop new spawning and reconcile. |
 | Total spawned per occurrence | initial global cap 100 | End wave/event according to policy. |
 | Simultaneous invasions | one in laboratory; all eligible online-guild bases after staged scale proof | Treat the filtered siege as one exclusive occurrence; reduce per-base composition before omitting eligible targets. |
@@ -264,7 +264,23 @@ Acceptance checks include connection success, no missing-class/asset errors, cor
 - Target base removed, unloaded, obstructed, on cooldown, already invaded, in an offline-only guild, or affected by a player/guild lookup failure.
 - Incident completes while area unloaded.
 - Restart mid-incident.
-- No cleanup call affects a naturally occurring incident.
+- Automatic cleanup never affects a naturally occurring incident; any explicit admin cancel/replace must target a verified incident in the requested scope, with no collateral cleanup.
+
+### Administrative command priority
+
+These acceptance cases implement the [highest-priority admin contract](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control); they are requirements, not reports of passing live tests.
+
+- Freshly authenticated admin starts at server startup with `bIsCoolTime=true`: PED does not veto on cooldown, and a verified native forced-start path must produce lifecycle evidence or a precise failure.
+- Ordinary users, including those allowed by `anyUser`, retain their cooldown/rate restrictions and cannot claim administrative priority.
+- Admin status/query bursts are answered rather than silently swallowed by the ordinary chat throttle; an admin start is not vetoed by the ten-second process-local start throttle.
+- A zero-minute admin start takes priority over conflicting scheduled/player countdowns; superseded intents are recorded and never dispatched later.
+- A positive admin countdown preserves its requested delay and deadline without additional scheduler delay.
+- Cancel/abort during a multi-base dispatch stops the next native request; cleanup and replacement remain scoped, and an in-flight synchronous call is not forcibly interrupted.
+- Replacing an active incident uses an explicit verified transition, never overlapping native instances or collateral cancellation of unrelated incidents.
+- Required cooldown overrides are target-scoped and reversible, with no blanket reset on server startup.
+- Admin command IDs distinguish accepted from executed outcomes; duplicates/superseded requests do not create duplicate invasions or repeated notifications.
+- A failed start with no native lifecycle never reports completed/succeeded or creates rankings/rewards. Status labels the latest failed attempt separately from historical completed events.
+- Missing targets, unavailable native primitives, unsafe ABI, writer failures, and native errors produce specific observable failures, retain private breadcrumbs, and never trigger a blind replay.
 
 ### Bounty invasions
 
