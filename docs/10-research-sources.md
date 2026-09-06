@@ -102,6 +102,45 @@ Findings:
 - Generated headers, Lua types, Live View, and FModel are discovery aids.
 - PMK examples show base/guild access and replicated HP/stamina/shield changes.
 
+### Trigger-route re-audit on IMOUTO
+
+The local reference checkout is pinned to `e6632458b97af0083eb81715775651b08104ef6a`. Its tracked `Content` tree contains only `InitBank.uasset`; it does not contain the shipped game's invasion Blueprint implementations. The manager/player-controller/cheat-manager `.cpp` files contain generated empty or constant-return stubs. They establish declarations for a skeleton SDK, not the behavior of the running Shipping binary.
+
+The PED command path is real invocation, not just an announcement: chat authorization enters `Director:arm_start`, the scheduler records an intent, `Director:start` establishes target state, and `Bridge:start_all_invasions` invokes the selected native method through `_native_call`.
+
+| Current command/authority | Actual native call | Evidence and limitation |
+|---|---|---|
+| Authorized admin `start`, or `test-native admission` | `UPalInvaderManager::RequestIncidentInvaderEnemy(Guid, Observer)` | This is a private reflected helper in the PMK header. On IMOUTO it returns a Boolean and can begin pathfinding, but that has not produced a confirmed raid. |
+| Ordinary start, or `test-native march` | `UPalInvaderManager::StartInvaderMarchForBaseCamp(Guid)` | Public selected-base entry point in the PMK header. A void return does not establish acceptance; test it independently rather than assuming it is equivalent to the private helper. |
+| `test-native debug` | `APalPlayerController::Debug_InvaderMarchForNearCamp(GroupName, true)` | Reliable server RPC declaration. Observed clean return without pathfinding or incident. Shipping/editor/cheat restrictions are hypotheses, not proven by the generated empty SDK body. |
+
+Pinned [UE4SS invocation](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUObject.cpp#L86-L244) resolves the calling context, marshals parameters and calls `ProcessEvent`. The explicit receiver used by PED is consumed correctly for a bound UFunction. [Struct return conversion](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUObject.cpp#L296-L310) uses `GetNonTrivialLocal`, and the [StructProperty handler](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUObject.cpp#L707-L782) converts that return to a Lua table. The current base GUID obtained through `GetId()` is therefore not assumed to be a dangling borrowed pointer into the reflected-call stack.
+
+The PMK pathfinder class exposes no reflected result/status methods beyond its constructor. The manager has one `PathFinder` property. Request 12 returned true for its first admission and false for nine subsequent calls, with valid identity-matched targets; the first path search then ended without an incident. This suggests a serialized/shared native admission boundary but does not prove the hidden rejection condition. A default-agent complete navigation query also does not establish compliance with the invader-specific path, water, biome or grade rules.
+
+### Public raid implementations and backend alternatives
+
+The follow-up public search did not find a demonstrated, repeatable native-raid trigger for dedicated Shipping build `24575149`. This is a research limit, not proof that triggering a raid is impossible.
+
+- [`pal-mod-toolkit` at `ecc90f14968a5f0ba3920ade4034a201c6c618b6`](https://github.com/incognitofelix/pal-mod-toolkit/commit/ecc90f14968a5f0ba3920ade4034a201c6c618b6) explicitly says its raid command does not reliably trigger raids. Its [`RaidTool.cpp`](https://github.com/incognitofelix/pal-mod-toolkit/blob/ecc90f14968a5f0ba3920ade4034a201c6c618b6/src/tools/RaidTool.cpp#L68-L137) passes a null dynamic parameter to the Blueprint handoff and subsequently requests all-base marching. Neither step is a demonstrated fix and neither should be copied as a verified sequence.
+- [`pal-invader-relocator` at `33228a7792aa7122cb109a868549fdd543b949c4`](https://github.com/incognitofelix/pal-invader-relocator/blob/33228a7792aa7122cb109a868549fdd543b949c4/README.md#L13-L23) explicitly leaves live-versus-cached start-point behavior unverified. Moving start-point actors is not proof of native raid eligibility or a working trigger.
+- Epic's [`UCheatManager` documentation](https://dev.epicgames.com/documentation/en-us/unreal-engine/API/Runtime/Engine/UCheatManager) says CheatManager is not instanced in Shipping builds by default. That supports caution around cheat APIs, but does not prove that Palworld's separate `Debug_InvaderMarch*` controller RPC bodies are compiled out or that Pocketpair did not override engine defaults.
+
+| Approach | Supported purpose | What it does not establish |
+|---|---|---|
+| UE4SS Lua | Current reflected invocation, hooks and server-side orchestration | It cannot expose an unreflected private pathfinder implementation merely by enumerating SDK headers. |
+| PMK Blueprint / LogicMods | Cooked server-side Blueprint control flow and parity experiments | The standard official arrangement is still UE4SS-backed; changing language does not itself fix native eligibility or missing initialization. |
+| UE4SS C++ extension | More control over native hooks, parameter storage and non-Lua observations | A dynamically sized reflected parameter frame still calls the same engine function; it is not proof of a working raid. |
+| Separate native server loader | Different hooks/plugin architecture | Compatibility with this exact server build and native-invasion functionality must be demonstrated independently. |
+
+Pocketpair documents [Lua, LogicMods, Paks, UE4SS core and PalSchema packages](https://github.com/pocketpairjp/PalworldModUploader/blob/main/PalworldModUploader/docs/en/01-General.md#L14-L42), with [server-side install rules](https://github.com/pocketpairjp/PalworldModUploader/blob/main/PalworldModUploader/docs/en/04-Tech.md#L68-L102). This is deployment support, not an official raid-start API.
+
+The [LogicMods workflow](https://github.com/PalworldModding/Docs/blob/master/docs/developers/ue4ss-modding/logic-mods/introduction.md#L28-L40) uses a cooked `ModActor`. The actual [pinned BP loader](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/assets/Mods/BPModLoaderMod/Scripts/main.lua#L275-L301) supports map/actor-world startup paths; any server experiment should prove headless startup rather than rely on client UI, local-player hotkeys or old PlayerController-only assumptions. A server-only controller should reuse stock replicated game actors/content if vanilla clients must remain supported.
+
+The [UE4SS C++ extension interface](https://github.com/UE4SS-RE/RE-UE4SS/blob/main/docs/guides/creating-a-c%2B%2B-mod.md#L49-L114) is a smaller escalation than rewriting PED. A separate example is [PalApi](https://github.com/TRRabbit/palapi-release), which uses its own loader/core/plugin layout rather than UE4SS. Its published server-plugin claims do not demonstrate a raid trigger. The older [VeroFess unofficial API](https://github.com/VeroFess/PalWorld-Server-Unoffical-Api/blob/d4e9479761732cfd51af0d71435fe0a81df9d7da/src/hooks/hooks_install.cpp#L9-L38) illustrates native offset hooks but is not evidence of compatibility with the current game.
+
+Next controls should distinguish public selected-base march from private admission at the same base, and compare a naturally successful enemy raid's lifecycle if one can be observed. Do not change backend and invocation parameters simultaneously and then attribute any difference to the language. If the inaccessible native transition is the remaining obstacle, a narrowly scoped C++ observer or inspection of the shipped Blueprint implementation is more informative than another speculative trigger sequence.
+
 ### Current reflected systems inspected
 
 The design reviewed current PMK headers for:

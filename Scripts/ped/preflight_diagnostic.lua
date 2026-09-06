@@ -27,6 +27,19 @@ local ERROR_SIGNATURES = {
     { text = "Native navigation signature is unsupported", code = "navigation-signature" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
+local TARGET_FAILURES = {
+    ["manager-unavailable"] = "The pinned invasion manager no longer refers to a valid UObject.",
+    ["observer-map-unavailable"] = "The pinned manager's Observers map could not be read.",
+    ["observer-enumeration-failed"] = "Reading the native observer map raised a Lua error.",
+    ["base-not-registered"] = "The selected base is no longer present in the manager's Observers map.",
+    ["observer-invalid"] = "The selected map entry's observer UObject is missing or no longer valid.",
+    ["base-model-invalid"] = "The observer's TargetBaseCamp model is missing or no longer valid.",
+    ["model-id-call-failed"] = "The base model's GetId call failed.",
+    ["model-id-unreadable"] = "The base model's GetId returned no readable base identifier.",
+    ["observer-id-unreadable"] = "The observer's TargetBaseCampID could not be read.",
+    ["observer-id-mismatch"] = "The observer's TargetBaseCampID no longer matches the selected base.",
+    ["model-id-mismatch"] = "The base model's GetId no longer matches the selected base.",
+}
 
 local function failure_detail(value)
     if type(value) ~= "string" then return "non-string-error" end
@@ -354,4 +367,7 @@ function Diagnostic:run(confirmation, expected_step)
 end
 
 Diagnostic.classify_error = failure_detail
+function Diagnostic.target_failure(code)
+    return TARGET_FAILURES[code]
+end
 return Diagnostic

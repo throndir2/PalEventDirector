@@ -6,6 +6,7 @@ local config_module = require("ped.config")
 local util = require("ped.util")
 local version = require("ped.version")
 local NativeExperiments = require("ped.native_experiments")
+local PreflightDiagnostic = require("ped.preflight_diagnostic")
 
 local Director = {}
 Director.__index = Director
@@ -363,6 +364,9 @@ function Director:_apply_dispatch_results(result)
             base.dispatchBefore = request.before
             base.dispatchAfter = request.after
             base.dispatchNative = request.native
+            base.dispatchFailureCode = request.failureCode
+            base.dispatchIndex = request.targetIndex
+            base.dispatchInspectionError = request.inspectionError
             if request.phase == "probe" then self:_report_probe_diagnostics(request.before) end
             if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed"
                 or request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then
@@ -375,20 +379,88 @@ end
 
 function Director:_report_native_results(result)
     if not self.state.event.requesterUid or type(result) ~= "table" or type(result.requests) ~= "table" then return end
-    local returned, rejected, failures, skipped = 0, 0, 0, 0
-    local has_native_result = false
+    local returned, rejected, precall, call_errors, skipped = 0, 0, 0, 0, 0
     for _, request in ipairs(result.requests) do
         if request.native then
-            has_native_result = true
             if request.native.returned then returned = returned + 1 end
-            if request.native.boolean == false then rejected = rejected + 1 end
         end
-        if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then failures = failures + 1 end
-        if request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then skipped = skipped + 1 end
+        if request.native and request.native.boolean == false then
+            rejected = rejected + 1
+            if request.inspectionError then call_errors = call_errors + 1 end
+        elseif request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then
+            if request.native then call_errors = call_errors + 1 else precall = precall + 1 end
+        elseif request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then
+            skipped = skipped + 1
+        end
     end
-    if has_native_result then
-        self:_chat(string.format("PED request #%d native results: %d call(s) returned; %d Boolean rejection(s); %d failed target(s); %d skipped. A returned call is not a confirmed raid.",
-            self.state.event.requestNumber or 0, returned, rejected, failures, skipped), self.state.event.requesterUid)
+    local event = self.state.event
+    self:_chat(string.format("PED request #%d results: %d native call(s) returned; %d native false rejection(s); %d PED pre-call error(s); %d call/inspection error(s); %d skipped. Rejected is not the same as invalid.",
+        event.requestNumber or 0, returned, rejected, precall, call_errors, skipped), event.requesterUid)
+    local methods = { RequestIncidentInvaderEnemy = true, StartInvaderMarchForBaseCamp = true, Debug_InvaderMarchForNearCamp = true }
+    local function value(item)
+        if type(item) == "boolean" then return item and "yes" or "no" end
+        if type(item) == "number" and item == math.floor(item) and item >= 0 and item <= 1000000 then return tostring(item) end
+        return "?"
+    end
+    local function transition(request, field)
+        return value(request.before and request.before[field]) .. "->" .. value(request.after and request.after[field])
+    end
+    local maximum = 16
+    for index, request in ipairs(result.requests) do
+        local native = request.native
+        local method = native and methods[native.method] and native.method or "native start"
+        local code = request.failureCode or (request.before and request.before.targetValidation and request.before.targetValidation.code)
+        local target_reason = PreflightDiagnostic.target_failure(code)
+        local detail
+        if native and native.returned and native.boolean == false then
+            detail = method .. " returned FALSE. Palworld supplied no rejection reason; this was not a PED invalid-target veto."
+        elseif target_reason then
+            detail = "PED target validation [" .. code .. "]: " .. target_reason .. " No native start call was made."
+        elseif request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then
+            detail = "Not submitted: a native fault/readiness stop prevented this call; it was not classified as an invalid target."
+        elseif request.status == "dispatch_precondition_failed" then
+            detail = "PED declined this non-admin dispatch before the native call; inspect the observed policy flags below."
+        elseif request.status == "dispatch_call_failed" then
+            local stage, classification
+            if type(request.error) == "string" then
+                stage, classification = request.error:match("^Native operation stopped at ([a-z0-9%-]+) %[(%l[%l%-]*)%];")
+            end
+            if stage and #stage <= 80 and not stage:find(string.rep("%x", 32)) then
+                detail = "Operation failed at " .. stage .. " [" .. classification .. "]. Raw error withheld; do not retry this server session."
+            elseif native then
+                detail = method .. (native.returned and " returned, but its result inspection failed." or " raised a native/Lua call error.")
+            else
+                detail = "PED could not submit the native call; no allowlisted target reason is available. See the recorded failure boundary."
+            end
+        elseif request.status == "awaiting_probe_confirmation" then
+            detail = "Not yet submitted: ordinary-user fanout is awaiting probe confirmation."
+        else
+            detail = method .. " returned " .. (native and native.boolean == true and "TRUE" or "without a success value")
+                .. "; a new invasion-start callback is still required."
+        end
+        local target_index, target_count = request.targetIndex or index, request.targetCount or #result.requests
+        self.logger:info("Per-target native request outcome", {
+            request = event.requestNumber or 0, target = target_index, targets = target_count,
+            outcome = detail, status = request.status, method = method,
+        })
+        if index <= maximum then
+            local prefix = string.format("PED #%d target %d/%d: ", event.requestNumber or 0, target_index, target_count)
+            self:_chat(prefix .. detail, event.requesterUid)
+            if request.before or request.after then
+                self:_chat(prefix .. "observed before->after (?=unknown; not a proven rejection cause): validIDs="
+                    .. transition(request, "guidSourcesMatch") .. "; occupied=" .. transition(request, "incidentForBase")
+                    .. "; invading=" .. transition(request, "observerInvading") .. "; path=" .. transition(request, "observerPathSearching")
+                    .. "; cooldown=" .. transition(request, "observerCoolTime") .. "; available=" .. transition(request, "baseAvailable")
+                    .. "; ignore=" .. transition(request, "baseIgnoreInvader") .. "; worldEnabled=" .. transition(request, "worldInvaderEnabled")
+                    .. "; managerPathfinder=" .. transition(request, "managerPathFinder") .. "; incidents=" .. transition(request, "incidentCount"),
+                    event.requesterUid)
+            end
+            if request.inspectionError then self:_chat(prefix .. "Post-call inspection failed; later targets were stopped. Preserve the native before-marker.", event.requesterUid) end
+        end
+    end
+    if #result.requests > maximum then
+        self:_chat(string.format("PED request #%d: showing the first %d target reports; all %d outcomes are in the private PED log and journal.",
+            event.requestNumber or 0, maximum, #result.requests), event.requesterUid)
     end
 end
 

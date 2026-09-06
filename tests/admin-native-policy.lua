@@ -410,4 +410,108 @@ return function(test, equal, truthy)
             truthy(ok, failure)
         end)
     end)
+
+    test("a native false return still captures post-call state without repeating the request", function()
+        fixture({}, function(bridge, manager, _, stats)
+            bridge.event_admin_override, bridge.event_nearest_test = true, nil
+            manager.RequestIncidentInvaderEnemy = function()
+                stats.dispatches = stats.dispatches + 1
+                manager.PathFinder = { IsValid = function() return true end }
+                return false
+            end
+            local result = bridge:_dispatch_selected_base("fixture-base", "probe")
+            equal(stats.dispatches, 1)
+            equal(result.native.boolean, false)
+            equal(result.status, "dispatch_call_failed")
+            equal(result.before.managerPathFinder, false)
+            equal(result.after.managerPathFinder, true)
+            equal(bridge.native_fault, nil)
+            local state_log
+            for _, entry in ipairs(stats.logs) do
+                if type(entry) == "table" and entry.phase == "probe-after" then state_log = entry end
+            end
+            truthy(state_log)
+            equal(state_log.target_modelValid, true)
+            equal(state_log.targetValidation, nil)
+        end)
+    end)
+
+    test("target validation distinguishes the invalid object and mismatching identity without printing IDs", function()
+        local cases = {
+            { code = "manager-unavailable", change = function(_, manager) manager.IsValid = function() return false end end },
+            { code = "observer-map-unavailable", change = function(_, manager) manager.Observers = nil end },
+            { code = "base-not-registered", change = function(_, manager) manager.Observers = { ForEach = function() end } end },
+            { code = "observer-invalid", change = function(_, manager) manager.Observers = { ForEach = function(_, callback) callback("fixture-base", {}) end } end },
+            { code = "base-model-invalid", change = function(_, _, base) base.IsValid = function() return false end end },
+            { code = "model-id-call-failed", change = function(_, _, base) base.GetId = function() error("PRIVATE_PAYLOAD", 0) end end },
+            { code = "model-id-unreadable", change = function(_, _, base) base.GetId = function() return nil end end },
+            { code = "model-id-mismatch", change = function(_, _, base) base.GetId = function() return "PRIVATE_DIFFERENT_ID" end end },
+            { code = "observer-id-unreadable", change = function(_, manager)
+                manager.Observers:ForEach(function(_, observer) observer.TargetBaseCampID = nil end)
+            end },
+            { code = "observer-id-mismatch", change = function(_, manager)
+                manager.Observers:ForEach(function(_, observer) observer.TargetBaseCampID = "PRIVATE_DIFFERENT_ID" end)
+            end },
+        }
+        for _, case in ipairs(cases) do
+            fixture({}, function(bridge, manager, base)
+                case.change(bridge, manager, base)
+                local target, reason, validation = bridge:_resolve_dispatch_target(manager, "fixture-base")
+                equal(target, nil)
+                equal(validation.code, case.code)
+                equal(reason:find("PRIVATE", 1, true), nil)
+                equal(json.encode(validation):find("PRIVATE", 1, true), nil)
+            end)
+        end
+    end)
+
+    test("per-target chat distinguishes native rejection from PED validation and reports observed transitions", function()
+        local director, control = director_fixture()
+        director.state.event = { requestNumber = 12, requesterUid = "PRIVATE_RECIPIENT" }
+        director:_report_native_results({ requests = {
+            { baseId = "PRIVATE_BASE", status = "dispatch_call_failed", targetIndex = 2, targetCount = 10,
+                native = { method = "RequestIncidentInvaderEnemy", returned = true, boolean = false },
+                before = { guidSourcesMatch = true, incidentForBase = false, managerPathFinder = false },
+                after = { guidSourcesMatch = true, incidentForBase = false, managerPathFinder = true } },
+            { baseId = "PRIVATE_BASE_2", status = "dispatch_call_failed", failureCode = "base-model-invalid",
+                error = "PRIVATE_RAW_ERROR", targetIndex = 3, targetCount = 10 },
+        } })
+        local messages = table.concat(control.messages, "\n")
+        truthy(messages:find("1 native false rejection(s); 1 PED pre-call error(s)", 1, true))
+        truthy(messages:find("target 2/10", 1, true))
+        truthy(messages:find("Palworld supplied no rejection reason", 1, true))
+        truthy(messages:find("not a PED invalid-target veto", 1, true))
+        truthy(messages:find("managerPathfinder=no->yes", 1, true))
+        truthy(messages:find("base-model-invalid", 1, true))
+        truthy(messages:find("TargetBaseCamp model is missing or no longer valid", 1, true))
+        equal(messages:find("PRIVATE", 1, true), nil)
+        for _, message in ipairs(control.messages) do truthy(#message <= director.config.limits.maxAnnouncementLength) end
+    end)
+
+    test("per-target chat is bounded and unknown raw errors are never echoed", function()
+        local director, control = director_fixture()
+        director.state.event = { requestNumber = 7, requesterUid = "PRIVATE_RECIPIENT" }
+        local requests = {}
+        for index = 1, 17 do
+            requests[index] = { status = "dispatch_call_failed", error = "PRIVATE_RAW_ERROR", baseId = "PRIVATE_BASE_" .. index }
+        end
+        director:_report_native_results({ requests = requests })
+        equal(#control.messages, 18)
+        truthy(control.messages[#control.messages]:find("first 16 target reports", 1, true))
+        equal(table.concat(control.messages, "\n"):find("PRIVATE", 1, true), nil)
+    end)
+
+    test("a rejected call and its failed post-call inspection remain distinct reported outcomes", function()
+        local director, control = director_fixture()
+        director.state.event = { requestNumber = 9, requesterUid = "PRIVATE_RECIPIENT" }
+        director:_report_native_results({ requests = {
+            { status = "dispatch_call_failed", native = { method = "RequestIncidentInvaderEnemy", returned = true, boolean = false },
+                inspectionError = "PRIVATE_NATIVE_ERROR", error = "PRIVATE_NATIVE_ERROR" },
+        } })
+        local messages = table.concat(control.messages, "\n")
+        truthy(messages:find("1 native false rejection(s)", 1, true))
+        truthy(messages:find("1 call/inspection error(s)", 1, true))
+        truthy(messages:find("Post-call inspection failed", 1, true))
+        equal(messages:find("PRIVATE", 1, true), nil)
+    end)
 end

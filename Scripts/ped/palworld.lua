@@ -1878,19 +1878,34 @@ function Bridge:preflight_start(profile_id, control)
 end
 
 function Bridge:_resolve_dispatch_target(manager, expected_base_id)
+    local validation = { managerValid = valid(manager), entryFound = false, observerValid = false, modelValid = false,
+        modelIdReadable = false, observerIdReadable = false, modelIdMatches = false, observerIdMatches = false }
+    local function failure(code)
+        validation.code = code
+        return nil, PreflightDiagnostic.target_failure(code), validation
+    end
+    if not validation.managerValid then return failure("manager-unavailable") end
     local observers = property(manager, "Observers")
-    if not observers then return nil, "PalInvaderManager.Observers is unavailable" end
+    if not observers then return failure("observer-map-unavailable") end
     local target
     local iterated, iteration_error = pcall(function()
         observers:ForEach(function(key, value)
             if target then return end
             local key_id = guid_string(key)
             if key_id == expected_base_id then
+                validation.entryFound = true
                 local observer = unwrap(value)
-                local base = property(observer, "TargetBaseCamp")
-                local model_ok, model_native_id = call(base, "GetId")
+                validation.observerValid = valid(observer)
+                local base = validation.observerValid and property(observer, "TargetBaseCamp") or nil
+                validation.modelValid = valid(base)
+                local model_ok, model_native_id
+                if validation.modelValid then model_ok, model_native_id = self:_native_call("dispatch-model-id", base, "GetId") end
+                validation.modelIdCallReturned = model_ok == true
+                if model_ok == false then validation.modelIdError = PreflightDiagnostic.classify_error(model_native_id) end
                 local model_id = model_ok and guid_string(model_native_id) or nil
-                local observer_id = guid_string(property(observer, "TargetBaseCampID"))
+                local observer_id = validation.observerValid and guid_string(property(observer, "TargetBaseCampID")) or nil
+                validation.modelIdReadable, validation.observerIdReadable = model_id ~= nil, observer_id ~= nil
+                validation.modelIdMatches, validation.observerIdMatches = model_id == expected_base_id, observer_id == expected_base_id
                 target = {
                     observer = observer,
                     base = base,
@@ -1902,15 +1917,19 @@ function Bridge:_resolve_dispatch_target(manager, expected_base_id)
             end
         end)
     end)
-    if not iterated then return nil, "unable to enumerate dispatch observer: " .. tostring(iteration_error) end
-    if not target then return nil, "selected base is absent from the active manager observer map" end
-    if not valid(target.observer) or not valid(target.base) or not target.nativeId then
-        return nil, "selected base observer or native GUID is unavailable"
+    if not iterated then
+        validation.iterationError = PreflightDiagnostic.classify_error(iteration_error)
+        return failure("observer-enumeration-failed")
     end
-    if target.keyId ~= expected_base_id or target.observerId ~= expected_base_id or target.modelId ~= expected_base_id then
-        return nil, "observer key, TargetBaseCampID, and model GetId no longer agree"
-    end
-    return target
+    if not target then return failure("base-not-registered") end
+    if not validation.observerValid then return failure("observer-invalid") end
+    if not validation.modelValid then return failure("base-model-invalid") end
+    if not validation.modelIdCallReturned then return failure("model-id-call-failed") end
+    if not validation.modelIdReadable then return failure("model-id-unreadable") end
+    if not validation.observerIdReadable then return failure("observer-id-unreadable") end
+    if not validation.observerIdMatches then return failure("observer-id-mismatch") end
+    if not validation.modelIdMatches then return failure("model-id-mismatch") end
+    return target, nil, validation
 end
 
 function Bridge:_prepare_probe_handoff(manager)
@@ -2208,13 +2227,14 @@ function Bridge:_capture_probe_prerequisites(manager, base)
 end
 
 function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
-    local target, target_error = self:_resolve_dispatch_target(manager, expected_base_id)
+    local target, target_error, target_validation = self:_resolve_dispatch_target(manager, expected_base_id)
     local diagnostic = {
         phase = phase,
         base = util.mask_uid(expected_base_id),
         manager = full_name(manager) or "unknown",
         guidResolved = target ~= nil,
         guidResolutionError = target_error,
+        targetValidation = target_validation,
         observerKey = target and util.mask_uid(target.keyId) or "unavailable",
         observerTargetId = target and util.mask_uid(target.observerId) or "unavailable",
         modelId = target and util.mask_uid(target.modelId) or "unavailable",
@@ -2340,7 +2360,15 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
 end
 
 function Bridge:_log_dispatch_snapshot(diagnostic)
-    self.logger:info("Selected-base native invasion state", diagnostic)
+    local fields = {}
+    for key, value in pairs(diagnostic) do
+        if key == "targetValidation" then
+            for name, detail in pairs(value) do fields["target_" .. name] = detail end
+        else
+            fields[key] = value
+        end
+    end
+    self.logger:info("Selected-base native invasion state", fields)
 end
 
 function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
@@ -2384,17 +2412,20 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
     if not allowed then return { baseId = base_id, status = "dispatch_quarantined", error = reason } end
     local manager = self.event_manager
     if not valid(manager) then
-        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = "pinned world invasion manager is unavailable" }
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed",
+            failureCode = "manager-unavailable", error = PreflightDiagnostic.target_failure("manager-unavailable") }
     end
     local snapshot_ok, before, target, target_error, baseline = self:_native_step("dispatch-before",
         function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-before") end)
     if not snapshot_ok then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = before } end
     self:_log_dispatch_snapshot(before)
     if not target then
-        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = target_error, before = before }
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = target_error,
+            failureCode = before.targetValidation and before.targetValidation.code, before = before }
     end
     if self.event_admin_override and not valid(target.observer) then
-        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_precondition_failed", error = "native base observer is invalid", before = before }
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_precondition_failed",
+            failureCode = "observer-invalid", error = PreflightDiagnostic.target_failure("observer-invalid"), before = before }
     end
     if not self.event_admin_override and (before.worldInvaderEnabled ~= true or before.baseAvailable ~= true or before.baseIgnoreInvader ~= false
         or before.observerInvading ~= false or before.observerPathSearching ~= false
@@ -2499,6 +2530,18 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
         end)
         if not logged then ok, result = false, log_error end
     end
+    local after, inspection_error
+    if native_result and native_result.returned and not self.native_fault then
+        local after_ok, snapshot = self:_native_step("dispatch-after",
+            function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-after") end)
+        if after_ok then
+            after = snapshot
+            self:_log_dispatch_snapshot(after)
+        else
+            inspection_error = snapshot
+            ok, result = false, snapshot
+        end
+    end
     if not ok then
         request.status = "dispatch_call_failed"
         request.error = tostring(result)
@@ -2508,16 +2551,11 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
             status = "dispatch_call_failed",
             error = tostring(result),
             before = before,
+            after = after,
+            inspectionError = inspection_error,
             native = native_result,
         }
     end
-    local after_ok, after = self:_native_step("dispatch-after",
-        function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-after") end)
-    if not after_ok then
-        request.status = "dispatch_call_failed"
-        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = after, before = before, native = native_result }
-    end
-    self:_log_dispatch_snapshot(after)
     local status = request.status == "started" and "lifecycle_confirmed" or dispatch_phase .. "_call_returned"
     request.status = status
     return {
@@ -2575,6 +2613,7 @@ function Bridge:start_all_invasions()
                 result = self:_dispatch_selected_base(base_id, phase)
                 attempted = attempted + 1
             end
+            result.targetIndex, result.targetCount = index, #self.dispatch_order
             requests[#requests + 1] = result
             if result.status == "probe_call_returned" or result.status == "fanout_call_returned" or result.status == "lifecycle_confirmed" then
                 requested = requested + 1
@@ -2587,12 +2626,15 @@ function Bridge:start_all_invasions()
             allTargetsAttempted = attempted == #self.dispatch_order, error = not accepted and (self.native_fault or first_error) or nil }
     end
     local probe = self:_dispatch_selected_base(self.probe_base_id, "probe")
+    probe.targetIndex, probe.targetCount = 1, #self.dispatch_order
     requests[#requests + 1] = probe
     for index = 2, #self.dispatch_order do
         requests[#requests + 1] = {
             baseId = self.dispatch_order[index],
             phase = "fanout",
             status = "awaiting_probe_confirmation",
+            targetIndex = index,
+            targetCount = #self.dispatch_order,
         }
     end
     if probe.status == "dispatch_call_failed" or probe.status == "dispatch_precondition_failed" then
@@ -2622,6 +2664,7 @@ function Bridge:continue_invasion_dispatch()
     local requested = 0
     for index = 2, #self.dispatch_order do
         local request = self:_dispatch_selected_base(self.dispatch_order[index], "fanout")
+        request.targetIndex, request.targetCount = index, #self.dispatch_order
         requests[#requests + 1] = request
         if request.status ~= "dispatch_call_failed" and request.status ~= "dispatch_precondition_failed" then
             requested = requested + 1
