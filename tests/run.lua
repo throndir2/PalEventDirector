@@ -956,10 +956,14 @@ test("registered-base inspection rejects any occupied native incident slot", fun
         Observers = { ForEach = function() end },
         Incidents = { ForEach = function(_, callback) callback("base-a", {}) end },
     }
-    local bridge = Bridge.new({ config = Config.defaults(), logger = { info = function() end, warn = function() end, error = function() end } })
+    local bridge = Bridge.new({ config = Config.defaults(), logger = {
+        info = function() end, warn = function() end, error = function() end,
+        preflight_breadcrumb = function() return true end,
+    } })
     local ids, registration_error = bridge:_registered_base_ids(manager)
     equal(ids, nil)
     truthy(registration_error:match("occupy base slots"))
+    equal(bridge.native_fault, nil)
 end)
 
 test("selected-base dispatch probes one base before confirmed fanout and records masked state", function()

@@ -325,4 +325,61 @@ return function(test, equal, truthy)
         equal(timeout.recipient, "PRIVATE_UID")
         equal(director.state.status, "aborted")
     end)
+
+    test("occupied slots are classified before the unchanged start veto without canceling native incidents", function()
+        with_fixture({}, function(bridge, manager, _, stats)
+            local function incident(id, kind, executing, completed)
+                local value = object(id)
+                value.InvaderType = kind
+                value.IsInitialized = function() return true end
+                value.IsExecuting = function() return executing end
+                value.IsCompleted = function() return completed end
+                value.IsCanceled = function() return false end
+                value.ForceStop = function() error("diagnostic canceled an incident") end
+                value.Finish = value.ForceStop
+                return value
+            end
+            local enemy, visitor = incident(900, 1, false, true), incident(901, 2, true, false)
+            manager.Incidents = { ForEach = function(_, callback)
+                callback("fixture-base", enemy)
+                callback("PRIVATE_OTHER_BASE", visitor)
+            end }
+            bridge.director = { state = { event = { requestNumber = 9, bases = { ["fixture-base"] = {} } } } }
+            bridge.hook_observed.probe_handoff = 2
+            local ids, reason = bridge:_registered_base_ids(manager)
+            equal(ids, nil)
+            truthy(reason:find("enemy=1, visitor=1, executing=1, completed=1", 1, true))
+            truthy(reason:find("matching latest event=1", 1, true))
+            equal(reason:find("PRIVATE", 1, true), nil)
+            local summary = stats.logs[#stats.logs]
+            equal(summary.processHandoffCalls, 2)
+            equal(summary.recentEventRequest, 9)
+            equal(summary.incidentScanComplete, true)
+            equal(stats.dispatches, 0)
+            equal(bridge.native_fault, nil)
+        end)
+    end)
+
+    test("occupied-slot inspection caps work and preserves invalid entries rather than clearing them", function()
+        with_fixture({}, function(bridge, _, _, stats)
+            local callbacks = 0
+            local slots = { ForEach = function(_, callback)
+                for index = 1, 17 do
+                    callbacks = callbacks + 1
+                    local result = callback("PRIVATE_SLOT", {})
+                    truthy(result == nil or result == true)
+                    if result == true then break end
+                end
+            end }
+            local ok, summary = bridge:_occupied_incident_details(slots, 17)
+            truthy(ok, summary)
+            equal(callbacks, 16)
+            equal(summary.occupiedSlots, 17)
+            equal(summary.inspectedSlots, 16)
+            equal(summary.invalidSlots, 16)
+            equal(summary.incidentScanComplete, false)
+            equal(stats.dispatches, 0)
+            equal(json.encode(summary):find("PRIVATE", 1, true), nil)
+        end)
+    end)
 end

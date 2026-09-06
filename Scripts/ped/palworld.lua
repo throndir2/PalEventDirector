@@ -6,7 +6,7 @@ local DiagnosticIngress = require("ped.diagnostic_ingress")
 local Bridge = {}
 Bridge.__index = Bridge
 local NATIVE_PROBE_GROUP = "Invader_Group_NPC_Grade5_Hunter"
-local PROBE_LIMITS = { rows = 512, points = 256, navigation = 32, functions = 128, classes = 8 }
+local PROBE_LIMITS = { rows = 512, points = 256, navigation = 32, functions = 128, classes = 8, incidents = 16 }
 
 local HOOKS = {
     damage = "/Script/Pal.PalEventNotify_Character:OnCharacterDamaged_ServerInternal",
@@ -616,6 +616,53 @@ function Bridge:_lifecycle_context(parameter)
     return self:_base_id_from_parameter(parameter), guid_string(property(parameter, "GroupGuid")), property(parameter, "InvaderType")
 end
 
+function Bridge:_occupied_incident_details(incidents, total)
+    return self:_native_step("occupied-incident-state", function()
+        local recent = self.director and self.director.state and self.director.state.event
+        local summary = { occupiedSlots = total, inspectedSlots = 0, invalidSlots = 0, enemySlots = 0, visitorSlots = 0,
+            unknownTypeSlots = 0, initializedSlots = 0, executingSlots = 0, completedSlots = 0, canceledSlots = 0,
+            matchingRecentEventSlots = 0, recentEventRequest = recent and recent.requestNumber or 0,
+            handoffHookRegistered = self.hook_ids.probe_handoff ~= nil,
+            processHandoffCalls = self.hook_observed.probe_handoff or 0,
+            processDeclarationCalls = self.hook_observed.invasion_declaration or 0,
+            processSelectionCalls = self.hook_observed.select_invaders or 0,
+            processStartCalls = self.hook_observed.invasion_start or 0 }
+        local entries = {}
+        incidents:ForEach(function(key, value)
+            local id = guid_string(key)
+            entries[#entries + 1] = { incident = unwrap(value),
+                recent = id ~= nil and recent ~= nil and recent.bases ~= nil and recent.bases[id] ~= nil }
+            if #entries >= PROBE_LIMITS.incidents then return true end
+            return nil
+        end)
+        for _, entry in ipairs(entries) do
+            summary.inspectedSlots = summary.inspectedSlots + 1
+            if entry.recent then summary.matchingRecentEventSlots = summary.matchingRecentEventSlots + 1 end
+            if not valid(entry.incident) then
+                summary.invalidSlots = summary.invalidSlots + 1
+            else
+                local kind = probe_field(entry.incident, "InvaderType", "number")
+                if kind == 1 then summary.enemySlots = summary.enemySlots + 1
+                elseif kind == 2 then summary.visitorSlots = summary.visitorSlots + 1
+                else summary.unknownTypeSlots = summary.unknownTypeSlots + 1 end
+                for _, check in ipairs({
+                    { "occupied-initialized", "IsInitialized", "initializedSlots" },
+                    { "occupied-executing", "IsExecuting", "executingSlots" },
+                    { "occupied-completed", "IsCompleted", "completedSlots" },
+                    { "occupied-canceled", "IsCanceled", "canceledSlots" },
+                }) do
+                    local ok, result = self:_native_call(check[1], entry.incident, check[2])
+                    if not ok then return end
+                    if type(result) ~= "boolean" then error("Native probe data has an unexpected type", 0) end
+                    if result then summary[check[3]] = summary[check[3]] + 1 end
+                end
+            end
+        end
+        summary.incidentScanComplete = summary.inspectedSlots == total
+        return summary
+    end)
+end
+
 function Bridge:_registered_base_ids(manager)
     local observers = property(manager, "Observers")
     if not observers then
@@ -648,7 +695,13 @@ function Bridge:_registered_base_ids(manager)
         return nil, "unable to inspect existing invasion incidents: " .. tostring(count_error)
     end
     if incident_count > 0 then
-        return nil, "one or more native invasion/visitor incidents already occupy base slots"
+        local inspected, details = self:_occupied_incident_details(incidents, incident_count)
+        if not inspected then return nil, details end
+        self.logger:info("Native incident slots block a new start", details)
+        return nil, string.format(
+            "one or more native invasion/visitor incidents already occupy base slots (total=%d, enemy=%d, visitor=%d, executing=%d, completed=%d, canceled=%d, matching latest event=%d, scan=%s). No new native start ran.",
+            details.occupiedSlots, details.enemySlots, details.visitorSlots, details.executingSlots, details.completedSlots,
+            details.canceledSlots, details.matchingRecentEventSlots, details.incidentScanComplete and "complete" or "partial")
     end
     return ids, id_set
 end
