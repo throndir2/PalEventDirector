@@ -3,7 +3,8 @@ instructions: |
 
   Standing authorization:
   - The user authorizes routine PED investigation, source fixes, existing tests, packaging, commits, non-force pushes to origin/main, deployment, and dedicated-server restarts. Do not ask for approval again for each routine iteration.
-  - Ask for user participation when they need to join or leave the server, perform an in-game command, or report an in-game result. Do not ask them to confirm every diagnostic operation.
+  - Restart or shut down the IMOUTO dedicated server whenever needed without asking again, including without waiting for a player-disconnect confirmation. Prefer a graceful dedicated-only shutdown when available.
+  - Provide complete, clearly conditional in-game command sequences when user participation is needed. Do not ask them to approve routine restarts or confirm every diagnostic operation.
   - Pause for conflicting user changes or actions outside this authorized scope rather than broadening the scope silently.
 
   Workspace and target boundaries:
