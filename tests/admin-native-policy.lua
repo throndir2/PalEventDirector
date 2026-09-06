@@ -7,6 +7,11 @@ return function(test, equal, truthy)
     local util = require("ped.util")
     local bounties = require("ped.bounties")
 
+    local function admission_control(bridge)
+        bridge.event_nearest_test = { route = "admission", baseId = "fixture-base", controller = {}, world = {} }
+        bridge._nearest_test_base = function() return "fixture-base" end
+    end
+
     local function director_fixture()
         local config = Config.defaults()
         config.siegeLeague.chatStartPolicy = "anyUser"
@@ -79,7 +84,7 @@ return function(test, equal, truthy)
                 return false
             end
             bridge.event_admin_override = true
-            bridge.event_nearest_test = nil
+            admission_control(bridge)
             bridge.event_native_control = { requestNumber = 11, requesterUid = "PRIVATE_ADMIN" }
             local result = bridge:_dispatch_selected_base("fixture-base", "probe")
             equal(stats.dispatches, 1)
@@ -114,7 +119,7 @@ return function(test, equal, truthy)
             equal(result.status, "dispatch_precondition_failed")
             equal(stats.dispatches, 0)
             bridge.event_admin_override = true
-            manager.RequestIncidentInvaderEnemy = function() error("PRIVATE_NATIVE_FAILURE", 0) end
+            manager.StartInvaderMarchForBaseCamp = function() error("PRIVATE_NATIVE_FAILURE", 0) end
             result = bridge:_dispatch_selected_base("fixture-base", "probe")
             equal(result.status, "dispatch_call_failed")
             truthy(bridge.native_fault)
@@ -310,7 +315,7 @@ return function(test, equal, truthy)
     test("returned admin fanout targets time out as missing starts rather than unsubmitted work", function()
         local director, control, admin = director_fixture()
         director:handle_chat(admin, "!siege start native 0")
-        control.now = 1061
+        control.now = director.state.event.startConfirmationDeadline + 1
         director:tick()
         equal(director.state.status, "aborted")
         equal(director.state.event.bases["base-b"].status, "native_start_missing")
@@ -414,6 +419,7 @@ return function(test, equal, truthy)
     test("a native false return still captures post-call state without repeating the request", function()
         fixture({}, function(bridge, manager, _, stats)
             bridge.event_admin_override, bridge.event_nearest_test = true, nil
+            admission_control(bridge)
             manager.RequestIncidentInvaderEnemy = function()
                 stats.dispatches = stats.dispatches + 1
                 manager.PathFinder = { IsValid = function() return true end }

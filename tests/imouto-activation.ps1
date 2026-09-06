@@ -77,6 +77,7 @@ try {
     Copy-Item $DefaultConfig $ConfigPath -Force
     $zeroCountdown = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     $zeroCountdown.siegeLeague.manualCountdownMinutes = 0
+    $zeroCountdown.siegeLeague.PSObject.Properties.Remove('nativeMarchStartSeconds')
     $zeroCountdown.compatibility.allowedUe4ssVersions = @('3.0.1')
     foreach ($capability in @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')) {
         $zeroCountdown.capabilities.$capability = $true
@@ -102,6 +103,9 @@ try {
     if (@($config.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count -ne 0) { throw 'Activation enabled a schedule.' }
     if ($config.siegeLeague.chatStartPolicy -ne 'operatorOrPalworldAdmin') { throw 'Activation selected the wrong policy.' }
     if ($config.siegeLeague.manualCountdownMinutes -ne 0) { throw 'Activation rejected or replaced a zero-minute manual countdown.' }
+    if ($config.siegeLeague.nativeMarchStartSeconds -ne 480 -or $result.NativeMarchStartSeconds -ne 480) {
+        throw 'Activation did not add the public-march preparation window to the existing schema-3 config.'
+    }
     $versions = @($config.compatibility.allowedUe4ssVersions | ForEach-Object { $_ })
     $builds = @($config.compatibility.allowedServerBuildIds | ForEach-Object { $_ })
     if ($versions.Count -ne 1 -or $versions[0] -ne '3.0.1' -or $builds.Count -ne 1 -or $builds[0] -ne '24575149') {
@@ -124,6 +128,8 @@ try {
     $journalPath = Join-Path $DataRoot 'journal.ndjson'
     [IO.File]::WriteAllText($journalPath, 'synthetic recovery-required evidence')
     $journalHash = (Get-FileHash $journalPath -Algorithm SHA256).Hash
+    $config.siegeLeague.nativeMarchStartSeconds = 600
+    [IO.File]::WriteAllText($ConfigPath, ($config | ConvertTo-Json -Depth 30))
     $result = & $Activation -ServerRoot $ServerRoot -SyntheticTestFixture `
         -SyntheticExpectedUe4ssDllSha256 $ue4ssHash -Confirm:$false
     $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
@@ -137,6 +143,7 @@ try {
         (Get-FileHash $journalPath -Algorithm SHA256).Hash -ne $journalHash) {
         throw 'Laboratory activation did not enable direct tests with reward, schedule and recovery protections.'
     }
+    if ($config.siegeLeague.nativeMarchStartSeconds -ne 600) { throw 'Preparation overwrote the configured march window.' }
     Write-Output 'PASS IMOUTO preparation enables direct gameplay tests or isolated diagnostics without changing recovery'
 } finally {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue

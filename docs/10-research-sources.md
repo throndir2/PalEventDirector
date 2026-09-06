@@ -108,6 +108,8 @@ The local reference checkout is pinned to `e6632458b97af0083eb81715775651b08104e
 
 The PED command path is real invocation, not just an announcement: chat authorization enters `Director:arm_start`, the scheduler records an intent, `Director:start` establishes target state, and `Bridge:start_all_invasions` invokes the selected native method through `_native_call`.
 
+The table below records the earlier `b8972e4` audit. The subsequent Endless Siege integration moves normal admin starts to the public march route; direct admission and controller debug remain explicit comparison commands.
+
 | Current command/authority | Actual native call | Evidence and limitation |
 |---|---|---|
 | Authorized admin `start`, or `test-native admission` | `UPalInvaderManager::RequestIncidentInvaderEnemy(Guid, Observer)` | This is a private reflected helper in the PMK header. On IMOUTO it returns a Boolean and can begin pathfinding, but that has not produced a confirmed raid. |
@@ -140,6 +142,41 @@ The [LogicMods workflow](https://github.com/PalworldModding/Docs/blob/master/doc
 The [UE4SS C++ extension interface](https://github.com/UE4SS-RE/RE-UE4SS/blob/main/docs/guides/creating-a-c%2B%2B-mod.md#L49-L114) is a smaller escalation than rewriting PED. A separate example is [PalApi](https://github.com/TRRabbit/palapi-release), which uses its own loader/core/plugin layout rather than UE4SS. Its published server-plugin claims do not demonstrate a raid trigger. The older [VeroFess unofficial API](https://github.com/VeroFess/PalWorld-Server-Unoffical-Api/blob/d4e9479761732cfd51af0d71435fe0a81df9d7da/src/hooks/hooks_install.cpp#L9-L38) illustrates native offset hooks but is not evidence of compatibility with the current game.
 
 Next controls should distinguish public selected-base march from private admission at the same base, and compare a naturally successful enemy raid's lifecycle if one can be observed. Do not change backend and invocation parameters simultaneously and then attribute any difference to the language. If the inaccessible native transition is the remaining obstacle, a narrowly scoped C++ observer or inspection of the shipped Blueprint implementation is more informative than another speculative trigger sequence.
+
+### Downloaded Endless Siege 1.8.28 implementation
+
+The user supplied the mod archive during the 2026-09-06 investigation. Its SHA-256 is `3c9bcfbdfe4707b3e06122d837124e649ff4db5222b4dddc42bde1461def92d7`; the extracted `main.lua` SHA-256 is `70e28ec94c7b8919c1deb4186a451f3fd4a16bb681dcc12f0409fdd0753811ab`. Only six text files were extracted to a private reference directory outside PED and the game installations. The mod was not executed or installed; no third-party source or assets were added to this repository.
+
+This supplies concrete implementation evidence beyond the public description:
+
+| Reference code | Behavior | Implication for PED |
+|---|---|---|
+| `resolveContext`, lines 451-494 | Finds the first manager/player, gets the nearest base, then its native ID. | This is a host-oriented lookup, not an authoritative per-admin/world-scoped target selection suitable for direct adoption on a dedicated server. |
+| `fireWave`, lines 509-518 | Calls `StartInvaderMarchForBaseCamp(campId)`; on a Lua error, tries `StartInvaderMarchAll` and then `StartInvaderMarchRandom`. | The primary call already exists in PED's explicit `test-native march` route. It is different from PED's normal admin `RequestIncidentInvaderEnemy` admission helper. There is no previously hidden creation API in this function. |
+| `armWatchdog`, lines 593-614 | Polls live invader counts, waits 360 seconds by default, then retries all-base/random marching if no new body appeared. | A normal Lua return is not a confirmed invasion. The retry cascade broadens scope and is not an equivalent single-base comparison. |
+| `stageClock`, lines 1082-1179 | Allows a presumed five-minute preparation phase, infers a negotiator from a lone body and abandons the stage after 480 seconds by default. | PED's 60-second start deadline may be too short for an actually declared public-march raid. An extension should follow the native declaration/deadline, not assume every empty request is legitimate preparation. |
+| Startup callback, lines 1547-1564 | Attempts to end every existing `PalInvaderIncidentBase` and parks boss/predator table rows. | Simply installing the reference could remove existing visitor/raid activity and confound the experiment. Do not copy this global cleanup into PED. |
+
+The timeout message blaming Palbox obstruction is emitted for any stage that never sees attackers; it is not the result of a path query or an engine-provided obstruction reason. Likewise, its global live-body count is not a reliable substitute for exact base, incident and invader-type correlation. These heuristics may be useful for its co-op experience but do not establish the cause of PED's no-incident runs.
+
+The PalSchema payload modifies 77 invasion-table rows for tower groups, 88 for predators and seven drop-table entries. Lua also changes composition weights, counts, levels and negotiator prices. Those changes support the mod's extended encounters, not evidence that a normal native raid needs PalSchema. A separate emergency path calls `PalPlayerState:RequestSpawnMonsterForPlayer`; that is a direct Pal-spawn fallback, not proof of a native base invasion or hostile squad.
+
+The packaged README grants credit-based use/modification/redistribution, while the inspected Nexus page displays stricter terms. Keep the archive as reference and resolve the terms before redistributing its code/assets. The implementation findings above do not require copying its source.
+
+### Concrete alternative implementation references
+
+The strongest source-level alternative found is [`dkoz/AdminCommands` at `8043dc6462d481fb2d4d448333f320b3635f1d85`](https://github.com/dkoz/AdminCommands/blob/8043dc6462d481fb2d4d448333f320b3635f1d85/AdminCommands/Scripts/modules/spawn.lua#L103-L165). Its Lua code obtains `PalNPCManager`, uses `NPCAIControllerBaseClass`, constructs `FPalNPCSpawnInfo` and calls `SpawnNPCForServer`. Initialization handling subsequently checks both `TryGetIndividualParameter()` and `TryGetIndividualActor()`. This is a game-specific character-creation path, not merely spawning an uninitialized generic Actor.
+
+The local pinned PMK corroborates the function and the `ControllerClass`, `CharacterID`, `Level`, `Location`, `Yaw` and `Squad` fields in `PalNPCSpawnInfo.h`. Its second parameter is a native delegate, so current binding support still needs qualification before a PED experiment. The example sets `Squad` to nil and contains no base-targeting or complete attack lifecycle. Its author labels spawning experimental. Treat it as the creation portion of a possible custom encounter, not a native invasion trigger or proof of replication on build `24575149`. A custom attack would still need allegiance, squad AI, navigation, target ownership, damage/capture behavior and safe cleanup.
+
+Other concrete backend references are useful for different reasons:
+
+- The matching [UE4SS BP loader](https://github.com/UE4SS-RE/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/assets/Mods/BPModLoaderMod/Scripts/main.lua#L217-L301) provides map-driven mod-actor creation and handles an already existing world. It is genuine headless-capable startup machinery, not Pal/NPC initialization.
+- [Palforge's engine bootstrap](https://github.com/AerafalDev/Palforge/blob/a4832c98298384e465d5e459fe97f86d23ed83f9/src/Palforge/Unreal/Runtime/UnrealBootstrap.cs#L37-L82) and [deferred actor creation](https://github.com/AerafalDev/Palforge/blob/a4832c98298384e465d5e459fe97f86d23ed83f9/src/Palforge/Unreal/Reflection/UnrealContext.cs#L711-L744) are actual Windows/.NET runtime code, not just generated SDK declarations. They do not supply the initialized Pal-to-hostile-squad chain, and generated game-property accessors use literal offsets requiring qualification.
+- The cached [`chh-ay/palworld-mod-runtime` v1.0.0 source](https://proxy.golang.org/github.com/chh-ay/palworld-mod-runtime/@v/v1.0.0.zip), origin `9d205f8d14305df9e3567813fff7ce9efadd50b0`, contains non-UI UE4SS C++ engine-tick/map-reload callbacks. Its profile targets build `24181105`, explicitly says `NOT_LIVE_QUALIFIED`, and does not provide a stock-NPC spawning implementation. It is a lower-priority lifecycle reference, not a compatible runtime to install.
+- [PalDefender's summon contract](https://github.com/Ultimeit/PalDefender/blob/04738dde580d7b403b41c8c007f900db9be8d518/docs/en/FileTypes/PalSummon.md#L6-L54) documents configured stock-Pal summons, but does not expose a reusable complete native invasion implementation. Adding its separate loader would introduce another independent compatibility variable.
+
+These findings support two distinct tracks: qualify the existing public native-march route with declaration-aware observation first, or deliberately implement a PED-controlled encounter using game-specific spawning and explicit squad behavior. A custom encounter must not be presented as a native Palworld invasion. No alternative loader, downloaded raid mod or third-party gameplay code was installed during this research.
 
 ### Current reflected systems inspected
 

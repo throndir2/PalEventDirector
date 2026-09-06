@@ -162,6 +162,8 @@ return function(test, equal, truthy, native_fname_constructor)
             } })
             bridge.registered, bridge.periodic_active, bridge.event_admin_override = true, true, true
             bridge.event_manager = manager
+            bridge.event_nearest_test = { route = "admission", baseId = "base", controller = {}, world = {} }
+            bridge._nearest_test_base = function() return "base" end
             bridge._dispatch_snapshot = function()
                 return { worldInvaderEnabled = true, baseAvailable = true, baseIgnoreInvader = false,
                     observerInvading = false, observerPathSearching = false, observerCoolTime = true, incidentForBase = false },

@@ -307,7 +307,8 @@ function Bridge:_open_native_observation(manager, world, base, base_id, route, g
     return self:_native_step("experiment-open", function()
         local scope = self.native_observer:open({ manager = manager, world = world, base = base, base_id = base_id,
             route = route, group = group, request = request, recipient = recipient,
-            deadline = route ~= "inspect" and self.clock() + self.config.siegeLeague.startDiscoverySeconds or nil })
+            deadline = route ~= "inspect" and self.clock()
+                + NativeExperiments.start_window_seconds(self.config, route == "regular" and "march" or route) or nil })
         self.native_observer:prepare(scope)
         return scope
     end)
@@ -515,6 +516,146 @@ function Bridge:_request_identity_is_new(base_id, group_id, incident)
     return not address or not baseline.incidents[address]
 end
 
+function Bridge:_confirm_native_start(base_id, group_id, invader_type, evidence, incident)
+    if not base_id or not group_id or not is_enemy_invader_type(invader_type) or not self.event_open
+        or not self.expected_bases[base_id] or not self.director
+        or not self:_request_identity_is_new(base_id, group_id, incident) then return false end
+    local event_base = self.director.state.event and self.director.state.event.bases[base_id]
+    if not event_base or (event_base.groupId and event_base.groupId ~= group_id) then return false end
+    local owned = self.owned_groups[group_id] == base_id
+    local discovered = self.discovery_open and self:_request_window_open(base_id)
+        and (self.profile_id == "native" or evidence == "live-enemy-state")
+    if not owned and not discovered then return false end
+    local first = event_base.status == "pending"
+    if not self.director:on_invasion_start(base_id, group_id) then return false end
+    self.owned_groups[group_id] = base_id
+    if self.request_windows[base_id] then self.request_windows[base_id].status = "started" end
+    if base_id == self.probe_base_id then self.probe_confirmed = true end
+    if first then
+        self.logger:info("Correlated native invasion start confirmed", {
+            base = util.mask_uid(base_id), group = util.mask_uid(group_id), evidence = evidence,
+        })
+    end
+    return true
+end
+
+function Bridge:poll_invasion_progress()
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return false, reason end
+    if not self.event_open or not self.director or not self.director.state.event then return true end
+    local now = self.clock()
+    if now < (self.next_invasion_progress_at or 0) then return true end
+    self.next_invasion_progress_at = now + 5
+    local ok, progress = self:_native_step("invasion-progress", function()
+        if not valid(self.event_manager) or not valid(self.event_world) then
+            error("Native invasion progress scope is unavailable", 0)
+        end
+        local world_ok, world = self:_native_call("progress-manager-world", self.event_manager, "GetWorld")
+        if not world_ok then return end
+        if not same_object(world, self.event_world) then error("Native invasion progress scope is unavailable", 0) end
+        local wanted, results = {}, {}
+        for id, request in pairs(self.request_windows) do
+            local base = self.director.state.event.bases[id]
+            if base and (base.status == "pending" or base.status == "active")
+                and request.status ~= "dispatch_call_failed" then wanted[id] = request end
+        end
+        local incidents = property(self.event_manager, "Incidents")
+        if incidents == nil then error("Native invasion progress scope is unavailable", 0) end
+        local info = property(self.event_manager, "InvaderInfo")
+        local info_base, info_group, remaining, first_wave
+        if valid(info) then
+            local info_ok, info_world = self:_native_call("progress-info-world", info, "GetWorld")
+            if not info_ok then return end
+            if same_object(info_world, self.event_world) then
+                info_base = guid_string(property(info, "BaseCampId"))
+                info_group = guid_string(property(info, "BroadcastGroupId"))
+                if info_base and info_group and wanted[info_base] and self:_request_identity_is_new(info_base, info_group) then
+                    first_wave = property(info, "bIsFirstWaveStarted")
+                    if type(first_wave) ~= "boolean" then error("Native invasion progress state is unreadable", 0) end
+                    local time_ok, seconds = self:_native_call("progress-preparation-time", info, "GetRemainInvadeStartRealTimeSeconds")
+                    if not time_ok then return end
+                    if type(seconds) ~= "number" or seconds ~= seconds or math.abs(seconds) > 604800 then
+                        error("Native invasion progress state is unreadable", 0)
+                    end
+                    remaining = math.max(0, math.ceil(seconds))
+                end
+            end
+        end
+        local ids = util.sorted_keys(wanted)
+        local first = self.next_invasion_progress_index or 1
+        if first > #ids then first = 1 end
+        local last = math.min(#ids, first + 3)
+        self.next_invasion_progress_index = last < #ids and last + 1 or 1
+        for index = first, last do
+            local id = ids[index]
+            local result = { baseId = id, phase = "waiting" }
+            local lookup_ok, incident = self:_native_step("progress-incident-lookup", function()
+                local key = wanted[id].nativeId
+                if key == nil then error("Native invasion progress scope is unavailable", 0) end
+                -- Find throws for absent keys in this UE4SS pin; neither operation mutates the map.
+                local present = incidents:Contains(key)
+                if type(present) ~= "boolean" then error("Native invasion progress state is unreadable", 0) end
+                if present then return unwrap(incidents:Find(key)) end
+                return nil
+            end)
+            if not lookup_ok then return end
+            if valid(incident) then
+                local incident_world_ok, incident_world = self:_native_call("progress-incident-world", incident, "GetWorld")
+                if not incident_world_ok then return end
+                if same_object(incident_world, self.event_world) then
+                    local kind = property(incident, "InvaderType")
+                    if kind == 2 then
+                        result.phase = "visitor"
+                    elseif is_enemy_invader_type(kind) then
+                        local internal_id = guid_string(property(incident, "GroupGuid"))
+                        local broadcast_id = guid_string(property(incident, "BroadcastGroupGuid"))
+                        local identity_new = (internal_id or broadcast_id)
+                            and (not internal_id or self:_request_identity_is_new(id, internal_id, incident))
+                            and (not broadcast_id or self:_request_identity_is_new(id, broadcast_id, incident))
+                        if identity_new then
+                            local base_ok, target = self:_native_call("progress-target-model", incident, "GetTargetCampModel")
+                            if not base_ok then return end
+                            if valid(target) then
+                                local id_ok, native_id = self:_native_call("progress-target-id", target, "GetId")
+                                if not id_ok then return end
+                                if guid_string(native_id) == id then
+                                    local active_ok, executing = self:_native_call("progress-incident-executing", incident, "IsExecuting")
+                                    if not active_ok then return end
+                                    local alive_ok, alive = self:_native_call("progress-alive-enemies", incident, "GetAliveInvaderNum")
+                                    if not alive_ok then return end
+                                    if type(executing) ~= "boolean" or not util.is_integer(alive) or alive < 0 or alive > 100000 then
+                                        error("Native invasion progress state is unreadable", 0)
+                                    end
+                                    result.phase, result.aliveEnemies = "enemy-pending", alive
+                                    local accepted = self.director.state.event.bases[id].groupId
+                                    local group = accepted == internal_id and internal_id or broadcast_id or internal_id
+                                    local preparing = info_base == id and info_group and remaining ~= nil and first_wave == false
+                                    if executing and alive > 0 and not preparing then
+                                        result.phase = "enemy-alive"
+                                        result.confirmed = self:_confirm_native_start(id, group, kind, "live-enemy-state", incident)
+                                    end
+                                end
+                            end
+                        else
+                            result.phase = "pre-existing"
+                        end
+                    end
+                end
+            end
+            if info_base == id and info_group and remaining ~= nil and first_wave == false
+                and result.phase ~= "enemy-alive" then
+                result.phase, result.remainingSeconds = "preparing", remaining
+            end
+            results[#results + 1] = result
+            if self.director.state.status == "recovery_required" then return results end
+        end
+        return results
+    end)
+    if not ok then return false, progress end
+    for _, result in ipairs(progress or {}) do self.director:on_native_start_progress(result) end
+    return true
+end
+
 function Bridge:end_event_tracking(preserve_pending)
     local pending_fields = { "pending_admin_override", "pending_nearest_test", "pending_native_control",
         "pending_expected_bases", "pending_native_base_ids", "pending_base_guilds", "pending_roster", "pending_manager", "pending_world" }
@@ -553,6 +694,8 @@ function Bridge:end_event_tracking(preserve_pending)
     self.member_context = {}
     self.profile_id = "native"
     self.bounty_selector = nil
+    self.next_invasion_progress_at = nil
+    self.next_invasion_progress_index = nil
     self.probe_handoff_metadata, self.probe_handoff_counts = nil, nil
     if preserve_pending == true then
         for _, key in ipairs(pending_fields) do self[key] = pending[key] end
@@ -1480,27 +1623,7 @@ function Bridge:register()
             if scope == "native-all-diagnostic" then
                 self.logger:info("Native all-base diagnostic start observed", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) })
             end
-            local group_expected = self.owned_groups[group_id] == base_id and self:_request_identity_is_new(base_id, group_id)
-            local native_discovery = self.profile_id == "native" and self.discovery_open and self:_request_window_open(base_id)
-                and self:_request_identity_is_new(base_id, group_id)
-            local existing_group
-            if self.director and self.director.state and self.director.state.event and self.director.state.event.bases[base_id] then
-                existing_group = self.director.state.event.bases[base_id].groupId
-            end
-            if base_id and group_id and (not existing_group or existing_group == group_id) and is_enemy_invader_type(invader_type) and self.expected_bases[base_id] and self.director and self.event_open and (group_expected or native_discovery) then
-                if self.director:on_invasion_start(base_id, group_id) then
-                    self.owned_groups[group_id] = base_id
-                    if self.request_windows[base_id] then self.request_windows[base_id].status = "started" end
-                    if base_id == self.probe_base_id then self.probe_confirmed = true end
-                    self.logger:info("Correlated native invasion start confirmed", {
-                        base = util.mask_uid(base_id),
-                        group = util.mask_uid(group_id),
-                        phase = self.request_windows[base_id] and self.request_windows[base_id].phase or "unknown",
-                    })
-                elseif not group_expected then
-                    self.owned_groups[group_id] = nil
-                end
-            end
+            self:_confirm_native_start(base_id, group_id, invader_type, "start-callback")
         end }
         required[#required + 1] = { "invasion_arrived", HOOKS.invasion_arrived, function(context, parameter)
             local scope = self:_manager_hook_scope(context)
@@ -1865,8 +1988,7 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_manager = manager
     self.pending_world = world
     local test_route = self.pending_nearest_test and NativeExperiments.route(self.pending_nearest_test.route)
-    local method = test_route and test_route.method
-        or self.pending_admin_override and "RequestIncidentInvaderEnemy" or "StartInvaderMarchForBaseCamp"
+    local method = test_route and test_route.method or "StartInvaderMarchForBaseCamp"
     local owner = test_route and test_route.owner or "PalInvaderManager"
     local lookup_ok, function_object = self:_native_step("dispatch-function",
         function() return self:_static_find("/Script/Pal." .. owner .. ":" .. method) end)
@@ -2311,7 +2433,13 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
     diagnostic.incidentCanExecute = incident_can_execute
     diagnostic.incidentArrived = incident_arrived
     diagnostic.incidentGroup = incident_group and util.mask_uid(incident_group) or "unavailable"
-    diagnostic.managerInvaderInfo = valid(property(manager, "InvaderInfo"))
+    local invader_info = property(manager, "InvaderInfo")
+    diagnostic.managerInvaderInfo = valid(invader_info)
+    if diagnostic.managerInvaderInfo and guid_string(property(invader_info, "BaseCampId")) == expected_base_id then
+        local existing_group = guid_string(property(invader_info, "BroadcastGroupId"))
+        if existing_group then baseline.groups[existing_group] = true
+        else baseline.complete = false end
+    end
     local start_log_id = guid_string(property(manager, "StartInvaderLogId"))
     diagnostic.managerStartLogId = start_log_id and util.mask_uid(start_log_id) or "unavailable"
     diagnostic.managerPathFinder = valid(property(manager, "PathFinder"))
@@ -2440,9 +2568,13 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
         }
     end
     local now = self.clock()
+    local native_route = self.event_nearest_test and (self.event_nearest_test.route or "debug") or "march"
+    local start_window = NativeExperiments.start_window_seconds(self.config, native_route)
     self.request_windows[base_id] = {
         openedAt = now,
-        expiresAt = now + self.config.siegeLeague.startDiscoverySeconds,
+        expiresAt = now + start_window,
+        route = native_route,
+        nativeId = target.nativeId,
         status = "requesting",
         phase = dispatch_phase,
         baseline = baseline,
@@ -2466,7 +2598,7 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
             return self.native_observer:open({ manager = manager, world = self.event_world, base = target.base, base_id = base_id,
                 route = test and (test.route or "debug") or "regular", group = group,
                 request = control.requestNumber, recipient = control.requesterUid,
-                deadline = self.clock() + self.config.siegeLeague.startDiscoverySeconds })
+                deadline = self.clock() + start_window })
         end)
         if not recorded then
             self.selection_open, self.dispatching_base_id = false, nil
@@ -2508,7 +2640,7 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
             else
                 ok, result = false, group
             end
-        elseif (test_route and test_route.method == "RequestIncidentInvaderEnemy") or (not test_route and self.event_admin_override) then
+        elseif test_route and test_route.method == "RequestIncidentInvaderEnemy" then
             ok, result = invoke("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
             if ok then
                 ok, result = self:_native_step("admin-admission-result", function()

@@ -1821,11 +1821,12 @@ test("authenticated zero-minute start runs immediately without countdown warning
     truthy(director:on_invasion_start("base-a", "group-a"))
     equal(#bridge.announcements, 1)
     equal(bridge.announcements[1], "SIEGE LEAGUE - RAID STARTED")
-    equal(#bridge.chats, 4)
+    equal(#bridge.chats, 5)
     truthy(bridge.chats[1].message:match("start request received"))
     truthy(bridge.chats[2].message:match("target%(s%) validated"))
     truthy(bridge.chats[3].message:match("not yet a confirmed raid"))
-    truthy(bridge.chats[4].message:match("A native invasion is confirmed"))
+    truthy(bridge.chats[4].message:match("preparation"))
+    truthy(bridge.chats[5].message:match("A native invasion is confirmed"))
     equal(director.state.event.profileId, "all-bounty")
     equal(occurrence.countdownSeconds, 0)
     equal(#occurrence.schedule.warningSeconds, 0)
@@ -1996,7 +1997,7 @@ test("all returned void calls without lifecycle abort as start failure without r
     for _, candidate in pairs(director.scheduler.state.occurrences) do scheduler_occurrence = candidate end
     equal(scheduler_occurrence.status, "awaiting_confirmation")
     equal(#bridge.announcements, 0)
-    now = now + config.siegeLeague.startDiscoverySeconds
+    now = now + config.siegeLeague.nativeMarchStartSeconds
     director:tick()
     equal(director.state.status, "aborted")
     equal(scheduler_occurrence.status, "failed")
@@ -2272,6 +2273,7 @@ dofile(join(root, "tests", "native-probe-diagnostics.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "native-experiments.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "native-observer.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "admin-native-policy.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "march-lifecycle.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)

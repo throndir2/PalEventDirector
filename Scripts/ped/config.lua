@@ -49,6 +49,7 @@ function M.defaults()
             minimumParticipationPoints = 100,
             leaderboardSize = 10,
             startDiscoverySeconds = 60,
+            nativeMarchStartSeconds = 480,
             settleDelaySeconds = 15,
             maxRuntimeSeconds = 1800,
             creditDirectPlayer = true,
@@ -203,6 +204,7 @@ function M.validate(config)
         require_integer(config.siegeLeague.minimumParticipationPoints, "siegeLeague.minimumParticipationPoints", 0, config.siegeLeague.targetPoints * config.limits.maxTargets)
         require_integer(config.siegeLeague.leaderboardSize, "siegeLeague.leaderboardSize", 1, 50)
         require_integer(config.siegeLeague.startDiscoverySeconds, "siegeLeague.startDiscoverySeconds", 5, 600)
+        require_integer(config.siegeLeague.nativeMarchStartSeconds, "siegeLeague.nativeMarchStartSeconds", 60, 1800)
         require_integer(config.siegeLeague.settleDelaySeconds, "siegeLeague.settleDelaySeconds", 1, 300)
         require_integer(config.siegeLeague.maxRuntimeSeconds, "siegeLeague.maxRuntimeSeconds", 60, 21600)
         require_boolean(config.siegeLeague.creditDirectPlayer, "siegeLeague.creditDirectPlayer")

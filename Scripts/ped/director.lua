@@ -520,6 +520,8 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     local previous_status = self.state.status
     self.state.nonce = (self.state.nonce or 0) + 1
     local now = self.clock()
+    local native_route = scheduler_occurrence.nearestNativeTest and (scheduler_occurrence.nativeTestRoute or "debug") or "march"
+    local start_window = NativeExperiments.start_window_seconds(self.config, native_route)
     local occurrence_id = util.new_occurrence_id(now, self.state.nonce)
     self.state.event = {
         id = occurrence_id,
@@ -532,14 +534,16 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         requesterUid = scheduler_occurrence.requesterUid,
         nearestNativeTest = scheduler_occurrence.nearestNativeTest == true,
         nativeTestRoute = scheduler_occurrence.nativeTestRoute,
+        nativeRoute = native_route,
+        startWindowSeconds = start_window,
         requestNumber = scheduler_occurrence.manualOrder,
         schedulerOccurrenceKey = scheduler_occurrence_key,
         startedAt = now,
-        startConfirmationDeadline = now + self.config.siegeLeague.startDiscoverySeconds,
+        startConfirmationDeadline = now + start_window,
         startConfirmedAt = nil,
         confirmedBaseCount = 0,
         fanoutDispatched = admin_override,
-        discoveryDeadline = admin_override and (now + self.config.siegeLeague.startDiscoverySeconds) or nil,
+        discoveryDeadline = admin_override and (now + start_window) or nil,
         startedAtUtc = util.utc_now(),
         lastLifecycleAt = now,
         bases = {},
@@ -663,9 +667,13 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         expectedBases = util.count(self.state.event.bases),
     })
     if self.state.event.requesterUid and not self.state.event.startConfirmedAt then
-        self:_chat(string.format("PED request #%d: native call returned; waiting up to %ds for an invasion-start callback. This is not yet a confirmed raid.",
+        self:_chat(string.format("PED request #%d: native call returned; waiting up to %ds for new enemy-start evidence. This is not yet a confirmed raid.",
             self.state.event.requestNumber or 0, math.max(0, self.state.event.startConfirmationDeadline - self.clock())),
             self.state.event.requesterUid)
+        if native_route == "march" then
+            self:_chat(string.format("PED request #%d: Palworld may declare the raid and send a negotiator before the assault. The observation window includes preparation; no automatic retry or fallback will run.",
+                self.state.event.requestNumber or 0), self.state.event.requesterUid)
+        end
     end
     return true, occurrence_id, self.state.status == "active"
 end
@@ -698,6 +706,44 @@ function Director:reconcile_online_players()
     return event.rankingIntegrity ~= "degraded"
 end
 
+function Director:on_native_start_progress(progress)
+    local event = self:_active_event()
+    local base = event and event.bases[progress.baseId]
+    if not base then return false end
+    local labels = {
+        waiting = "no new enemy incident or native preparation is visible yet",
+        visitor = "a native visitor is present; a visitor is not proof of an enemy assault",
+        ["pre-existing"] = "the observed enemy incident predates this request and is not counted as a new raid",
+        ["enemy-pending"] = "a new enemy incident exists, but no executing live attackers are confirmed",
+        ["enemy-alive"] = "new executing enemy attackers are present",
+        preparing = "native raid preparation is active",
+    }
+    local label = labels[progress.phase]
+    if not label then return false end
+    local minute = progress.remainingSeconds and math.ceil(progress.remainingSeconds / 60)
+    local previous = base.nativeProgress
+    local changed = not previous or previous.phase ~= progress.phase or previous.remainingMinutes ~= minute
+    base.nativeProgress = { phase = progress.phase, remainingSeconds = progress.remainingSeconds,
+        remainingMinutes = minute, aliveEnemies = progress.aliveEnemies, observedAt = self.clock() }
+    self:_mark_dirty()
+    if not changed then return true end
+    self.logger:info("Native invasion preparation progress", {
+        request = event.requestNumber or 0, target = base.dispatchIndex or 0, phase = progress.phase,
+        remainingSeconds = progress.remainingSeconds, aliveEnemies = progress.aliveEnemies,
+    })
+    if event.requesterUid then
+        local detail = label
+        if progress.remainingSeconds then detail = detail .. string.format(" (%ds on the native countdown)", progress.remainingSeconds) end
+        if progress.aliveEnemies then detail = detail .. string.format("; live enemies=%d", progress.aliveEnemies) end
+        if progress.phase == "enemy-alive" and event.profileId ~= "native" and base.ranked ~= true then
+            detail = detail .. "; bounty substitution is unconfirmed, so this base is unranked"
+        end
+        self:_chat(string.format("PED #%d target %d: %s. No automatic retry.", event.requestNumber or 0,
+            base.dispatchIndex or 0, detail), event.requesterUid)
+    end
+    return true
+end
+
 function Director:on_invasion_start(base_id, group_id)
     local event = self:_active_event()
     if not event or type(base_id) ~= "string" or base_id == "" then
@@ -711,7 +757,9 @@ function Director:on_invasion_start(base_id, group_id)
         event.bases[base_id].status = "active"
         event.bases[base_id].dispatchStatus = "lifecycle_confirmed"
         event.bases[base_id].startedAt = self.clock()
-        event.bases[base_id].ranked = event.profileId == "native" or (event.compositions[base_id] and not event.compositions[base_id].failed)
+        event.bases[base_id].compositionUnverifiedAtStart = event.profileId ~= "native" and event.compositions[base_id] == nil
+        event.bases[base_id].ranked = event.profileId == "native"
+            or (event.compositions[base_id] ~= nil and not event.compositions[base_id].failed)
     elseif event.bases[base_id].status == "active" and event.bases[base_id].groupId == group_id then
         return true
     else
@@ -748,7 +796,10 @@ function Director:on_invasion_start(base_id, group_id)
     if first_confirmation then
         local notified, notification_error = self:_notify(
             "SIEGE LEAGUE - RAID STARTED",
-            bounties.profile(event.profileId).name .. ": A native invasion is confirmed. The remaining eligible online-guild bases will now be requested; move between bases, protect everything, and rack up contribution and final hits!"
+            bounties.profile(event.profileId).name .. ": A native invasion is confirmed. "
+                .. (event.fanoutDispatched and "All requested base calls have already been submitted; no duplicate fanout will run."
+                    or "The remaining eligible online-guild bases will now be requested.")
+                .. " Move between bases and protect the defenders!"
         )
         if not notified then
             self.logger:warn("Confirmed raid start notification was incomplete", { error = notification_error })
@@ -801,7 +852,7 @@ function Director:on_composition_result(base_id, replaced_count, selected_count,
         event.compositionFailed = true
         if event.bases[base_id] then event.bases[base_id].ranked = false end
         if self.scoreboard then self.scoreboard:unrank_base(base_id, "composition_failure") end
-    elseif event.bases[base_id] and not composition.failed then
+    elseif event.bases[base_id] and not composition.failed and not event.bases[base_id].compositionUnverifiedAtStart then
         event.bases[base_id].ranked = true
     end
     self:_mark_dirty()
@@ -1015,7 +1066,7 @@ function Director:_dispatch_confirmed_fanout()
     local dispatched, result = self.bridge:continue_invasion_dispatch()
     event.fanoutDispatched = true
     event.fanoutDispatchedAt = self.clock()
-    event.discoveryDeadline = event.fanoutDispatchedAt + self.config.siegeLeague.startDiscoverySeconds
+    event.discoveryDeadline = event.fanoutDispatchedAt + (event.startWindowSeconds or self.config.siegeLeague.startDiscoverySeconds)
     if dispatched then
         self:_apply_dispatch_results(result)
     else
@@ -1662,6 +1713,12 @@ function Director:tick()
     local event = self:_active_event()
     if event then
         self:reconcile_online_players()
+        if type(self.bridge.poll_invasion_progress) == "function" then
+            local observed = self.bridge:poll_invasion_progress()
+            if not observed then return end
+            event = self:_active_event()
+            if not event then return end
+        end
         if not event.startConfirmedAt and now >= event.startConfirmationDeadline then
             self:_fail_unconfirmed_start("no correlated native invasion lifecycle confirmed before start discovery timeout")
             event = nil
@@ -1679,7 +1736,7 @@ function Director:tick()
         end
         if now - event.startedAt >= self.config.siegeLeague.maxRuntimeSeconds then
             self:resolve("maximum runtime")
-        elseif event.fanoutDispatched and now >= discovery_deadline then
+        elseif event.fanoutDispatched and (now >= discovery_deadline or all_bases_closed(event)) then
             local active_count = 0
             for _, base in pairs(event.bases) do
                 if base.status == "pending" then

@@ -123,6 +123,9 @@ function Assert-PedConfigSchema3 {
     Assert-IntegerRange $siege.minimumParticipationPoints 'siegeLeague.minimumParticipationPoints' 0 ([long]$siege.targetPoints * [long]$Config.limits.maxTargets)
     Assert-IntegerRange $siege.leaderboardSize 'siegeLeague.leaderboardSize' 1 50
     Assert-IntegerRange $siege.startDiscoverySeconds 'siegeLeague.startDiscoverySeconds' 5 600
+    if ($null -ne $siege.PSObject.Properties['nativeMarchStartSeconds']) {
+        Assert-IntegerRange $siege.nativeMarchStartSeconds 'siegeLeague.nativeMarchStartSeconds' 60 1800
+    }
     Assert-IntegerRange $siege.settleDelaySeconds 'siegeLeague.settleDelaySeconds' 1 300
     Assert-IntegerRange $siege.maxRuntimeSeconds 'siegeLeague.maxRuntimeSeconds' 60 21600
     foreach ($name in @('creditDirectPlayer', 'creditActivePal', 'creditBaseWorkers')) { Assert-BooleanValue $siege.$name "siegeLeague.$name" }
@@ -285,6 +288,9 @@ if (-not $PSCmdlet.ShouldProcess(
     $config.compatibility.allowedServerBuildIds = @($VerifiedBuildId)
     $config.compatibility.allowedUe4ssVersions = @($ExpectedUe4ssApiVersion)
     $config.siegeLeague.chatStartPolicy = $AuthorizationPolicy
+    if ($null -eq $config.siegeLeague.PSObject.Properties['nativeMarchStartSeconds']) {
+        $config.siegeLeague | Add-Member -NotePropertyName 'nativeMarchStartSeconds' -NotePropertyValue 480
+    }
     $config.capabilities.chatCommands = $NativeTest
     $config.capabilities.observeCombat = $NativeTest
     $config.capabilities.observeInvasions = $NativeTest
@@ -322,6 +328,7 @@ if (-not $PSCmdlet.ShouldProcess(
         EnabledCapabilities = $(if ($NativeTest) { $gameplayCapabilities -join ',' } else { '' })
         NativeStartsQuarantined = (-not $NativeTest)
         NativePreflightRequired = $false
+        NativeMarchStartSeconds = $config.siegeLeague.nativeMarchStartSeconds
         DiagnosticCommand = 'Optional: ped diagnose-preflight; then confirm-disposable-readonly with the exact previewed step'
         GrantItems = $false
         EnabledSchedules = 0

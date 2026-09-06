@@ -52,6 +52,7 @@
     "minimumParticipationPoints": 100,
     "leaderboardSize": 10,
     "startDiscoverySeconds": 60,
+    "nativeMarchStartSeconds": 480,
     "settleDelaySeconds": 15,
     "maxRuntimeSeconds": 1800,
     "creditDirectPlayer": true,

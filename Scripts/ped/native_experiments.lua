@@ -17,6 +17,11 @@ function Experiments.route(name)
     return routes[name]
 end
 
+function Experiments.start_window_seconds(config, route)
+    local seconds = route == "march" and config.siegeLeague.nativeMarchStartSeconds or config.siegeLeague.startDiscoverySeconds
+    return math.min(seconds, config.siegeLeague.maxRuntimeSeconds)
+end
+
 function Experiments.validate_context(context)
     if type(context) ~= "table" then return false, "native experiment context must be a table" end
     if context.nearestNativeTest ~= nil and type(context.nearestNativeTest) ~= "boolean" then

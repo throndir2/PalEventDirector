@@ -91,19 +91,19 @@ Until that matrix is complete, documentation and player messaging may say “nat
 - `StartInvaderMarchForBaseCamp(FGuid campID)`;
 - `StartInvaderMarchAll()`.
 
-The manager owns a base-ID-to-observer map and a base-ID-to-incident map. `StartInvaderMarchAll()` remains a useful native-scope research control, but it cannot enforce the online-guild predicate. Alpha.3 therefore snapshots and filters observers first, calls `StartInvaderMarchForBaseCamp()` for one deterministic probe base, and fans out to the remaining selected bases only after a correlated native start callback confirms that probe.
+The manager owns a base-ID-to-observer map and a base-ID-to-incident map. PED uses `StartInvaderMarchForBaseCamp()` for normal starts, including admins, matching the primary call in Endless Siege 1.8.28. It preserves its own online-guild/explicit-base targeting: admins submit each intended target once; ordinary requests keep confirmed-probe fanout. `StartInvaderMarchAll()` cannot enforce that scope and is not a fallback.
 
 Live IMOUTO evidence from build `24575149` proved that ten selected-base `void` calls can all return through UE4SS without creating an incident, selection, lifecycle callback, target, or damage event. A normal call return therefore proves invocation only, never native acceptance. Current diagnostics capture observer key/target/model GUID agreement, base/observer rejection flags, manager maps and pointers, and the world switch before and after every call. `RAID STARTED`, scoring, and results require lifecycle confirmation.
 
 The word “all” still needs runtime confirmation. The generated Modding Kit implementation is a stub and cannot show whether Palworld internally excludes cooldown, unloaded, obstructed, or already-invaded bases.
 
-### Authorized admin admission
+### Public march and explicit admission comparison
 
-The admin path uses `RequestIncidentInvaderEnemy(const FGuid& Guid, UPalInvaderBaseCampObserver* Observer)`, a reflected method declared by the pinned [manager header](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalInvaderManager.h). It submits an enemy-incident request for the exact selected base and observer and returns a Boolean admission result. This is distinct from the ordinary `StartInvaderMarchForBaseCamp` march path.
+Normal/admin starts now use the public `StartInvaderMarchForBaseCamp(Guid)` route. The prior private reflected `RequestIncidentInvaderEnemy(Guid, Observer)` helper remains available only as the explicit single-base `test-native admission` comparison; `test-native debug` remains a separate named-group RPC experiment.
 
-Only authority validated by the director can set the persisted manual request's `adminOverride`; ordinary-user input cannot supply that bit. The flag is carried through the scheduler to eligibility and dispatch. For that path, the observer's cooldown remains readable diagnostic state rather than a PED veto. PED does not clear `bIsCoolTime`, `CoolTimeFinish`, or `CoolTimeElapsed`. Invalid observers, active/path-searching incidents, ignored/unavailable bases, wrong worlds, and disabled world invasions remain rejected.
+Only fresh validated authority can set `adminOverride`. Admins retain native-first submission despite gameplay flags or existing visitor activity; no native flags, timers or incidents are cleared. Invalid exact objects/worlds and actual native faults remain integrity stops, not gameplay policy. Bounty substitutions remain scoped to newly correlated enemy groups.
 
-The method's existence and declaration are source-audited, not proof of native behavior. A Boolean `false` is reported as native rejection; a non-Boolean return is a native-contract fault; `true` still requires a correlated lifecycle callback before `RAID STARTED`, fanout, ranking, or rewards. There is no fallback or automatic retry if the direct request is unavailable or rejected. Live acceptance is a remaining test, not something inferred from a mock.
+Public march has an eight-minute start-observation window by default, allowing the reported native declaration/negotiator preparation. Actual `InvaderInfo` countdowns are reported only when correlated to this target and a new group. Preparation, visitors and a successful void return do not count as an assault. A matching start callback or newly correlated executing enemy incident with live attackers can confirm it; live attackers are not counted while the matching native first-wave flag still says preparation. A bounty base without confirmed substitution remains explicitly unranked. Neither all-base/random retries nor Endless Siege's global startup cleanup are imported.
 
 ### Exact named group
 

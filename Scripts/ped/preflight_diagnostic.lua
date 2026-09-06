@@ -25,6 +25,8 @@ local ERROR_SIGNATURES = {
     { text = "Native probe observer registration failed", code = "probe-hook-registration" },
     { text = "Native experiment logging failed", code = "experiment-log-failed" },
     { text = "Native navigation signature is unsupported", code = "navigation-signature" },
+    { text = "Native invasion progress scope is unavailable", code = "invasion-progress-scope" },
+    { text = "Native invasion progress state is unreadable", code = "invasion-progress-state" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 local TARGET_FAILURES = {
