@@ -8,7 +8,7 @@ That revision produced a dedicated-server native crash, not client desynchroniza
 
 The package version remains alpha.3 to preserve configuration and state schemas. The clean commit SHA, artifact hash, and attested delivery profile identify the package. Both profiles force recurring schedules and item delivery off. Installing the test profile is **not** evidence that an invasion has worked: acceptance still requires its native lifecycle callback.
 
-In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. An authorized `!siege start native 0` or `!siege start all-bounty 0` runs the normal start validation and, if eligible, dispatches the native probe. Version pins, capability switches, authorization, world settings, base eligibility, and active-incident checks remain automatic requirements; the operator does not have to complete a separate diagnostic.
+In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. An authorized admin `!siege start native 0` or `!siege start all-bounty 0` submits the requested targets after authorization, compatibility, identity and persistence checks. Native visitor/incident occupancy, busy/pathfinding/cooldown, base availability/ignore and world invasion-enable state are logged but no longer veto the admin request. Ordinary users and schedules retain their policy checks.
 
 ### Normal gameplay test loop
 
@@ -18,11 +18,40 @@ Ordinary eligibility rejections return an error normally. A native Lua error, mi
 
 Authorized admin starts now use the exact-base `RequestIncidentInvaderEnemy(Guid, Observer)` entry point, with `admin-request-incident` and `admin-admission-result` trace boundaries. Ordinary starts retain the march path and cooldown veto. Admin cooldown flags/timers are not altered: the native Boolean admission result and lifecycle callbacks decide whether the request actually worked. This direct admission path is source-audited but still requires live confirmation.
 
+### Start-policy guard inventory and removal
+
+The start path contained **16 grouped gameplay/diagnostic policy checks**. Five already had admin exemptions; this change removes the other **11 admin veto categories**. Repeated checks of the same condition at chat, scheduling, discovery and dispatch are counted once. This is not a count of every input-validation, startup or error-handling branch in PED.
+
+| Policy category | Why it existed | Current authorized-admin behavior |
+|---|---|---|
+| Per-player chat throttle | Avoid ordinary chat spam | Already bypassed |
+| Process-local start throttle | Avoid repeated ordinary start requests | Already bypassed |
+| Ordinary-player start cooldown | Limit public event frequency | Already bypassed |
+| An already planned manual countdown | Avoid duplicate pending manual work | Already superseded atomically |
+| Native observer cooldown | Respect ambient raid pacing | Already bypassed without timer writes |
+| Current PED starting/active/resolving event | Protect one scoreboard and scheduler occurrence | New request replaces tracking durably after target validation; native activity is untouched |
+| World invasion-enable policy | Match ambient server raid settings | Logged; Palworld decides |
+| Any occupied native incident slot | Conservative unknown-concurrency protection | No global PED veto |
+| Any executing native invasion/visitor | A second conservative concurrency check | No global PED veto |
+| Target observer already invading | Avoid overlapping ambient activity | Logged; Palworld decides |
+| Target observer path-searching | Avoid presumed pathfinder contention | Logged; Palworld decides |
+| Base ignores invaders | Respect ambient target selection | Logged; Palworld decides |
+| Base `IsAvailable()` policy | Select ready ambient targets | Valid, identity-matched objects may be submitted; Palworld decides availability |
+| Explicit debug group absent from PED's loaded table scan | Fail early on unverified group names | Bounded names go to native selection; unknown groups may be rejected or ignored natively |
+| Full diagnostic preparation before a start | Collect metadata/worker/group/spawn evidence | Explicit inspection only, not an admin-start prerequisite |
+| First probe must confirm before other targets | Limit mutations while integration was unproven | Each requested admin target is attempted once; no repeat or continuation after native fault |
+
+Most of these came from crash isolation, uncertain native concurrency and ordinary-player scheduling policy. They are not all fundamental engine constraints. Admin native-first testing intentionally submits a request despite those gameplay observations instead of inventing an engine refusal. It neither automatically cancels a visitor nor empties an incident map to make room.
+
+Seven integrity categories remain: fresh authority and configured deployment capabilities; supported native runtime/call layouts; valid exact objects/world/target scope; bounded input/resource sizes; durable scheduler intents and requested countdown semantics; native-fault/recovery/no-replay protection; and truthful correlation/scoring for newly observed native groups. The known oversized by-value settings getter remains prohibited. A native Boolean false is logged as a native rejection, a void return is not a raid, and ambiguous pre-existing identities suppress attribution rather than the admin call.
+
+Superseding PED tracking marks the old occurrence cancelled and archives the old event as aborted in the same journal append before clearing its scoreboard. Failed target validation or a failed replacement append leaves the old event intact. Positive countdowns do not replace old tracking until the requested deadline. Recovery-required state is never superseded or replayed by a start command.
+
 ### Native pathfinding boundary observed on IMOUTO
 
 The `9141b3d4b46c` test reached the direct native request and returned Boolean `true`. The probe observer changed from not path-searching to path-searching, and the manager acquired a pathfinder. Its incident map stayed empty, and no declaration, selection, or invasion-start callback was observed before the discovery timeout. All automatic before/after markers returned; this was not another stack-cookie crash. Ten hash-verified files remain private under `PalEventDirectorDiagnosticBackups/native-admission-1788633154-pathfinding-timeout`.
 
-That probe was the first GUID-sorted target among ten bases and had no cached players in its base. Probe selection now prefers an eligible base with observed player presence, with deterministic ID ordering as the fallback; it does not remove any other target or dispatch fanout before confirmation. This avoids choosing an unoccupied remote base ahead of a known occupied one, but does not prove that navigation was the cause of the timeout.
+That probe was the first GUID-sorted target among ten bases and had no cached players in its base. Ordering prefers observed player presence, then stable ID order. Ordinary requests still wait for confirmed-probe fanout; admin requests now attempt every intended target without that policy prerequisite. Occupancy ordering does not prove navigation caused the original timeout.
 
 Timeout handling now captures the native state at the deadline, not just immediately after submission. It records observer/pathfinding/incident state, hook-entry counters, and aggregate loaded start-point actor/navigation-invoker counts. The editable `bIsWaitWorldPartition` flag is reported as configuration, not current waiting: it defaults true in the generated constructor and cannot prove a streaming stall. No positions, player IDs, or invoker state are changed. `InvadeStartLocationList` is a start-point inventory: a key not matching a base ID is not proof that the base lacks a usable start point.
 
@@ -50,7 +79,7 @@ This is different from the lower-level Boolean admission path, which started and
 
 ### Automatic probe prerequisite evidence
 
-Each new probe now samples these facts before its native dispatch, on the game thread. Fanout does not repeat this heavier inventory, and polling does not scan it every tick. This is logging around an ordinary authorized start, not another manual preflight or an eligibility override.
+The detailed inventory below remains available on the game thread through explicit inspection. It is no longer mandatory before an admin dispatch. Admin calls retain lightweight before/after state and native result logs; optional metadata/group/spawn/worker inspection cannot become an unlock requirement. Ordinary requests retain their existing probe diagnostics.
 
 | Evidence | Read-only source and interpretation |
 |---|---|
@@ -75,7 +104,7 @@ The next attempt, request 10, used `all-bounty` and was rejected at registered-b
 
 ### Consolidated native experiments
 
-The expanded harness separates inspection from mutation. `inspect-native` reads the current base even when the incident-slot guard would reject a new start; it does not change the current event or scheduler. The `test-native` route argument selects one of three audited entry points on the same validated base: Boolean admission, ordinary selected-base march, or the controller debug RPC. A debug group argument is resolved against the loaded table and canonicalized before dispatch. Unknown groups, arbitrary methods and wider scopes are rejected. No route automatically falls back to another.
+The expanded harness separates inspection from mutation. `inspect-native` reads the current base without changing the event or scheduler. The `test-native` route argument selects one of three audited entry points on the same validated base: Boolean admission, ordinary selected-base march, or the controller debug RPC. A bounded group-name argument goes to native selection without a PED loaded-table veto; names resembling private identifiers are withheld from diagnostic text rather than blocking invocation. Arbitrary methods and wider scopes remain unavailable. No route automatically falls back to another.
 
 `native-experiments.ndjson` is a private, schema-checked scalar journal with a run ID, observation ID, request number where applicable, timestamp and monotonically increasing record sequence. Its sections include group/biome/grade/weight/wave/build-condition summaries, anonymous point distances and navigation state, bounded worker-level samples, function flags and parameter offsets, per-slot lifecycle/member/controller state, and reflected hook outcomes. Raw player/base/group GUIDs, native addresses, absolute coordinates, native objects, settings objects and opaque errors are not admitted by the record schema. Worker reads cap at 32 and recheck native array length before each 1-based access: the pinned TArray getter can extend an array on an out-of-range **read**.
 
@@ -86,6 +115,8 @@ Passive observation is independent of the gameplay event and remains bounded to 
 `test-path` is a separate, explicitly requested query experiment. Before any query it validates the live `NavigationSystemV1` function names, field classes, counts, offsets and exact three-field numeric FVector layout against the small Windows x64 float/double-vector signatures. The known query parameter payload is 56 or 80 bytes, not a by-value large settings struct. It passes independently copied numeric vectors, the validated requester pawn and the base navigation-filter class; neither choice is assumed equivalent to Palworld's invader-specific pathfinder. At most three nearby candidates are queried. Results distinguish navigation building/locked flags, returned-object validity, actual native path validity, partial paths, point counts, length, cost and unavailable/sentinel costs. Path coordinates are not logged.
 
 The native navigation-path predicate is invoked through its exact unbound UFunction because the pinned UE4SS `UObject:IsValid()` member would otherwise shadow `UNavigationPath::IsValid()`. The harness does not invent a `GetPathPoints()` method: it counts the `PathPoints` property without indexing or dumping it. Unsupported live metadata stops the experiment before any query; no signature bypass or retry is supplied.
+
+Live `d8979ab2` inspection identified a real native `BP_PalIncidentInvaderVisitorNPC_C` at the inspected base: initialized/executing/arrived, one member and controller, no completed/canceled state. The three explicit pawn/base-filter navigation queries returned one valid complete path, one valid partial path, and one invalid path with no points; navigation was neither building nor locked. That rules out a blanket absence of navigation for that tested query configuration, not Palworld's invader-specific path rules. A later `OnEndInvade` callback matched the visitor's base. No enemy invasion was thereby proven.
 
 ## Preserved IMOUTO evidence
 
@@ -133,7 +164,7 @@ The generated `FPalOptionWorldSettings` header contains 120 reflected fields, in
 
 The isolated diagnostic profile inspects only the return struct's metadata handles and field offsets, from the last field backwards. If `returnOffset + fieldOffset + 1 > 512`, it stops with an explicit oversized-return finding. A smaller observed lower bound is not a safe upper bound: the pinned [UFunction Lua bindings](https://github.com/Okaetsu/RE-UE4SS/blob/2281fa311e417b1dfddedbcd49972d764fddb244/UE4SS/src/LuaType/LuaUFunction.cpp) do not expose exact `ParmsSize`/return extent, so that case also stops rather than guessing.
 
-The guarded gameplay adapter removes **both** calls to this getter, including the dispatch snapshot's call. It uses the audited [GetOptionSubsystem declaration](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalUtility.h) and the [OptionWorldSettings property](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalOptionSubsystem.h). A property view does not pass the large struct through `ProcessEvent`'s fixed call buffer. The subsystem must belong to the selected world, and only a readable, Boolean `true` invasion-enable flag passes. Missing data, a different world, or a disabled flag fails closed; there is no fallback to the old getter.
+The gameplay adapter removes **both** calls to this getter, including the dispatch snapshot's call. It uses the audited [GetOptionSubsystem declaration](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalUtility.h) and the [OptionWorldSettings property](https://github.com/localcc/PalworldModdingKit/blob/e6632458b97af0083eb81715775651b08104ef6a/Source/Pal/Public/PalOptionSubsystem.h). A property view does not pass the large struct through `ProcessEvent`'s fixed call buffer. The subsystem must belong to the selected world. Ordinary requests still require a readable Boolean true; admin requests observe the flag and let Palworld apply its own policy. There is never a fallback to the unsafe getter.
 
 For optional isolated investigation, the test profile's stepped sequence follows manager verification with the option-subsystem pointer-signature audit, a separately bracketed getter call, world identity checks, the struct-view wrapper check, and the single Boolean read. It does not open or close a gameplay gate. Native invasion acceptance still requires a correlated lifecycle callback during an ordinary gameplay test.
 

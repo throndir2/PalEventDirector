@@ -1,6 +1,6 @@
 # Alpha.3 administration and scheduling
 
-> **Current code versus required design:** the direct laboratory profile enables in-game starts with automatic native breadcrumbs and no manual preflight prerequisite. This revision adds admin throttle exemptions, pending-countdown supersession, admin-first due-work processing, and direct native enemy-incident admission without rewriting cooldown timers. Native acceptance still requires a live test. Active-incident replacement and the complete [admin command contract](11-invasion-and-bounty-design.md#highest-priority-admin-chat-control) remain future work.
+> **Native-first admin testing:** authorized admin requests delegate gameplay policy to Palworld. Visitor/incident occupancy, native busy/pathfinding/cooldown, base availability/ignore and the invasion-enable setting are observations, not PED admin vetoes. Admin all-target starts submit every requested target once without waiting for the first base to accept. Runtime/call safety, exact targets, recovery and truthful outcomes remain enforced. PED does not delete incidents, dismiss NPCs or rewrite flags to manufacture acceptance.
 
 ## Scope and safety
 
@@ -16,6 +16,8 @@ Schema 3 intentionally has no migration from earlier alpha configurations or sta
 
 The command tables below describe the implemented alpha.3 behavior unless explicitly marked as required design. Direct testing follows [the laboratory runbook](15-preflight-crash-diagnostics.md). The admin-priority contract supersedes ordinary throttling/cooldown policy for authorized administrators as a design requirement; implementation must be completed before claiming those overrides work.
 
+The [guard inventory](15-preflight-crash-diagnostics.md#start-policy-guard-inventory-and-removal) groups 16 admission-policy checks: five previously exempted admins, and eleven newly removed as admin vetoes. Authentication, supported native calls, exact targets, bounded work, durable state, recovery and genuine lifecycle correlation remain. A new admin request may supersede current PED tracking after validating its targets; the old event/occurrence is terminalized durably without cancelling its native incidents. Failed validation or persistence retains old tracking. Recovery-required events cannot be superseded. A positive countdown supersedes old tracking only when due.
+
 ### Required admin behavior
 
 An authorized admin chat command is highest-priority control intent. Routine native/PED cooldowns, scheduled work, and ordinary-user throttles must not veto or silently delay it. Zero minutes means execute now; a requested positive countdown must be honored. Conflicts require scoped cancellation/replacement, not a generic "already active" refusal. Admin queries must receive prompt replies, and aliases must behave consistently.
@@ -28,16 +30,16 @@ A start is mandatory for the eligible target set; it is not a consent vote. At t
 
 1. snapshots every valid online player controller;
 2. resolves every online player UID to a native guild ID, failing the whole start if any lookup is uncertain;
-3. selects only available, idle invasion observers whose base belongs to one of those online guilds;
-4. rejects the start if any native invasion/visitor slot, eligible observer, required reflected function, runtime version, or configured bound is unsafe;
+3. selects valid, identity-matched base models belonging to those online guilds; ordinary users and schedules additionally require available, idle observers;
+4. retains runtime/call compatibility, exact-target and bounded-resource checks; native gameplay state is diagnostic-only for admins;
 5. enrolls the same online-player snapshot in one server-wide leaderboard, regardless of guild; and
-6. issues one selected-base native probe request, then requests the remaining eligible bases only after a correlated native start callback confirms the probe.
+6. submits each requested admin target once, or uses the existing probe-then-confirmed-fanout sequence for ordinary users and schedules. Explicit `test-native` experiments still have exactly one target.
 
 A guild with no online member at that boundary is not attacked. Every online player is enrolled even if that player's guild has no selected base. Players who join while the event is active are enrolled globally on the next poll and before their first accepted score record. An attribution that cannot be tied to an enrolled online player consumes the target's damage budget but receives no score or final hit.
 
-The selected-base start API returns no success value. A normal Lua return is recorded only as `probe_call_returned` or `fanout_call_returned`; a base is considered started only after a matching native lifecycle callback. The adapter resolves the active manager from an online player's world and pins it for the occurrence. Immediately before and after each call it records masked observer key/target/model GUID agreement, invasion/path/cooldown flags, base availability/ignore/state/level, incident membership/state, start-location and saved-state membership, global manager pointers, and the world invasion switch.
+The selected-base march API returns no success value; direct admission returns a Boolean. Logs and dispatch results distinguish the native method, a returned call, its return type and an actual Boolean false. Neither a void return nor Boolean true proves a raid. The adapter resolves the active manager from an online player's world and pins it for the occurrence. Before/after snapshots record native policy state without using it as an admin veto. Pre-existing incident identities stay private in memory and cannot be claimed or bounty-substituted as a new request's success.
 
-PED does not display `RAID STARTED` until the first correlated callback is durably recorded. If the probe has no callback before `startDiscoverySeconds`, remaining bases are not called, the event persists `event_start_failed`, and the player sees a specific `START FAILED` notice. That terminal creates no rankings, normal results, or reward obligations. After a confirmed probe, fanout gets a fresh discovery window; a missing callback for an individual fanout base remains a technical `native_start_missing` outcome while confirmed bases continue normally.
+PED does not display `RAID STARTED` until a new matching callback is durably recorded. Admin dispatch does not wait for that callback before submitting other requested bases. A native Boolean rejection at one target does not veto the rest; an actual native fault stops further submissions. If no requested base confirms before `startDiscoverySeconds`, the event fails without rankings or rewards. Ordinary users and schedules retain confirmed-probe fanout. The observation deadline is not a gameplay permission check or an automatic retry timer.
 
 ## Countdown and notification behavior
 
@@ -160,7 +162,7 @@ Privileged chat forms:
 | `!siege test-path` / `!ped test-path` | Explicit, bounded navigation experiment: at most three synchronous queries from nearby cached start points to the current base, using the requesting pawn and base navigation filter. No invasion is requested. |
 | `!siege test-native admission` / `!ped test-native admission` | Exactly one eligible current base through `RequestIncidentInvaderEnemy`. The game selects the native composition. Boolean acceptance still requires an actual start callback. |
 | `!siege test-native march` / `!ped test-native march` | Exactly one eligible current base through `StartInvaderMarchForBaseCamp`, preserving the native method's own behavior. No fallback and no fanout. |
-| `!siege test-native debug [group]` / `!ped test-native debug [group]` | Exactly one eligible current base through `Debug_InvaderMarchForNearCamp` with declaration skip. An explicit group must match loaded native table data; it is not a numeric row key. Omission retains the stock Hunter control. |
+| `!siege test-native debug [group]` / `!ped test-native debug [group]` | Exactly one current target base through `Debug_InvaderMarchForNearCamp` with declaration skip. A bounded group-name string is passed to native selection even if PED has not found it in its table scan. Omission retains the stock Hunter control. |
 | `!siege test-native` / `!ped test-native` | Backward-compatible shorthand for the default debug control. All single-base experiments use native composition, no bounty substitution, and no fanout. |
 | `!siege experiments` | Prints the experimental command forms without running them. |
 | `!ped <operator command>` | Runs the corresponding console command below after the same fresh policy decision. |
@@ -171,11 +173,11 @@ Admin starts carry an internal, persisted `adminOverride` selected by the author
 
 Chat start requests also retain their requester privately so PED can report bounded progress directly: request received, target count validated, native call returned, and lifecycle outcome. A returned call is explicitly not called a confirmed raid. A zero countdown skips the deliberate wait; `startDiscoverySeconds` (default 60) only bounds the subsequent wait for lifecycle confirmation, not a guaranteed spawn delay. Timeout replies summarize pathfinding, incident presence, and hook counts without exposing player IDs or world positions. Native-error replies identify the fixed operation label and a bounded failure classification, never the raw error; further native calls remain locked until investigation and a fresh server process.
 
-Probe diagnostics additionally report loaded group data, 2D/3D spawn-radius matches, sampled navigation disable state and concrete Blueprint-hook registration. Partial scans are labeled, and geometric matches do not prove a valid path. Progress and timeout messages carry the request number; timeout messages distinguish observed Blueprint handoffs from those whose parameters matched the probe. These are read-only observations, not new cooldown, group or spawn-location overrides. See the [diagnostic evidence contract](15-preflight-crash-diagnostics.md#automatic-probe-prerequisite-evidence) for limits and interpretation.
+Explicit `inspect-native`/`test-path` diagnostics report loaded group data, spawn-radius matches, navigation state and concrete Blueprint-hook registration. Admin starts do not require these extra schema/worker/spawn/hook-preparation steps. Lightweight native boundary/outcome logs and bounded passive observation remain automatic; any previously registered detailed observers continue to collect evidence. Partial scans remain labeled. See the [diagnostic evidence contract](15-preflight-crash-diagnostics.md#automatic-probe-prerequisite-evidence).
 
 Detailed records are written outside the package to `Pal\Saved\PalEventDirector\native-experiments.ndjson`. They contain only allowlisted scalar fields: anonymous slot/point numbers, relative distances, group metadata, worker levels without identities, lifecycle observations, and query results. Native before/after breadcrumbs remain separate and unchanged. Passive samples are due at 1, 5, 15, 30, 60, 120, 300 and 600 seconds; missed deadlines coalesce into one current sample, never a burst of invasion requests. The observation window can outlive the 60-second event timeout but cannot reopen scoring, replay a request or turn a late incident into successful PED results.
 
-Compare one route at a time while staying inside the same base. If a slot is occupied, inspect it rather than retrying starts. The inspector deliberately remains usable in that state. No command here deletes an unknown incident or alters navigation/cooldown flags. A returned or partial navigation path concerns the selected pawn/filter query, not all of Palworld's invader-specific agent, water, group and pathfinder rules.
+An admin may submit a route while a visitor or other native incident occupies the target; Palworld decides whether to reject, no-op or accept it. Inspection is optional and remains usable in that state. No command here deletes an unknown incident or alters navigation/cooldown flags. An actual native error still stops further native calls in that server process. A returned or partial navigation path concerns the selected pawn/filter query, not all of Palworld's invader-specific rules.
 
 ## Server-console commands
 

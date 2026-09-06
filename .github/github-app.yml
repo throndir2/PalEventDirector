@@ -14,7 +14,9 @@ instructions: |
   - The disposable world is already imported. Do not rerun its importer. Preserve interrupted events as recovery_required and never replay them.
 
   Gameplay testing and recovery:
-  - In-game invasion commands must not require a manually completed stepped preflight. Keep normal authorization, version, world-setting, eligibility, and active-incident checks automatic.
+  - In-game invasion commands must not require a manually completed stepped preflight. Authorized admins delegate gameplay policy to Palworld: log visitor/incident occupancy, busy/pathfinding/cooldown, world-enable and base availability/ignore flags, but do not use them as PED start vetoes. Ordinary users and schedules retain their configured policies.
+  - Keep authentication, supported-runtime/call safety, valid exact targets, bounded work, durable recovery and truthful lifecycle correlation. Do not count an already-existing native group as success for a new request. Do not delete native incident entries or rewrite flags/timers to manufacture acceptance.
+  - Detailed group/worker/spawn/path/signature inspection remains available explicitly; it must not be an extra unlock before an admin start. An admin all-target request must not depend on the first base accepting before other requested bases are submitted; stop further submissions on an actual native fault.
   - Capture flushed, privacy-safe native before/after breadcrumbs during ordinary start and dispatch operations. Keep the oversized by-value GetOptionWorldSettings getter prohibited.
   - The isolated stepped diagnostic is optional, never an unlock ceremony. If used, execute one exact ExpectedStep at a time and inspect its response and markers before advancing; do not bulk-run, skip, or retry failed steps.
   - On a native error, missing after-marker, or crash, stop further native attempts, preserve private evidence, investigate, fix, build a new attested package, deploy while stopped, and restart. Never hand-edit the hash-attested live package.

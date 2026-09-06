@@ -31,7 +31,7 @@ function Experiments.validate_context(context)
     local group = context.nativeTestGroup
     if group ~= nil and (not route.named_group or type(group) ~= "string" or #group > 128
         or not group:match("^[A-Za-z][A-Za-z0-9_]+$")) then
-        return false, "only the debug route accepts a loaded native group name"
+        return false, "only the debug route accepts a bounded alphanumeric native group name"
     end
     return true
 end
@@ -39,7 +39,7 @@ end
 local schemas = {
     scope = {
         number = "deadline sampleDue skippedSamples slots totalScopes",
-        boolean = "late complete",
+        boolean = "late complete groupWithheld",
         token = "route phase code",
         group = "group",
     },
@@ -162,7 +162,8 @@ function Experiments:open(values)
         table.remove(self.scopes, 1)
     end
     local recorded, reason = self:record(scope, "scope", { phase = "opened", route = scope.route,
-        group = scope.group, deadline = scope.deadline })
+        group = identifier(scope.group, 128) and scope.group or nil, groupWithheld = scope.group ~= nil and not identifier(scope.group, 128),
+        deadline = scope.deadline })
     if not recorded then return nil, reason end
     self.scopes[#self.scopes + 1] = scope
     return scope

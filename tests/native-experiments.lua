@@ -97,4 +97,18 @@ return function(test, equal, truthy)
         experiments:clear()
         equal(#experiments.scopes, 0)
     end)
+
+    test("unverified debug group input is withheld from logs when it resembles a private identifier", function()
+        local records = {}
+        local experiments = Experiments.new({ clock = function() return 1000 end, run = 100,
+            emit = function(record) records[#records + 1] = record; return true end })
+        local group = string.rep("a", 32)
+        truthy(Experiments.validate_context({ nearestNativeTest = true, nativeTestRoute = "debug", nativeTestGroup = group }))
+        local scope = experiments:open({ route = "debug", group = group })
+        truthy(scope)
+        equal(scope.group, group)
+        equal(records[1].group, nil)
+        equal(records[1].groupWithheld, true)
+        equal(json.encode(records):find(group, 1, true), nil)
+    end)
 end

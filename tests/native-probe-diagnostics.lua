@@ -391,7 +391,7 @@ return function(test, equal, truthy)
             equal(json.encode(summary):find("PRIVATE", 1, true), nil)
         end)
     end)
-    test("debug group selection is canonicalized from loaded data and unknown groups never dispatch", function()
+    test("admin debug group names go to native selection without a loaded-table unlock", function()
         with_fixture({}, function(bridge, manager, _, stats)
             local controller = object(909)
             local roster = { { uid = "PRIVATE_ADMIN", controller = controller } }
@@ -410,13 +410,14 @@ return function(test, equal, truthy)
             end
             local control = { admin = true, nearestNativeTest = true, nativeTestRoute = "debug",
                 nativeTestGroup = GROUP:lower(), requesterUid = "PRIVATE_ADMIN" }
+            bridge._probe_group_inventory = function() error("loaded-table diagnostics became an admin prerequisite") end
             truthy(bridge:preflight_start("native", control))
-            equal(bridge.pending_nearest_test.group, GROUP)
+            equal(bridge.pending_nearest_test.group, GROUP:lower())
             equal(bridge.pending_expected_bases.distant, nil)
             control.nativeTestGroup = "missing_group"
             local ok, reason = bridge:preflight_start("native", control)
-            equal(ok, false)
-            truthy(reason:find("not verified", 1, true))
+            truthy(ok, reason)
+            equal(bridge.pending_nearest_test.group, "missing_group")
             equal(stats.dispatches, 0)
             equal(bridge.native_fault, nil)
         end)

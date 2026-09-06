@@ -125,9 +125,8 @@ function Director.new(options)
         end,
         notify = function(title, detail) return self:_notify(title, detail) end,
         start_event = function(source, profile, token, occurrence_key) return self:start(source, profile, token, occurrence_key) end,
-        can_start = function()
-            return self.state.status == "idle" or self.state.status == "completed" or self.state.status == "aborted",
-                "another event or recovery state is active"
+        can_start = function(occurrence)
+            return self:_can_start(occurrence and occurrence.manual == true and occurrence.adminOverride == true)
         end,
         start_token = scheduler_start_token,
             warning_grace_seconds = math.max(5, math.ceil(self.config.runtime.pollIntervalMs / 1000) * 2),
@@ -255,12 +254,57 @@ function Director:_profile_allowed(profile_id)
     return nil, "profile is not enabled: " .. profile_id
 end
 
+function Director:_can_start(admin)
+    local status = self.state.status
+    if status == "idle" or status == "completed" or status == "aborted" then return true end
+    if admin == true and (status == "starting" or status == "active" or status == "resolving") then return true end
+    return false, "director is " .. status
+end
+
+function Director:_supersede_tracking(successor)
+    local status = self.state.status
+    if status == "idle" or status == "completed" or status == "aborted" then return true end
+    if successor.manual ~= true or successor.adminOverride ~= true or status == "recovery_required" then
+        return false, "director is " .. status
+    end
+    local event = self.state.event
+    local previous = event and self.scheduler.state.occurrences[event.schedulerOccurrenceKey]
+    if not previous or previous == successor or previous.status == "recovery_required" then
+        return false, "current event cannot be superseded without recoverable scheduler identity"
+    end
+    local old_status, old_reason, old_successor = previous.status, previous.reason, previous.supersededByRequest
+    local old_scoreboard, old_archived = self.scoreboard, self.state.lastSupersededEvent
+    local archived = util.deep_copy(event)
+    archived.status, archived.abortReason = "aborted", "superseded_by_admin"
+    archived.endedAt, archived.endedAtUtc = self.clock(), util.utc_now()
+    archived.supersededByRequest = successor.manualOrder
+    archived.finalRankings, archived.scoreStats = nil, nil
+    previous.status, previous.reason, previous.supersededByRequest = "cancelled", "superseded_by_admin", successor.manualOrder
+    self.state.status, self.state.event, self.state.lastSupersededEvent = "aborted", archived, archived
+    self.scoreboard = nil
+    local persisted, reason = self:_persist("event_superseded", {
+        occurrenceId = event.id, successorKey = successor.key, successorRequest = successor.manualOrder,
+        nativeIncidentsCancelled = false,
+    })
+    if not persisted then
+        previous.status, previous.reason, previous.supersededByRequest = old_status, old_reason, old_successor
+        self.state.status, self.state.event, self.state.lastSupersededEvent = status, event, old_archived
+        self.scoreboard = old_scoreboard
+        return false, reason
+    end
+    if self.bridge.end_event_tracking then self.bridge:end_event_tracking(true) end
+    if successor.requesterUid then
+        self:_chat(string.format("PED request #%d supersedes prior PED scoring/tracking. Native incidents were not cancelled.",
+            successor.manualOrder or 0), successor.requesterUid)
+    end
+    return true
+end
+
 function Director:arm_start(source, requested_profile, countdown_minutes, admin_override, context)
     local allowed, reason = native_start_guard(self.bridge)
     if not allowed then return false, reason end
-    if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
-        return false, "director is " .. self.state.status
-    end
+    local can_start, state_error = self:_can_start(admin_override == true)
+    if not can_start then return false, state_error end
     if not self.config.capabilities.startAllInvasions then
         return false, "capabilities.startAllInvasions is disabled"
     end
@@ -318,12 +362,33 @@ function Director:_apply_dispatch_results(result)
             base.dispatchError = request.error
             base.dispatchBefore = request.before
             base.dispatchAfter = request.after
+            base.dispatchNative = request.native
             if request.phase == "probe" then self:_report_probe_diagnostics(request.before) end
-            if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then
+            if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed"
+                or request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then
                 base.status = request.status
                 base.endedAt = now
             end
         end
+    end
+end
+
+function Director:_report_native_results(result)
+    if not self.state.event.requesterUid or type(result) ~= "table" or type(result.requests) ~= "table" then return end
+    local returned, rejected, failures, skipped = 0, 0, 0, 0
+    local has_native_result = false
+    for _, request in ipairs(result.requests) do
+        if request.native then
+            has_native_result = true
+            if request.native.returned then returned = returned + 1 end
+            if request.native.boolean == false then rejected = rejected + 1 end
+        end
+        if request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then failures = failures + 1 end
+        if request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then skipped = skipped + 1 end
+    end
+    if has_native_result then
+        self:_chat(string.format("PED request #%d native results: %d call(s) returned; %d Boolean rejection(s); %d failed target(s); %d skipped. A returned call is not a confirmed raid.",
+            self.state.event.requestNumber or 0, returned, rejected, failures, skipped), self.state.event.requesterUid)
     end
 end
 
@@ -354,9 +419,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
             return false, "scheduler start authorization lacks a required warning"
         end
     end
-    if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
-        return false, "director is " .. self.state.status
-    end
+    local admin_override = scheduler_occurrence.manual == true and scheduler_occurrence.adminOverride == true
+    local can_start, state_error = self:_can_start(admin_override)
+    if not can_start then return false, state_error end
     if not self.config.capabilities.startAllInvasions then
         return false, "capabilities.startAllInvasions is disabled"
     end
@@ -367,7 +432,6 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     if profile_id ~= "native" and not self.config.capabilities.substituteBountyMembers then
         return false, "capabilities.substituteBountyMembers is disabled"
     end
-    local admin_override = scheduler_occurrence.manual == true and scheduler_occurrence.adminOverride == true
     local healthy, health_error = self.bridge:preflight_start(profile_id, {
         admin = admin_override, requesterUid = scheduler_occurrence.requesterUid,
         nearestNativeTest = admin_override and scheduler_occurrence.nearestNativeTest == true,
@@ -378,6 +442,8 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     if not healthy then
         return false, health_error
     end
+    local superseded, supersede_error = self:_supersede_tracking(scheduler_occurrence)
+    if not superseded then return false, supersede_error end
 
     local previous_status = self.state.status
     self.state.nonce = (self.state.nonce or 0) + 1
@@ -400,7 +466,8 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         startConfirmationDeadline = now + self.config.siegeLeague.startDiscoverySeconds,
         startConfirmedAt = nil,
         confirmedBaseCount = 0,
-        fanoutDispatched = false,
+        fanoutDispatched = admin_override,
+        discoveryDeadline = admin_override and (now + self.config.siegeLeague.startDiscoverySeconds) or nil,
         startedAtUtc = util.utc_now(),
         lastLifecycleAt = now,
         bases = {},
@@ -475,13 +542,14 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     end
 
     if self.state.event.requesterUid then
-        self:_chat(string.format("PED request #%d: %d target(s) validated; requesting the native probe%s.",
+        self:_chat(string.format("PED request #%d: %d target(s) validated; submitting native request(s)%s.",
             self.state.event.requestNumber or 0, util.count(self.state.event.bases),
             self.state.event.nearestNativeTest and (" using the single-base " .. (self.state.event.nativeTestRoute or "debug")
                 .. " experiment (native composition, no fanout)") or ""),
             self.state.event.requesterUid)
     end
     local started, start_result = self.bridge:start_all_invasions(profile_id)
+    self:_report_native_results(start_result)
     if not started then
         self:_apply_dispatch_results(start_result)
         if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
@@ -503,13 +571,13 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
             self.state.event.recoveryReason = "unable to persist selected-base probe failure: " .. tostring(failure_error)
             return false, self.state.event.recoveryReason
         end
-        self:_notify("SIEGE LEAGUE - START FAILED", "The selected-base probe call failed before any native invasion could be confirmed: " .. tostring(self.state.event.abortReason))
+        self:_notify("SIEGE LEAGUE - START FAILED", "The native start request failed; any existing native activity remains under Palworld's control: " .. tostring(self.state.event.abortReason))
         return false, self.state.event.abortReason
     end
     self:_apply_dispatch_results(start_result)
     local dispatch_persisted, dispatch_error = self:_persist("event_dispatch_results", {
         occurrenceId = occurrence_id,
-        phase = "probe",
+        phase = type(start_result) == "table" and start_result.phase or "probe",
         result = start_result,
     })
     if not dispatch_persisted then
@@ -517,7 +585,7 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         self.state.event.status = "recovery_required"
         return false, "unable to persist selected-base dispatch results: " .. tostring(dispatch_error)
     end
-    self.logger:info("Selected-base Siege League probe call returned; awaiting native lifecycle confirmation", {
+    self.logger:info("Native Siege League requests returned; awaiting new lifecycle confirmation", {
         occurrence = occurrence_id,
         profile = profile_id,
         expectedBases = util.count(self.state.event.bases),
@@ -800,7 +868,8 @@ function Director:_fail_unconfirmed_start(reason)
     local now = self.clock()
     for _, base in pairs(event.bases) do
         if base.status == "pending" then
-            if base.dispatchStatus == "probe_call_returned" or base.dispatchStatus == "lifecycle_confirmed" then
+            if base.dispatchStatus == "probe_call_returned" or base.dispatchStatus == "fanout_call_returned"
+                or base.dispatchStatus == "lifecycle_confirmed" then
                 base.status = "native_start_missing"
             else
                 base.status = "dispatch_skipped_probe_unconfirmed"
@@ -1286,8 +1355,9 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
         self:_chat("Siege League start failed: " .. tostring(profile_error), uid)
         return true
     end
-    if self.state.status ~= "idle" and self.state.status ~= "completed" and self.state.status ~= "aborted" then
-        self:_chat("Siege League start failed: director is " .. self.state.status, uid)
+    local can_start, state_error = self:_can_start(not ordinary_user)
+    if not can_start then
+        self:_chat("Siege League start failed: " .. state_error, uid)
         return true
     end
     local previous_user_start = self.state.lastUserStartAt or 0

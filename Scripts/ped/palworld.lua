@@ -505,7 +505,23 @@ function Bridge:_request_window_open(base_id)
     return self.clock() <= request.expiresAt
 end
 
-function Bridge:end_event_tracking()
+function Bridge:_request_identity_is_new(base_id, group_id, incident)
+    local request = self.request_windows[base_id]
+    if not request then return false end
+    local baseline = request.baseline
+    if not baseline then return true end
+    if not baseline.complete or baseline.groups[group_id] then return false end
+    local address = incident and object_address(incident)
+    return not address or not baseline.incidents[address]
+end
+
+function Bridge:end_event_tracking(preserve_pending)
+    local pending_fields = { "pending_admin_override", "pending_nearest_test", "pending_native_control",
+        "pending_expected_bases", "pending_native_base_ids", "pending_base_guilds", "pending_roster", "pending_manager", "pending_world" }
+    local pending = {}
+    if preserve_pending == true then
+        for _, key in ipairs(pending_fields) do pending[key] = self[key] end
+    end
     self.pending_admin_override, self.event_admin_override = false, false
     self.pending_nearest_test, self.event_nearest_test = nil, nil
     self.pending_native_control, self.event_native_control = nil, nil
@@ -538,6 +554,9 @@ function Bridge:end_event_tracking()
     self.profile_id = "native"
     self.bounty_selector = nil
     self.probe_handoff_metadata, self.probe_handoff_counts = nil, nil
+    if preserve_pending == true then
+        for _, key in ipairs(pending_fields) do self[key] = pending[key] end
+    end
 end
 
 function Bridge:_static_find(path)
@@ -1002,7 +1021,7 @@ function Bridge:list_online_players()
     return players
 end
 
-function Bridge:_eligible_online_guild_bases(manager, roster, admin_override)
+function Bridge:_eligible_online_guild_bases(manager, roster, admin_override, selected_base_id)
     local utility = self:_utility()
     if not valid(utility) then
         return nil, nil, nil, nil, "PalUtility unavailable"
@@ -1035,25 +1054,33 @@ function Bridge:_eligible_online_guild_bases(manager, roster, admin_override)
     local observer_error
     local ok, iteration_error = pcall(function()
         observers:ForEach(function(key, value)
+            local key_id = guid_string(key)
+            if selected_base_id and key_id ~= selected_base_id then return nil end
             local observer = unwrap(value)
             local base = property(observer, "TargetBaseCamp")
             if valid(base) then
-                local available_ok, available = call(base, "IsAvailable")
                 local id_ok, id_value = call(base, "GetId")
                 local group_ok, group_value = call(base, "GetGroupIdBelongTo")
-                local key_id = guid_string(key)
                 local observer_id = guid_string(property(observer, "TargetBaseCampID"))
                 local base_id = id_ok and guid_string(id_value) or nil
                 local group_id = group_ok and guid_string(group_value) or nil
                 if base_id and group_id and online_guilds[group_id] then
+                    if not key_id or not observer_id or key_id ~= base_id or observer_id ~= base_id then
+                        observer_error = "eligible base GUID sources disagree: " .. util.mask_uid(base_id)
+                        return true
+                    end
+                    if admin_override == true then
+                        expected[base_id] = true
+                        native_ids[base_id] = id_value
+                        base_guilds[base_id] = group_id
+                        return nil
+                    end
+                    local available_ok, available = call(base, "IsAvailable")
                     local invading = property(observer, "bIsInvading")
                     local path_searching = property(observer, "bIsInvaderPathSearching")
                     local cooling_down = property(observer, "bIsCoolTime")
                     local ignore_invader = property(base, "bIgnoreInvader")
-                    if not key_id or not observer_id or key_id ~= base_id or observer_id ~= base_id then
-                        observer_error = "eligible base GUID sources disagree: " .. util.mask_uid(base_id)
-                        return true
-                    elseif type(invading) ~= "boolean" or type(path_searching) ~= "boolean"
+                    if type(invading) ~= "boolean" or type(path_searching) ~= "boolean"
                         or type(cooling_down) ~= "boolean" or type(ignore_invader) ~= "boolean" then
                         observer_error = "observer state is unavailable for eligible base " .. util.mask_uid(base_id)
                         return true
@@ -1266,6 +1293,11 @@ function Bridge:_on_select_invaders(context, out_members)
     local incident = unwrap(context)
     local internal_group_id = guid_string(property(incident, "GroupGuid"))
     local broadcast_group_id = guid_string(property(incident, "BroadcastGroupGuid"))
+    if (internal_group_id and not self:_request_identity_is_new(base_id, internal_group_id, incident))
+        or (broadcast_group_id and not self:_request_identity_is_new(base_id, broadcast_group_id, incident)) then
+        self.logger:info("Ignored a pre-existing or uncorrelatable native incident selection", { base = util.mask_uid(base_id) })
+        return
+    end
     local accepted_group
     local event_base
     if self.director and self.director.state and self.director.state.event then
@@ -1448,8 +1480,9 @@ function Bridge:register()
             if scope == "native-all-diagnostic" then
                 self.logger:info("Native all-base diagnostic start observed", { base = util.mask_uid(base_id), group = util.mask_uid(group_id) })
             end
-            local group_expected = self.owned_groups[group_id] == base_id
+            local group_expected = self.owned_groups[group_id] == base_id and self:_request_identity_is_new(base_id, group_id)
             local native_discovery = self.profile_id == "native" and self.discovery_open and self:_request_window_open(base_id)
+                and self:_request_identity_is_new(base_id, group_id)
             local existing_group
             if self.director and self.director.state and self.director.state.event and self.director.state.event.bases[base_id] then
                 existing_group = self.director.state.event.bases[base_id].groupId
@@ -1765,19 +1798,19 @@ function Bridge:preflight_start(profile_id, control)
     local resolved, manager, world, manager_error = self:_native_step("world-manager", function() return self:_resolve_world_manager(roster) end)
     if not resolved then return false, manager end
     if not manager then return false, manager_error end
-    local settings_ok, invaders_enabled, settings_error =
-        self:_native_step("world-invasion-settings", function() return self:_world_invaders_enabled(world) end)
-    if not settings_ok then return false, invaders_enabled end
-    if not invaders_enabled then return false, settings_error end
-    local registry_ok, registered_ids, registration_error = self:_native_step("registered-bases", function() return self:_registered_base_ids(manager) end)
-    if not registry_ok then return false, registered_ids end
-    if not registered_ids then
-        return false, registration_error
-    end
-    local scan_ok, active_count = self:_native_step("active-incidents", function() return self:active_invasion_count(world) end)
-    if not scan_ok then return false, active_count end
-    if active_count > 0 then
-        return false, "a native invasion/visitor incident is already active; one incident per base is assumed and this alpha uses a global mutex"
+    if not self.pending_admin_override then
+        local settings_ok, invaders_enabled, settings_error =
+            self:_native_step("world-invasion-settings", function() return self:_world_invaders_enabled(world) end)
+        if not settings_ok then return false, invaders_enabled end
+        if not invaders_enabled then return false, settings_error end
+        local registry_ok, registered_ids, registration_error = self:_native_step("registered-bases", function() return self:_registered_base_ids(manager) end)
+        if not registry_ok then return false, registered_ids end
+        if not registered_ids then return false, registration_error end
+        local scan_ok, active_count = self:_native_step("active-incidents", function() return self:active_invasion_count(world) end)
+        if not scan_ok then return false, active_count end
+        if active_count > 0 then
+            return false, "a native invasion/visitor incident is already active; one incident per base is assumed and this alpha uses a global mutex"
+        end
     end
     local profile = bounties.profile(profile_id)
     if not profile then
@@ -1793,10 +1826,7 @@ function Bridge:preflight_start(profile_id, control)
             return false, "SelectInvaders is unavailable for bounty substitution"
         end
     end
-    local eligible_ok, base_set, native_ids, base_guilds, resolved_roster, eligibility_error =
-        self:_native_step("eligible-bases", function() return self:_eligible_online_guild_bases(manager, roster, self.pending_admin_override) end)
-    if not eligible_ok then return false, base_set end
-    if not base_set then return false, eligibility_error end
+    local selected_id
     if type(control) == "table" and control.nearestNativeTest then
         if not self.pending_admin_override or profile_id ~= "native" then return false, "nearest-base test requires the admin native profile" end
         local requester
@@ -1804,19 +1834,21 @@ function Bridge:preflight_start(profile_id, control)
         if not requester or not valid(requester.controller) then return false, "requesting controller is no longer online" end
         local id, nearest_error = self:_nearest_test_base(requester.controller, world)
         if not id then return false, nearest_error end
-        if not base_set[id] then return false, "nearest base is outside the eligible online-guild target set" end
+        selected_id = id
         local route = control.nativeTestRoute or "debug"
-        local group = NativeExperiments.route(route).named_group and NATIVE_PROBE_GROUP or nil
-        if control.nativeTestGroup then
-            local read, inventory = self:_probe_group_inventory(manager, control.nativeTestGroup)
-            if not read then return false, inventory end
-            if inventory.probeGroupPresent ~= true then
-                return false, "requested group was not verified in the bounded loaded native inventory"
-            end
-            group = inventory.probeGroupName
-        end
-        base_set, native_ids, base_guilds = { [id] = true }, { [id] = native_ids[id] }, { [id] = base_guilds[id] }
+        local group = NativeExperiments.route(route).named_group and (control.nativeTestGroup or NATIVE_PROBE_GROUP) or nil
         self.pending_nearest_test = { controller = requester.controller, world = world, baseId = id, route = route, group = group }
+    end
+    local eligible_ok, base_set, native_ids, base_guilds, resolved_roster, eligibility_error =
+        self:_native_step("eligible-bases", function()
+            return self:_eligible_online_guild_bases(manager, roster, self.pending_admin_override, selected_id)
+        end)
+    if not eligible_ok then return false, base_set end
+    if not base_set then return false, eligibility_error end
+    if selected_id then
+        if not base_set[selected_id] then return false, "nearest base is outside the eligible online-guild target set" end
+        base_set, native_ids, base_guilds = { [selected_id] = true }, { [selected_id] = native_ids[selected_id] },
+            { [selected_id] = base_guilds[selected_id] }
     end
     if #resolved_roster > self.config.limits.maxPlayers then
         return false, string.format("online roster count %d exceeds configured maximum %d", #resolved_roster, self.config.limits.maxPlayers)
@@ -2207,7 +2239,7 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
         diagnostic.playerInBaseTimer = scalar(property(target.observer, "PlayerInBaseCampTimer"))
         diagnostic.playerHandleCount = container_count(property(target.observer, "PlayerHandlesCache"))
     end
-    if phase == "probe-before" and target then
+    if phase == "probe-before" and target and not self.event_admin_override then
         local captured, prerequisites = self:_capture_probe_prerequisites(manager, target.base)
         if not captured then return diagnostic, target, prerequisites end
         for key, value in pairs(prerequisites) do diagnostic[key] = value end
@@ -2224,6 +2256,8 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
     local incident_can_execute
     local incident_arrived
     local incident_group
+    local baseline = { complete = false, groups = {}, incidents = {} }
+    local identities_complete = true
     if incidents then
         local inspected, inspection_error = pcall(function()
             incidents:ForEach(function(key, value)
@@ -2231,15 +2265,23 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
                 if guid_string(key) == expected_base_id then
                     local incident = unwrap(value)
                     incident_for_base = true
+                    local address = object_address(incident)
+                    if address then baseline.incidents[address] = true end
                     incident_state = scalar(property(incident, "ExecState"))
                     incident_can_execute = scalar(property(incident, "bCanExecute"))
                     incident_arrived = scalar(property(incident, "bIsArrived"))
                     incident_group = guid_string(property(incident, "GroupGuid"))
                         or guid_string(property(incident, "BroadcastGroupGuid"))
+                    if not address or not incident_group then identities_complete = false end
+                    for _, name in ipairs({ "GroupGuid", "BroadcastGroupGuid" }) do
+                        local group = guid_string(property(incident, name))
+                        if group then baseline.groups[group] = true end
+                    end
                 end
             end)
         end)
-        if not inspected then diagnostic.incidentInspectionError = tostring(inspection_error) end
+        if not inspected then diagnostic.incidentInspectionError = PreflightDiagnostic.classify_error(inspection_error)
+        else baseline.complete = identities_complete end
     else
         diagnostic.incidentInspectionError = "Incidents map unavailable"
     end
@@ -2294,7 +2336,7 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
     diagnostic.savedInvaderStateCount, diagnostic.savedInvaderStateForBase, diagnostic.savedInvaderStateInspectionError = summarize_keyed_map("InvaderSaveDataMapCache")
     diagnostic.negotiatorRow = scalar(property(manager, "NegotiatorRowName")) or "unavailable"
     diagnostic.worldInvaderEnabled = self:_world_invaders_enabled(self.event_world)
-    return diagnostic, target, target_error
+    return diagnostic, target, target_error, baseline
 end
 
 function Bridge:_log_dispatch_snapshot(diagnostic)
@@ -2302,7 +2344,7 @@ function Bridge:_log_dispatch_snapshot(diagnostic)
 end
 
 function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
-    if not self.experiments or dispatch_phase ~= "probe" then
+    if not self.experiments or dispatch_phase ~= "probe" or self.event_admin_override then
         return self:_dispatch_selected_base_core(base_id, dispatch_phase)
     end
     local previous = self.experiment_current
@@ -2344,7 +2386,7 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
     if not valid(manager) then
         return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = "pinned world invasion manager is unavailable" }
     end
-    local snapshot_ok, before, target, target_error = self:_native_step("dispatch-before",
+    local snapshot_ok, before, target, target_error, baseline = self:_native_step("dispatch-before",
         function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-before") end)
     if not snapshot_ok then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = before } end
     self:_log_dispatch_snapshot(before)
@@ -2354,10 +2396,10 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
     if self.event_admin_override and not valid(target.observer) then
         return { baseId = base_id, phase = dispatch_phase, status = "dispatch_precondition_failed", error = "native base observer is invalid", before = before }
     end
-    if before.worldInvaderEnabled ~= true or before.baseAvailable ~= true or before.baseIgnoreInvader ~= false
+    if not self.event_admin_override and (before.worldInvaderEnabled ~= true or before.baseAvailable ~= true or before.baseIgnoreInvader ~= false
         or before.observerInvading ~= false or before.observerPathSearching ~= false
         or type(before.observerCoolTime) ~= "boolean" or (before.observerCoolTime and not self.event_admin_override)
-        or before.incidentForBase then
+        or before.incidentForBase) then
         return {
             baseId = base_id,
             phase = dispatch_phase,
@@ -2372,10 +2414,45 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
         expiresAt = now + self.config.siegeLeague.startDiscoverySeconds,
         status = "requesting",
         phase = dispatch_phase,
+        baseline = baseline,
     }
     self.dispatching_base_id = base_id
     self.selection_open = true
+    if self.event_admin_override then
+        self.logger:info("Admin native request delegates gameplay policy to Palworld", {
+            phase = dispatch_phase, worldEnabled = before.worldInvaderEnabled, baseAvailable = before.baseAvailable,
+            ignoredByNative = before.baseIgnoreInvader, invading = before.observerInvading,
+            pathfinding = before.observerPathSearching, cooldown = before.observerCoolTime,
+            occupied = before.incidentForBase, baselineComplete = baseline and baseline.complete,
+        })
+    end
+    local observation
+    if self.event_admin_override and self.native_observer then
+        local recorded, scope = self:_native_step("admin-observation-open", function()
+            local test, control = self.event_nearest_test, self.event_native_control or {}
+            local specification = test and NativeExperiments.route(test.route)
+            local group = specification and specification.named_group and (test.group or NATIVE_PROBE_GROUP) or nil
+            return self.native_observer:open({ manager = manager, world = self.event_world, base = target.base, base_id = base_id,
+                route = test and (test.route or "debug") or "regular", group = group,
+                request = control.requestNumber, recipient = control.requesterUid,
+                deadline = self.clock() + self.config.siegeLeague.startDiscoverySeconds })
+        end)
+        if not recorded then
+            self.selection_open, self.dispatching_base_id = false, nil
+            self.request_windows[base_id].status = "dispatch_call_failed"
+            return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = scope, before = before }
+        end
+        observation = scope
+    end
     local ok, result
+    local native_result
+    local function invoke(label, owner, method, ...)
+        local called, returned = self:_native_call(label, owner, method, ...)
+        native_result = { method = method, returned = called, returnKind = called and type(returned) or "error" }
+        if called and type(returned) == "boolean" then native_result.boolean = returned end
+        if called then self.logger:info("Native invasion call returned", native_result) end
+        return called, returned
+    end
     local test_route
     if self.event_nearest_test then
         local test = self.event_nearest_test
@@ -2396,12 +2473,12 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
                 return constructor(test.group or NATIVE_PROBE_GROUP)
             end)
             if name_ok then
-                ok, result = self:_native_call("debug-nearest-native", test.controller, "Debug_InvaderMarchForNearCamp", group, true)
+                ok, result = invoke("debug-nearest-native", test.controller, "Debug_InvaderMarchForNearCamp", group, true)
             else
                 ok, result = false, group
             end
         elseif (test_route and test_route.method == "RequestIncidentInvaderEnemy") or (not test_route and self.event_admin_override) then
-            ok, result = self:_native_call("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
+            ok, result = invoke("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
             if ok then
                 ok, result = self:_native_step("admin-admission-result", function()
                     if type(result) ~= "boolean" then error("Unexpected native enemy-incident admission result", 0) end
@@ -2410,12 +2487,18 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
                 if ok and not result then ok, result = false, "Native enemy-incident request rejected the base; no invasion was accepted." end
             end
         else
-            ok, result = self:_native_call("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
+            ok, result = invoke("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
         end
     end
     self.selection_open = false
     self.dispatching_base_id = nil
     local request = self.request_windows[base_id]
+    if observation and not self.native_fault then
+        local logged, log_error = self:_native_step("admin-observation-result", function()
+            self:_experiment_detail("scope", { phase = "after", code = ok and "returned" or "rejected" }, observation)
+        end)
+        if not logged then ok, result = false, log_error end
+    end
     if not ok then
         request.status = "dispatch_call_failed"
         request.error = tostring(result)
@@ -2425,13 +2508,14 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
             status = "dispatch_call_failed",
             error = tostring(result),
             before = before,
+            native = native_result,
         }
     end
     local after_ok, after = self:_native_step("dispatch-after",
         function() return self:_dispatch_snapshot(manager, base_id, dispatch_phase .. "-after") end)
     if not after_ok then
         request.status = "dispatch_call_failed"
-        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = after, before = before }
+        return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = after, before = before, native = native_result }
     end
     self:_log_dispatch_snapshot(after)
     local status = request.status == "started" and "lifecycle_confirmed" or dispatch_phase .. "_call_returned"
@@ -2442,6 +2526,7 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
         status = status,
         before = before,
         after = after,
+        native = native_result,
     }
 end
 
@@ -2478,6 +2563,29 @@ function Bridge:start_all_invasions()
     self.fanout_dispatched = false
     if not self.probe_base_id then return false, "no eligible selected base exists" end
     local requests = {}
+    if self.event_admin_override then
+        self.fanout_dispatched = true
+        local requested, attempted, first_error = 0, 0, nil
+        for index, base_id in ipairs(self.dispatch_order) do
+            local phase = index == 1 and "probe" or "fanout"
+            local result
+            if self.native_fault then
+                result = { baseId = base_id, phase = phase, status = "dispatch_skipped_native_fault", error = self.native_fault }
+            else
+                result = self:_dispatch_selected_base(base_id, phase)
+                attempted = attempted + 1
+            end
+            requests[#requests + 1] = result
+            if result.status == "probe_call_returned" or result.status == "fanout_call_returned" or result.status == "lifecycle_confirmed" then
+                requested = requested + 1
+            else
+                first_error = first_error or result.error or "native dispatch did not return successfully"
+            end
+        end
+        local accepted = requested > 0 and not self.native_fault
+        return accepted, { requested = requested, attempted = attempted, requests = requests, phase = "admin-all",
+            allTargetsAttempted = attempted == #self.dispatch_order, error = not accepted and (self.native_fault or first_error) or nil }
+    end
     local probe = self:_dispatch_selected_base(self.probe_base_id, "probe")
     requests[#requests + 1] = probe
     for index = 2, #self.dispatch_order do
@@ -2507,8 +2615,8 @@ end
 function Bridge:continue_invasion_dispatch()
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
-    if not self.probe_confirmed then return false, "probe lifecycle is not confirmed" end
     if self.fanout_dispatched then return true, { requested = 0, requests = {}, phase = "already_dispatched" } end
+    if not self.probe_confirmed then return false, "probe lifecycle is not confirmed" end
     self.fanout_dispatched = true
     local requests = {}
     local requested = 0

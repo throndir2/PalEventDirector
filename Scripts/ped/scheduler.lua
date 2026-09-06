@@ -388,7 +388,7 @@ function Scheduler:_start(schedule, occurrence, now)
         self:_mark_terminal(occurrence, "missed", "late_tolerance_exceeded", "schedule_occurrence_missed")
         return false, occurrence.reason
     end
-    local can_start, reason = self.can_start()
+    local can_start, reason = self.can_start(occurrence)
     if not can_start then
         self:_mark_terminal(occurrence, "blocked", reason, "schedule_occurrence_blocked")
         return false, occurrence.reason

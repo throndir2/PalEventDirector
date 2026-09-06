@@ -110,7 +110,7 @@ return function(test, equal, truthy, native_fname_constructor)
         equal(latest.status, "planned")
     end)
 
-    test("admin eligibility ignores cooldown without changing timers or concurrency checks", function()
+    test("admin target discovery ignores gameplay flags without changing their native values", function()
         local world = {}
         local base = {
             IsValid = function() return true end, IsAvailable = function() return true end,
@@ -131,12 +131,17 @@ return function(test, equal, truthy, native_fname_constructor)
         equal(observer.CoolTimeFinish, 10000)
         equal(observer.CoolTimeElapsed, 25)
         observer.bIsInvading = true
-        equal(bridge:_eligible_online_guild_bases(manager, roster, true), nil)
+        truthy(bridge:_eligible_online_guild_bases(manager, roster, true).base)
         observer.bIsInvading = false
         observer.bIsInvaderPathSearching = true
-        equal(bridge:_eligible_online_guild_bases(manager, roster, true), nil)
+        truthy(bridge:_eligible_online_guild_bases(manager, roster, true).base)
         observer.bIsInvaderPathSearching = false
         observer.bIsCoolTime = "unknown"
+        truthy(bridge:_eligible_online_guild_bases(manager, roster, true).base)
+        base.bIgnoreInvader = true
+        base.IsAvailable = function() error("admin discovery must not use availability as a prerequisite") end
+        truthy(bridge:_eligible_online_guild_bases(manager, roster, true).base)
+        observer.TargetBaseCampID = "wrong-base"
         equal(bridge:_eligible_online_guild_bases(manager, roster, true), nil)
     end)
 
