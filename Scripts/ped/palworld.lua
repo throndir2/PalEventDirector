@@ -520,6 +520,8 @@ function Bridge:_confirm_native_start(base_id, group_id, invader_type, evidence,
     if not base_id or not group_id or not is_enemy_invader_type(invader_type) or not self.event_open
         or not self.expected_bases[base_id] or not self.director
         or not self:_request_identity_is_new(base_id, group_id, incident) then return false end
+    local request = self.request_windows[base_id]
+    if request.route == "blueprint" and not same_object(incident, request.blueprintIncident) then return false end
     local event_base = self.director.state.event and self.director.state.event.bases[base_id]
     if not event_base or (event_base.groupId and event_base.groupId ~= group_id) then return false end
     local owned = self.owned_groups[group_id] == base_id
@@ -590,6 +592,7 @@ function Bridge:poll_invasion_progress()
             local id = ids[index]
             local result = { baseId = id, phase = "waiting" }
             local lookup_ok, incident = self:_native_step("progress-incident-lookup", function()
+                if wanted[id].blueprintIncident then return wanted[id].blueprintIncident end
                 local key = wanted[id].nativeId
                 if key == nil then error("Native invasion progress scope is unavailable", 0) end
                 -- Find throws for absent keys in this UE4SS pin; neither operation mutates the map.
@@ -2440,6 +2443,10 @@ function Bridge:_dispatch_snapshot(manager, expected_base_id, phase)
         if existing_group then baseline.groups[existing_group] = true
         else baseline.complete = false end
     end
+    if self.blueprint_used then
+        local captured, reason = self:_capture_system_incident_baseline(baseline)
+        if not captured then return diagnostic, nil, reason, baseline end
+    end
     local start_log_id = guid_string(property(manager, "StartInvaderLogId"))
     diagnostic.managerStartLogId = start_log_id and util.mask_uid(start_log_id) or "unavailable"
     diagnostic.managerPathFinder = valid(property(manager, "PathFinder"))
@@ -2533,6 +2540,94 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     self.experiment_current = previous
     if not called then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = result } end
     return result
+end
+
+function Bridge:_capture_system_incident_baseline(baseline, scope)
+    return self:_native_step("blueprint-incident-baseline", function()
+        local system_ok, system = self:_native_call("blueprint-incident-system", self:_utility(), "GetIncidentSystem", self.event_world)
+        if not system_ok then return end
+        local available, visited = valid(system), 0
+        if available then
+            local world_ok, world = self:_native_call("blueprint-system-world", system, "GetWorld")
+            if not world_ok then return end
+            if not same_object(world, self.event_world) then error("Blueprint incident result has unexpected scope", 0) end
+            if scope then scope.system = system end
+            for _, name in ipairs({ "WaitingIncidents", "ExecuteIncidents", "ResidentIncidents" }) do
+                local list = property(system, name)
+                if list == nil then
+                    baseline.complete = false
+                else
+                    local count, total = 0, #list
+                    list:ForEach(function(_, value)
+                        count = count + 1
+                        if count > 128 then return true end
+                        visited = visited + 1
+                        local incident = unwrap(value)
+                        if not valid(incident) then
+                            baseline.complete = false
+                        elseif incident:IsA("/Script/Pal.PalInvaderIncidentBase") then
+                            local address = object_address(incident)
+                            if address then baseline.incidents[address] = true else baseline.complete = false end
+                            for _, field in ipairs({ "GroupGuid", "BroadcastGroupGuid" }) do
+                                local group = guid_string(property(incident, field))
+                                if group then baseline.groups[group] = true end
+                            end
+                        end
+                        return nil
+                    end)
+                    if count ~= total or count > 128 or #list ~= total then baseline.complete = false end
+                end
+            end
+        else
+            baseline.complete = false
+        end
+        self.logger:info("Blueprint incident-system baseline", { available = available, complete = baseline.complete, visited = visited })
+    end)
+end
+
+function Bridge:_blueprint_incident_parameter(base_id, target, scope)
+    local checked, reason = self:_native_step("blueprint-incident-signature", function()
+        local fn = self.event_manager.RequestIncidentInvaderEnemy_BP
+        if not valid(fn) or fn:type() ~= "UFunction" then error("Blueprint incident signature is unsupported", 0) end
+        local owner = fn:GetOuter()
+        if not valid(owner) or not owner:IsA("/Script/Engine.BlueprintGeneratedClass") then
+            error("Blueprint incident signature is unsupported", 0)
+        end
+        -- The cooked Blueprint also has one local pointer; it is not a fourth call argument.
+        local expected = { OccuredBaseCamp = 0, Parameter = 8, ReturnValue = 16, CallFunc_RequestIncident_ReturnValue = 24 }
+        local count = 0
+        fn:ForEachProperty(function(field)
+            count = count + 1
+            if count > 4 then return true end
+            if not valid(field) then error("Blueprint incident signature is unsupported", 0) end
+            local name = field:GetFName():ToString()
+            if expected[name] == nil or field:GetOffset_Internal() ~= expected[name]
+                or field:GetClass():GetFName():ToString() ~= "ObjectProperty" then
+                error("Blueprint incident signature is unsupported", 0)
+            end
+            expected[name] = nil
+            return nil
+        end)
+        if count ~= 4 or next(expected) ~= nil then error("Blueprint incident signature is unsupported", 0) end
+    end)
+    if not checked then return false, reason end
+    local captured, capture_error = self:_capture_system_incident_baseline(self.request_windows[base_id].baseline, scope)
+    if not captured then return false, capture_error end
+    return self:_native_step("blueprint-incident-parameter", function()
+        local class = self:_static_find("/Script/Pal.PalIncidentDynamicParameterInvader")
+        local construct = global("StaticConstructObject")
+        if not valid(class) or class:type() ~= "UClass" or type(construct) ~= "function" then
+            error("Blueprint incident parameter is unavailable", 0)
+        end
+        local parameter = construct(class, self.event_manager)
+        if not valid(parameter) or not parameter:IsA("/Script/Pal.PalIncidentDynamicParameterInvader")
+            or not same_object(parameter:GetOuter(), self.event_manager) then
+            error("Blueprint incident parameter is unavailable", 0)
+        end
+        parameter.TargetBaseCampID = target.nativeId
+        if guid_string(parameter.TargetBaseCampID) ~= base_id then error("Blueprint incident parameter is unavailable", 0) end
+        return parameter
+    end)
 end
 
 function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
@@ -2648,6 +2743,35 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
                     return result
                 end)
                 if ok and not result then ok, result = false, "Native enemy-incident request rejected the base; no invasion was accepted." end
+            end
+        elseif test_route and test_route.method == "RequestIncidentInvaderEnemy_BP" then
+            local prepared, parameter = self:_blueprint_incident_parameter(base_id, target, observation or self.experiment_current)
+            if not prepared then
+                ok, result = false, parameter
+            else
+                self.request_windows[base_id].blueprintParameter = parameter
+                self.blueprint_used = true
+                ok, result = invoke("blueprint-request-incident", manager, "RequestIncidentInvaderEnemy_BP", target.base, parameter)
+                if ok then
+                    local inspected, returned = self:_native_step("blueprint-incident-result", function()
+                        native_result.incidentReturned = valid(result)
+                        if not native_result.incidentReturned then return false end
+                        if not result:IsA("/Script/Pal.PalInvaderIncidentBase") then
+                            error("Blueprint incident result has unexpected scope", 0)
+                        end
+                        self.request_windows[base_id].blueprintIncident = result
+                        local scope = observation or self.experiment_current
+                        if scope then scope.returned_incident = result end
+                        local world_ok, world = self:_native_call("blueprint-incident-world", result, "GetWorld")
+                        if not world_ok then return end
+                        if not same_object(world, self.event_world) then error("Blueprint incident result has unexpected scope", 0) end
+                        return true
+                    end)
+                    if not inspected then ok, result = false, returned
+                    elseif returned ~= true then
+                        ok, result = false, "Blueprint handoff returned no incident. Its native incident-system request supplied no rejection reason."
+                    end
+                end
             end
         else
             ok, result = invoke("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)

@@ -27,6 +27,9 @@ local ERROR_SIGNATURES = {
     { text = "Native navigation signature is unsupported", code = "navigation-signature" },
     { text = "Native invasion progress scope is unavailable", code = "invasion-progress-scope" },
     { text = "Native invasion progress state is unreadable", code = "invasion-progress-state" },
+    { text = "Blueprint incident signature is unsupported", code = "blueprint-incident-signature" },
+    { text = "Blueprint incident parameter is unavailable", code = "blueprint-incident-parameter" },
+    { text = "Blueprint incident result has unexpected scope", code = "blueprint-incident-scope" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 local TARGET_FAILURES = {

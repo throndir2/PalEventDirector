@@ -379,13 +379,16 @@ end
 
 function Director:_report_native_results(result)
     if not self.state.event.requesterUid or type(result) ~= "table" or type(result.requests) ~= "table" then return end
-    local returned, rejected, precall, call_errors, skipped = 0, 0, 0, 0, 0
+    local returned, rejected, no_incident, precall, call_errors, skipped = 0, 0, 0, 0, 0, 0
     for _, request in ipairs(result.requests) do
         if request.native then
             if request.native.returned then returned = returned + 1 end
         end
         if request.native and request.native.boolean == false then
             rejected = rejected + 1
+            if request.inspectionError then call_errors = call_errors + 1 end
+        elseif request.native and request.native.returned and request.native.incidentReturned == false then
+            no_incident = no_incident + 1
             if request.inspectionError then call_errors = call_errors + 1 end
         elseif request.status == "dispatch_call_failed" or request.status == "dispatch_precondition_failed" then
             if request.native then call_errors = call_errors + 1 else precall = precall + 1 end
@@ -394,9 +397,11 @@ function Director:_report_native_results(result)
         end
     end
     local event = self.state.event
-    self:_chat(string.format("PED request #%d results: %d native call(s) returned; %d native false rejection(s); %d PED pre-call error(s); %d call/inspection error(s); %d skipped. Rejected is not the same as invalid.",
-        event.requestNumber or 0, returned, rejected, precall, call_errors, skipped), event.requesterUid)
-    local methods = { RequestIncidentInvaderEnemy = true, StartInvaderMarchForBaseCamp = true, Debug_InvaderMarchForNearCamp = true }
+    local no_incident_summary = no_incident > 0 and string.format("%d native no-incident return(s); ", no_incident) or ""
+    self:_chat(string.format("PED request #%d results: %d native call(s) returned; %d native false rejection(s); %s%d PED pre-call error(s); %d call/inspection error(s); %d skipped. Rejected is not the same as invalid.",
+        event.requestNumber or 0, returned, rejected, no_incident_summary, precall, call_errors, skipped), event.requesterUid)
+    local methods = { RequestIncidentInvaderEnemy = true, RequestIncidentInvaderEnemy_BP = true,
+        StartInvaderMarchForBaseCamp = true, Debug_InvaderMarchForNearCamp = true }
     local function value(item)
         if type(item) == "boolean" then return item and "yes" or "no" end
         if type(item) == "number" and item == math.floor(item) and item >= 0 and item <= 1000000 then return tostring(item) end
@@ -414,6 +419,8 @@ function Director:_report_native_results(result)
         local detail
         if native and native.returned and native.boolean == false then
             detail = method .. " returned FALSE. Palworld supplied no rejection reason; this was not a PED invalid-target veto."
+        elseif native and native.returned and native.incidentReturned == false then
+            detail = method .. " returned no incident. The Blueprint delegates creation to PalIncidentSystem, which supplied no rejection reason."
         elseif target_reason then
             detail = "PED target validation [" .. code .. "]: " .. target_reason .. " No native start call was made."
         elseif request.status == "dispatch_skipped_native_fault" or request.status == "dispatch_quarantined" then
@@ -434,6 +441,8 @@ function Director:_report_native_results(result)
             end
         elseif request.status == "awaiting_probe_confirmation" then
             detail = "Not yet submitted: ordinary-user fanout is awaiting probe confirmation."
+        elseif native and native.incidentReturned == true then
+            detail = method .. " returned an incident object; initialization and live enemy-start evidence are still required."
         else
             detail = method .. " returned " .. (native and native.boolean == true and "TRUE" or "without a success value")
                 .. "; a new invasion-start callback is still required."
@@ -1594,13 +1603,13 @@ function Director:handle_chat(principal, message)
         elseif action == "start" then
             return self:_handle_chat_start(principal, words[3], words[4], now)
         elseif action == "test-native" then
-            if #words > 4 then self:_chat("Use !siege test-native [debug [group]|admission|march].", uid); return true end
+            if #words > 4 then self:_chat("Use !siege test-native [debug [group]|admission|march|blueprint].", uid); return true end
             return self:_handle_nearest_native_test(principal, words[3], words[4])
         elseif action == "inspect-native" or action == "test-path" then
             if #words ~= 2 then self:_chat("Use !siege inspect-native or !siege test-path without extra arguments.", uid); return true end
             return self:_handle_native_inspection(principal, action == "test-path")
         elseif action == "experiments" then
-            self:_chat("Native experiments: !siege inspect-native (no raid); !siege test-path (up to three navigation queries); !siege test-native admission|march|debug [loaded group]. One base and one explicit request at a time. Never retry after a native error.", uid)
+            self:_chat("Native experiments: !siege inspect-native (no raid); !siege test-path (up to three navigation queries); !siege test-native admission|march|blueprint|debug [group]. One base per experiment; never retry after a native error.", uid)
             return true
         elseif action == "cancel" or action == "resolve" or action == "abort" or action == "reset" then
             self:handle_operator_command(action, "chat:" .. util.mask_uid(uid), principal)
@@ -1619,7 +1628,7 @@ function Director:handle_chat(principal, message)
         return true
     elseif util.starts_with(lowered, "!ped ") then
         if words[2] == "test-native" then
-            if #words > 4 then self:_chat("Use !ped test-native [debug [group]|admission|march].", uid); return true end
+            if #words > 4 then self:_chat("Use !ped test-native [debug [group]|admission|march|blueprint].", uid); return true end
             return self:_handle_nearest_native_test(principal, words[3], words[4])
         end
         if words[2] == "inspect-native" or words[2] == "test-path" then

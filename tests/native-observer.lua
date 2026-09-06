@@ -48,6 +48,45 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("returned Blueprint incidents remain observable without inventing manager occupancy or duplicate records", function()
+        fixture({ experiments = true, clock = function() return 1000 end }, function(bridge, manager, base, stats)
+            local incident = prepare_readonly(bridge, manager, base, stats)
+            incident.InvaderType = 1
+            manager.Incidents = setmetatable({ ForEach = function() end }, { __len = function() return 0 end })
+            local scope = bridge.native_observer:open({ route = "blueprint", request = 14, manager = manager,
+                world = stats.world, base = base, base_id = "fixture-base", deadline = 1480 })
+            scope.returned_incident = incident
+            local ok, state = bridge.native_observer:sample(scope)
+            truthy(ok)
+            equal(state.returnedIncident, true)
+            equal(state.returnedIncidentInSample, false)
+            equal(state.slots, 0)
+            equal(state.observedSlots, 0)
+            equal(state.occupied, false)
+            equal(state.complete, true)
+            local record = stats.experiments[#stats.experiments - 1]
+            equal(record.kind, "incident")
+            equal(record.returnedHandle, true)
+            equal(record.matchedBase, true)
+            equal(record.initialized, true)
+            equal(record.executing, true)
+            local alias = record.slot
+            truthy(bridge.native_observer:sample(scope))
+            equal(stats.experiments[#stats.experiments - 1].slot, alias)
+            manager.Incidents = setmetatable({ ForEach = function(_, callback) callback("fixture-base", incident) end },
+                { __len = function() return 1 end })
+            local previous = #stats.experiments
+            ok, state = bridge.native_observer:sample(scope)
+            truthy(ok)
+            equal(state.returnedIncidentInSample, true)
+            equal(state.occupied, true)
+            equal(state.observedSlots, 1)
+            equal(#stats.experiments - previous, 2)
+            equal(stats.dispatches, 0)
+            equal(json.encode(stats.experiments):find("fixture-base", 1, true), nil)
+        end)
+    end)
+
     test("passive native evidence continues after event tracking ends without replaying the request", function()
         local now = 1000
         fixture({ experiments = true, clock = function() return now end }, function(bridge, manager, base, stats)

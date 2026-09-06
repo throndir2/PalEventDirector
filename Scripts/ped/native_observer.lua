@@ -294,21 +294,40 @@ function Observer:sample(scope)
         if #entries >= 16 then return true end
         return nil
     end)
-    for index, entry in ipairs(entries) do
+    state.observedSlots = #entries
+    if scope.returned_incident then
+        state.returnedIncident = a.valid(scope.returned_incident)
+        state.returnedIncidentInSample = false
+        for _, entry in ipairs(entries) do
+            if a.same(entry.incident, scope.returned_incident) then
+                entry.returnedHandle, state.returnedIncidentInSample = true, true
+            end
+        end
+        if not state.returnedIncidentInSample then
+            entries[#entries + 1] = { incident = scope.returned_incident, returnedHandle = true }
+        end
+    end
+    for _, entry in ipairs(entries) do
         local id, incident = entry.id, entry.incident
-        local alias = id and scope.aliases[id] or nil
+        local alias = id and scope.aliases[id] or (entry.returnedHandle and scope.returned_alias or nil)
         local address = a.address(incident)
         if not alias then
             scope.next_alias = scope.next_alias + 1
             alias = { index = scope.next_alias, generation = 1, address = address }
             if id and scope.next_alias <= 64 then scope.aliases[id] = alias end
+            if not id and entry.returnedHandle then scope.returned_alias = alias end
         elseif alias.address ~= address then
             alias.address, alias.generation = address, alias.generation + 1
         end
         local fields = { slot = alias.index, generation = alias.generation, valid = a.valid(incident),
-            matchedBase = id ~= nil and id == scope.base_id }
+            matchedBase = id ~= nil and id == scope.base_id, returnedHandle = entry.returnedHandle }
         if fields.matchedBase then state.occupied = true end
         if fields.valid then
+            if entry.returnedHandle then
+                local target = self:call("experiment-returned-target", incident, "GetTargetCampModel")
+                fields.matchedBase = a.valid(target)
+                    and a.guid(self:call("experiment-returned-target-id", target, "GetId")) == scope.base_id
+            end
             fields.type = self:field(incident, "InvaderType")
             fields.state = self:field(incident, "ExecState")
             fields.initialized = self:call("experiment-incident-initialized", incident, "IsInitialized")
@@ -324,7 +343,6 @@ function Observer:sample(scope)
             fields.controllers = a.count(self:field(incident, "MemberController"))
             fields.companions = a.count(self:field(incident, "OtomoController"))
         end
-        state.observedSlots = index
         self:record(scope, "incident", fields)
     end
     local info = self:field(scope.manager, "InvaderInfo")

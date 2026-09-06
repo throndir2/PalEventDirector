@@ -9,6 +9,7 @@ local routes = {
     debug = { owner = "PalPlayerController", method = "Debug_InvaderMarchForNearCamp", named_group = true },
     admission = { owner = "PalInvaderManager", method = "RequestIncidentInvaderEnemy" },
     march = { owner = "PalInvaderManager", method = "StartInvaderMarchForBaseCamp" },
+    blueprint = { owner = "PalInvaderManager", method = "RequestIncidentInvaderEnemy_BP" },
 }
 
 function Experiments.route(name)
@@ -18,7 +19,8 @@ function Experiments.route(name)
 end
 
 function Experiments.start_window_seconds(config, route)
-    local seconds = route == "march" and config.siegeLeague.nativeMarchStartSeconds or config.siegeLeague.startDiscoverySeconds
+    local seconds = (route == "march" or route == "blueprint")
+        and config.siegeLeague.nativeMarchStartSeconds or config.siegeLeague.startDiscoverySeconds
     return math.min(seconds, config.siegeLeague.maxRuntimeSeconds)
 end
 
@@ -32,7 +34,7 @@ function Experiments.validate_context(context)
     end
     if not context.nearestNativeTest then return true end
     local route = Experiments.route(context.nativeTestRoute)
-    if not route then return false, "native test route must be debug, admission, or march" end
+    if not route then return false, "native test route must be debug, admission, march, or blueprint" end
     local group = context.nativeTestGroup
     if group ~= nil and (not route.named_group or type(group) ~= "string" or #group > 128
         or not group:match("^[A-Za-z][A-Za-z0-9_]+$")) then
@@ -68,12 +70,12 @@ local schemas = {
     },
     incident = {
         number = "slot generation type state members controllers companions grade wave maximumWave",
-        boolean = "valid matchedBase initialized executing completed canceled canExecute arrived usesPaths pathfinder",
+        boolean = "valid matchedBase initialized executing completed canceled canExecute arrived usesPaths pathfinder returnedHandle",
         token = "className",
     },
     state = {
         number = "slots observedSlots playerCache playersInsideBase playerTimer cooldownElapsed cooldownFinish grade wave maximumWave waitingIncidents executingIncidents residentIncidents remainingStartSeconds remainingWaveSeconds",
-        boolean = "managerValid worldValid baseValid occupied pathfinding invading cooldown incidentForBase pathfinder invaderInfo firstWave complete",
+        boolean = "managerValid worldValid baseValid occupied pathfinding invading cooldown incidentForBase pathfinder invaderInfo firstWave complete returnedIncident returnedIncidentInSample",
     },
     hook = {
         token = "method code",
@@ -87,7 +89,7 @@ local schemas = {
 }
 
 local tokens = {
-    route = { debug = true, admission = true, march = true, regular = true, inspect = true },
+    route = { debug = true, admission = true, march = true, blueprint = true, regular = true, inspect = true },
     phase = { opened = true, before = true, after = true, sample = true, closed = true, rejected = true },
     code = { complete = true, evicted = true, unavailable = true, native_fault = true, missing = true,
         unsupported = true, expired = true, not_loaded = true, limit = true, wrong_world = true, returned = true, rejected = true },

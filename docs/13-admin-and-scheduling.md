@@ -39,7 +39,7 @@ A guild with no online member at that boundary is not attacked. Every online pla
 
 The selected-base march API returns no success value; direct admission returns a Boolean. Logs and dispatch results distinguish the native method, a returned call, its return type and an actual Boolean false. Neither a void return nor Boolean true proves a raid. The adapter resolves the active manager from an online player's world and pins it for the occurrence. Before/after snapshots record native policy state without using it as an admin veto. Pre-existing incident identities stay private in memory and cannot be claimed or bounty-substituted as a new request's success.
 
-PED displays `RAID STARTED` only after a new matching start callback or a correlated executing enemy incident with live attackers is durably recorded. A visitor, old group or native preparation state is never sufficient. Admin dispatch does not wait for confirmation before submitting other intended targets; actual native faults stop further calls. Public march uses `nativeMarchStartSeconds` (default 480); the explicit admission/debug comparisons use `startDiscoverySeconds` (default 60). Both are capped by maximum runtime. Expiry without an assault produces no rankings or rewards and never retries automatically.
+PED displays `RAID STARTED` only after a new matching start callback or a correlated executing enemy incident with live attackers is durably recorded. A visitor, old group or native preparation state is never sufficient. Admin dispatch does not wait for confirmation before submitting other intended targets; actual native faults stop further calls. Public march and the explicit Blueprint comparison use `nativeMarchStartSeconds` (default 480); the admission/debug comparisons use `startDiscoverySeconds` (default 60). Both are capped by maximum runtime. Expiry without an assault produces no rankings or rewards and never retries automatically.
 
 ## Countdown and notification behavior
 
@@ -162,6 +162,7 @@ Privileged chat forms:
 | `!siege test-path` / `!ped test-path` | Explicit, bounded navigation experiment: at most three synchronous queries from nearby cached start points to the current base, using the requesting pawn and base navigation filter. No invasion is requested. |
 | `!siege test-native admission` / `!ped test-native admission` | Exactly one eligible current base through `RequestIncidentInvaderEnemy`. The game selects the native composition. Boolean acceptance still requires an actual start callback. |
 | `!siege test-native march` / `!ped test-native march` | Exactly one eligible current base through `StartInvaderMarchForBaseCamp`, preserving the native method's own behavior. No fallback and no fanout. |
+| `!siege test-native blueprint` / `!ped test-native blueprint` | Explicit current-build Blueprint handoff for one base, with a real `PalIncidentDynamicParameterInvader`, not a null parameter. Reports whether an incident was returned; actual live enemy evidence is still required. Does not edit native maps, retry, or fall back to spawning. |
 | `!siege test-native debug [group]` / `!ped test-native debug [group]` | Exactly one current target base through `Debug_InvaderMarchForNearCamp` with declaration skip. A bounded group-name string is passed to native selection even if PED has not found it in its table scan. Omission retains the stock Hunter control. |
 | `!siege test-native` / `!ped test-native` | Backward-compatible shorthand for the default debug control. All single-base experiments use native composition, no bounty substitution, and no fanout. |
 | `!siege experiments` | Prints the experimental command forms without running them. |
@@ -265,7 +266,7 @@ Profiles never resize Palworld's native member array. A transformation failure l
 | `siegeLeague.minimumParticipationPoints` | 0 through `targetPoints * maxTargets`. |
 | `siegeLeague.leaderboardSize` | 1–50 displayed entries. |
 | `siegeLeague.startDiscoverySeconds` | 5–600; default 60 for explicit admission/debug comparison routes. |
-| `siegeLeague.nativeMarchStartSeconds` | 60–1800; default 480 for normal/public-march calls, including native preparation. Capped by `maxRuntimeSeconds`. Existing schema-3 configs receive the default during preparation without overwriting an explicit value. |
+| `siegeLeague.nativeMarchStartSeconds` | 60–1800; default 480 for normal/public-march calls and the explicit Blueprint handoff, including native preparation. Capped by `maxRuntimeSeconds`. Existing schema-3 configs receive the default during preparation without overwriting an explicit value. |
 | `siegeLeague.settleDelaySeconds` | 1–300 after all bases reach terminal outcomes. |
 | `siegeLeague.maxRuntimeSeconds` | 60–21600. |
 | `siegeLeague.creditDirectPlayer` | Credit enrolled players' direct damage when true. |

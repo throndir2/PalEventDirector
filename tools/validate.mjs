@@ -57,6 +57,7 @@ const required = [
   'tests/native-observer.lua',
   'tests/admin-native-policy.lua',
   'tests/march-lifecycle.lua',
+  'tests/blueprint-incident.lua',
   'tests/preflight-failfast.lua',
   'tests/preflight-failfast.mjs',
   'tests/preflight-property-binding.mjs',
