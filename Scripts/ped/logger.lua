@@ -1,6 +1,7 @@
 local util = require("ped.util")
 local json = require("ped.json")
 local filesystem = require("ped.filesystem")
+local NativeExperiments = require("ped.native_experiments")
 
 local Logger = {}
 Logger.__index = Logger
@@ -13,9 +14,17 @@ function Logger.new(options)
         level = LEVELS[options.level] or LEVELS.info,
         file_path = options.file_path,
         breadcrumb_file_path = options.breadcrumb_file_path,
+        experiment_file_path = options.experiment_file_path,
         filesystem = options.filesystem or filesystem,
         prefix = options.prefix or "PalEventDirector",
     }, Logger)
+end
+
+function Logger:native_experiment(record)
+    if type(self.experiment_file_path) ~= "string" or not NativeExperiments.validate_record(record) then
+        return false, "Native experiment record is unavailable or invalid"
+    end
+    return self.filesystem.append(self.experiment_file_path, json.encode(record) .. "\n")
 end
 
 function Logger:write(level, message, fields)

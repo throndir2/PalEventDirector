@@ -5,6 +5,7 @@ local bounties = require("ped.bounties")
 local config_module = require("ped.config")
 local util = require("ped.util")
 local version = require("ped.version")
+local NativeExperiments = require("ped.native_experiments")
 
 local Director = {}
 Director.__index = Director
@@ -370,6 +371,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     local healthy, health_error = self.bridge:preflight_start(profile_id, {
         admin = admin_override, requesterUid = scheduler_occurrence.requesterUid,
         nearestNativeTest = admin_override and scheduler_occurrence.nearestNativeTest == true,
+        nativeTestRoute = scheduler_occurrence.nativeTestRoute,
+        nativeTestGroup = scheduler_occurrence.nativeTestGroup,
+        requestNumber = scheduler_occurrence.manualOrder,
     })
     if not healthy then
         return false, health_error
@@ -389,6 +393,7 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         adminOverride = admin_override,
         requesterUid = scheduler_occurrence.requesterUid,
         nearestNativeTest = scheduler_occurrence.nearestNativeTest == true,
+        nativeTestRoute = scheduler_occurrence.nativeTestRoute,
         requestNumber = scheduler_occurrence.manualOrder,
         schedulerOccurrenceKey = scheduler_occurrence_key,
         startedAt = now,
@@ -472,7 +477,8 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     if self.state.event.requesterUid then
         self:_chat(string.format("PED request #%d: %d target(s) validated; requesting the native probe%s.",
             self.state.event.requestNumber or 0, util.count(self.state.event.bases),
-            self.state.event.nearestNativeTest and " through the nearest-base debug RPC (stock native group, no bounty substitution)" or ""),
+            self.state.event.nearestNativeTest and (" using the single-base " .. (self.state.event.nativeTestRoute or "debug")
+                .. " experiment (native composition, no fanout)") or ""),
             self.state.event.requesterUid)
     end
     local started, start_result = self.bridge:start_all_invasions(profile_id)
@@ -1311,16 +1317,49 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
     return true
 end
 
-function Director:_handle_nearest_native_test(principal)
+function Director:_handle_nearest_native_test(principal, route, group)
     local allowed, _, authority = self:_authorize_chat_command(principal, "test-native")
     if not allowed or authority == "any-user-policy" then
         self:_chat("PED native test requires an authorized administrator or operator.", principal.uid)
         return true
     end
-    self:_chat("PED native test: one nearby eligible base, a stock Hunter group, no bounty substitution and no fanout. Stand inside your base.", principal.uid)
+    local context = { requesterUid = principal.uid, nearestNativeTest = true, nativeTestRoute = route, nativeTestGroup = group }
+    local context_ok, context_error = NativeExperiments.validate_context(context)
+    if not context_ok then self:_chat("PED native test rejected: " .. context_error, principal.uid); return true end
+    self:_chat("PED native test: one nearby eligible base; route=" .. (route or "debug")
+        .. "; no bounty substitution, fallback, or fanout. Stay inside your base.", principal.uid)
     local ok, result = self:arm_start("chat:" .. util.mask_uid(principal.uid), "native", 0, true,
-        { requesterUid = principal.uid, nearestNativeTest = true })
+        context)
     if not ok then self:_chat("PED native test failed: " .. tostring(result), principal.uid) end
+    return true
+end
+
+function Director:_handle_native_inspection(principal, paths)
+    local allowed, _, authority = self:_authorize_chat_command(principal, "inspect-native")
+    if not allowed or authority == "any-user-policy" then
+        self:_chat("PED native inspection requires an authorized administrator or operator.", principal.uid)
+        return true
+    end
+    if type(self.bridge.inspect_native_control) ~= "function" then
+        self:_chat("PED native inspection is unavailable in this adapter.", principal.uid)
+        return true
+    end
+    local ok, result = self.bridge:inspect_native_control(principal, paths == true)
+    if not ok then
+        self:_chat("PED native inspection failed: " .. tostring(result), principal.uid)
+        return true
+    end
+    self:_chat(string.format("PED inspection #%d: no invasion requested. Native slots=%d; current base occupied=%s. Detailed records: native-experiments.ndjson.",
+        result.observation, result.slots, diagnostic_boolean(result.occupied)), principal.uid)
+    self:_chat(string.format("PED inspection #%d: radius matches 2D=%d, 3D=%d; navigation not-disabled=%d/%d; worker levels=%s. Monitoring native state for ten minutes without retries.",
+        result.observation, result.probeRadiusMatches2D, result.probeRadiusMatches3D,
+        result.probeNavigationNotDisabled, result.probeNavigationChecked,
+        result.workerMinimum and string.format("%d-%d (%d sampled)", result.workerMinimum, result.workerMaximum, result.workerAvailable)
+            or "unavailable"), principal.uid)
+    if paths then
+        self:_chat(string.format("PED navigation experiment #%d: complete default-agent paths=%d/%d queries. This is not a proof of the invader-specific path or water rules.",
+            result.observation, result.completePaths, result.pathQueries), principal.uid)
+    end
     return true
 end
 
@@ -1362,8 +1401,14 @@ function Director:handle_chat(principal, message)
         elseif action == "start" then
             return self:_handle_chat_start(principal, words[3], words[4], now)
         elseif action == "test-native" then
-            if #words ~= 2 then self:_chat("Use !siege test-native with no extra arguments.", uid); return true end
-            return self:_handle_nearest_native_test(principal)
+            if #words > 4 then self:_chat("Use !siege test-native [debug [group]|admission|march].", uid); return true end
+            return self:_handle_nearest_native_test(principal, words[3], words[4])
+        elseif action == "inspect-native" or action == "test-path" then
+            if #words ~= 2 then self:_chat("Use !siege inspect-native or !siege test-path without extra arguments.", uid); return true end
+            return self:_handle_native_inspection(principal, action == "test-path")
+        elseif action == "experiments" then
+            self:_chat("Native experiments: !siege inspect-native (no raid); !siege test-path (up to three navigation queries); !siege test-native admission|march|debug [loaded group]. One base and one explicit request at a time. Never retry after a native error.", uid)
+            return true
         elseif action == "cancel" or action == "resolve" or action == "abort" or action == "reset" then
             self:handle_operator_command(action, "chat:" .. util.mask_uid(uid), principal)
             return true
@@ -1381,8 +1426,12 @@ function Director:handle_chat(principal, message)
         return true
     elseif util.starts_with(lowered, "!ped ") then
         if words[2] == "test-native" then
-            if #words ~= 2 then self:_chat("Use !ped test-native with no extra arguments.", uid); return true end
-            return self:_handle_nearest_native_test(principal)
+            if #words > 4 then self:_chat("Use !ped test-native [debug [group]|admission|march].", uid); return true end
+            return self:_handle_nearest_native_test(principal, words[3], words[4])
+        end
+        if words[2] == "inspect-native" or words[2] == "test-path" then
+            if #words ~= 2 then self:_chat("Use !ped inspect-native or !ped test-path without extra arguments.", uid); return true end
+            return self:_handle_native_inspection(principal, words[2] == "test-path")
         end
         if words[2] == "start" then
             return self:_handle_chat_start(principal, words[3], words[4], now)

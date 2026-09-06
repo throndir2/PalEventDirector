@@ -3,6 +3,7 @@ return function(test, equal, truthy)
     local Config = require("ped.config")
     local Director = require("ped.director")
     local json = require("ped.json")
+    local Experiments = require("ped.native_experiments")
     local GROUP = "Invader_Group_NPC_Grade5_Hunter"
 
     local function name(value)
@@ -16,7 +17,7 @@ return function(test, equal, truthy)
     local function with_fixture(options, callback)
         options = options or {}
         local old_register = _G.RegisterHook
-        local stats = { records = {}, rows = 0, points = 0, navigation = 0, hooks = 0, dispatches = 0, logs = {} }
+        local stats = { records = {}, rows = 0, points = 0, navigation = 0, hooks = 0, dispatches = 0, logs = {}, experiments = {} }
         local world, foreign = object(101), object(102)
         local owner, parent = object(201), object(202)
         local function_owner = options.inherited and parent or owner
@@ -67,6 +68,7 @@ return function(test, equal, truthy)
                 local result = visitor(entry.key or tostring(index), {
                     GroupName = name(entry.group), BiomeID = entry.biome or 1,
                     InvadeGradeMin = entry.minimum or 0, InvadeGradeMax = entry.maximum or 9, Weight = entry.weight or 1,
+                    Wave = 1, ConditionBuildObjectId = name("None"),
                 })
                 truthy(result == nil or result == true, "row iterator returned false")
                 if result == true then break end
@@ -130,6 +132,7 @@ return function(test, equal, truthy)
         settings.InvaderPathWaterContinuousDistanceThreshold = 3000
         settings.InvaderPathWaterTotalDistanceThreshold = 5000
         settings.InvadeOccurableBaseCampLevel = 6
+        settings.InvadeGradeOffset = 0
         local utility = object(702)
         utility.GetGameSetting = function(_, context) equal(context, world); return settings end
         utility.GetOptionWorldSettings = function() error("unsafe getter invoked") end
@@ -137,10 +140,15 @@ return function(test, equal, truthy)
             IsValid = function() return true end, GetWorld = function() return world end,
             OptionWorldSettings = { bEnableInvaderEnemy = true },
         } end
-        local bridge = Bridge.new({ config = Config.defaults(), logger = {
+        local bridge = Bridge.new({ config = Config.defaults(), clock = options.clock, observe_native_experiments = options.experiments, logger = {
             error = function(_, message) stats.logs[#stats.logs + 1] = message end,
             info = function(_, _, fields) stats.logs[#stats.logs + 1] = fields end,
             preflight_breadcrumb = function(_, step) stats.records[#stats.records + 1] = step; return true end,
+            native_experiment = function(_, record)
+                truthy(Experiments.validate_record(record), "experiment record rejected")
+                stats.experiments[#stats.experiments + 1] = record
+                return true
+            end,
         } })
         bridge.config.capabilities.startAllInvasions = true
         bridge.utility, bridge.event_manager, bridge.event_world = utility, manager, world
@@ -149,6 +157,7 @@ return function(test, equal, truthy)
         bridge.registered, bridge.periodic_active, bridge.event_open = true, true, true
         bridge.probe_base_id = "fixture-base"
         bridge.expected_bases = { ["fixture-base"] = true }
+        stats.world, stats.owner = world, owner
         local ok, failure = pcall(callback, bridge, manager, base, stats)
         _G.RegisterHook = old_register
         truthy(ok, failure)
@@ -382,4 +391,35 @@ return function(test, equal, truthy)
             equal(json.encode(summary):find("PRIVATE", 1, true), nil)
         end)
     end)
+    test("debug group selection is canonicalized from loaded data and unknown groups never dispatch", function()
+        with_fixture({}, function(bridge, manager, _, stats)
+            local controller = object(909)
+            local roster = { { uid = "PRIVATE_ADMIN", controller = controller } }
+            bridge.preflight_environment = function() return true end
+            bridge.list_online_players = function() return roster end
+            bridge._resolve_world_manager = function() return manager, stats.world end
+            bridge.active_invasion_count = function() return 0 end
+            bridge._eligible_online_guild_bases = function()
+                return { ["fixture-base"] = true, distant = true }, { ["fixture-base"] = "fixed-guid", distant = "distant-guid" },
+                    { ["fixture-base"] = "guild", distant = "guild" }, roster
+            end
+            bridge._nearest_test_base = function() return "fixture-base" end
+            bridge._static_find = function(_, path)
+                equal(path, "/Script/Pal.PalPlayerController:Debug_InvaderMarchForNearCamp")
+                return object(910)
+            end
+            local control = { admin = true, nearestNativeTest = true, nativeTestRoute = "debug",
+                nativeTestGroup = GROUP:lower(), requesterUid = "PRIVATE_ADMIN" }
+            truthy(bridge:preflight_start("native", control))
+            equal(bridge.pending_nearest_test.group, GROUP)
+            equal(bridge.pending_expected_bases.distant, nil)
+            control.nativeTestGroup = "missing_group"
+            local ok, reason = bridge:preflight_start("native", control)
+            equal(ok, false)
+            truthy(reason:find("not verified", 1, true))
+            equal(stats.dispatches, 0)
+            equal(bridge.native_fault, nil)
+        end)
+    end)
+    return with_fixture
 end

@@ -7,8 +7,8 @@ local scripts_package_root = assert(arg[4], "packaged Scripts directory is requi
 package.path = table.concat({
     join(scripts_package_root, "?.lua"),
     join(scripts_package_root, "?", "init.lua"),
-    package.path,
 }, ";")
+package.cpath = ""
 
 local Path = require("ped.path")
 local scripts_root = assert(arg[1], "scripts root is required")
@@ -28,3 +28,8 @@ if actual_directory ~= expected_directory or actual_source ~= expected_source th
 end
 
 io.write("PASS installer ModTarget is accepted by packaged path resolver\n")
+
+require("ped.director")
+require("ped.palworld")
+require("ped.logger")
+io.write("PASS packaged runtime imports are self-contained\n")

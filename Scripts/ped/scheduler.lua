@@ -1,5 +1,7 @@
 local util = require("ped.util")
 
+local NativeExperiments = require("ped.native_experiments")
+
 local Scheduler = {}
 Scheduler.__index = Scheduler
 
@@ -194,6 +196,8 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name, admin_ov
     end
     context = context or {}
     if type(context) ~= "table" then return false, "manual request context must be a table" end
+    local context_ok, context_error = NativeExperiments.validate_context(context)
+    if not context_ok then return false, context_error end
     if context.nearestNativeTest and (admin_override ~= true or profile ~= "native" or countdown_seconds ~= 0
         or type(context.requesterUid) ~= "string" or context.requesterUid == "") then
         return false, "nearest-base native tests require an authenticated requester, native profile, and zero countdown"
@@ -234,6 +238,8 @@ function Scheduler:arm_manual(profile, source, countdown_seconds, name, admin_ov
         adminOverride = admin_override == true,
         requesterUid = context.requesterUid,
         nearestNativeTest = context.nearestNativeTest == true,
+        nativeTestRoute = context.nativeTestRoute,
+        nativeTestGroup = context.nativeTestGroup,
         superseded = {},
         source = source,
         schedule = util.deep_copy(schedule),

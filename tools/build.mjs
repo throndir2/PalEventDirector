@@ -47,6 +47,8 @@ const packageFiles = [
   'Scripts/ped/filesystem.lua',
   'Scripts/ped/json.lua',
   'Scripts/ped/logger.lua',
+  'Scripts/ped/native_experiments.lua',
+  'Scripts/ped/native_observer.lua',
   'Scripts/ped/palworld.lua',
   'Scripts/ped/path.lua',
   'Scripts/ped/preflight_diagnostic.lua',

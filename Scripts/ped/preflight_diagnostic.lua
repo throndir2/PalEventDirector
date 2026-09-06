@@ -23,6 +23,8 @@ local ERROR_SIGNATURES = {
     { text = "Native probe table schema is unsupported", code = "probe-table-schema" },
     { text = "Native probe metadata is unsupported", code = "probe-metadata" },
     { text = "Native probe observer registration failed", code = "probe-hook-registration" },
+    { text = "Native experiment logging failed", code = "experiment-log-failed" },
+    { text = "Native navigation signature is unsupported", code = "navigation-signature" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 

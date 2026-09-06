@@ -2,10 +2,12 @@ local util = require("ped.util")
 local bounties = require("ped.bounties")
 local PreflightDiagnostic = require("ped.preflight_diagnostic")
 local DiagnosticIngress = require("ped.diagnostic_ingress")
+local NativeExperiments = require("ped.native_experiments")
+local NativeObserver = require("ped.native_observer")
 
 local Bridge = {}
 Bridge.__index = Bridge
-local NATIVE_PROBE_GROUP = "Invader_Group_NPC_Grade5_Hunter"
+local NATIVE_PROBE_GROUP = NativeExperiments.default_group
 local PROBE_LIMITS = { rows = 512, points = 256, navigation = 32, functions = 128, classes = 8, incidents = 16 }
 
 local HOOKS = {
@@ -222,7 +224,7 @@ local function same_object(left, right)
 end
 
 function Bridge.new(options)
-    return setmetatable({
+    local self = setmetatable({
         config = assert(options.config),
         logger = assert(options.logger),
         clock = options.clock or util.now_seconds,
@@ -250,6 +252,8 @@ function Bridge.new(options)
         event_admin_override = false,
         pending_nearest_test = nil,
         event_nearest_test = nil,
+        pending_native_control = nil,
+        event_native_control = nil,
         event_world = nil,
         event_manager_address = nil,
         event_world_address = nil,
@@ -278,6 +282,99 @@ function Bridge.new(options)
         diagnostic_command_directory = options.diagnostic_command_directory,
         delivery_profile = options.delivery_profile or require("ped.version").delivery_profile,
     }, Bridge)
+    if options.observe_native_experiments then
+        if type(self.logger.native_experiment) ~= "function" then error("Native experiment recorder is unavailable") end
+        self.experiments = NativeExperiments.new({
+            clock = self.clock, run = self.native_trace_run,
+            emit = function(record) return self.logger:native_experiment(record) end,
+        })
+        self.native_observer = NativeObserver.new(self, {
+            unwrap = unwrap, valid = valid, property = property, same = same_object, guid = guid_string,
+            count = container_count, address = object_address,
+        })
+    end
+    return self
+end
+
+function Bridge:_experiment_detail(kind, fields, scope)
+    scope = scope or self.experiment_current
+    if not self.experiments or not scope then return end
+    local recorded = self.experiments:record(scope, kind, fields)
+    if not recorded then error("Native experiment logging failed", 0) end
+end
+
+function Bridge:_open_native_observation(manager, world, base, base_id, route, group, request, recipient)
+    return self:_native_step("experiment-open", function()
+        local scope = self.native_observer:open({ manager = manager, world = world, base = base, base_id = base_id,
+            route = route, group = group, request = request, recipient = recipient,
+            deadline = route ~= "inspect" and self.clock() + self.config.siegeLeague.startDiscoverySeconds or nil })
+        self.native_observer:prepare(scope)
+        return scope
+    end)
+end
+
+function Bridge:poll_native_observations()
+    if not self.experiments then return end
+    if self.native_fault then self.experiments:clear(); return end
+    local scope, due, skipped = self.experiments:next_sample()
+    if not scope then return end
+    self:_native_step("experiment-passive-sample", function()
+        self:_experiment_detail("scope", { phase = "sample", sampleDue = due, skippedSamples = skipped,
+            late = scope.deadline ~= nil and self.clock() > scope.deadline }, scope)
+        local sampled, reason = self.native_observer:sample(scope)
+        if not sampled or due == 600 then
+            local closed = self.experiments:close(scope, sampled and "complete" or reason)
+            if not closed then error("Native experiment logging failed", 0) end
+        end
+    end)
+end
+
+function Bridge:inspect_native_control(principal, paths)
+    local allowed, reason = self:native_start_guard()
+    if not allowed then return false, reason end
+    if not self.experiments then return false, "comprehensive native observation is not enabled" end
+    local environment_ok, environment_error = self:preflight_environment()
+    if not environment_ok then return false, environment_error end
+    local ok, result, inspection_error = self:_native_step("native-inspection", function()
+        local roster = self:list_online_players()
+        local manager, world, manager_error = self:_resolve_world_manager(roster)
+        if not manager then return nil, manager_error end
+        local requester
+        for _, player in ipairs(roster) do if player.uid == principal.uid then requester = player; break end end
+        if not requester or not valid(requester.controller) then return nil, "requesting controller is no longer online" end
+        local id, base_error = self:_nearest_test_base(requester.controller, world)
+        if not id then return nil, base_error end
+        local target, target_error = self:_resolve_dispatch_target(manager, id)
+        if not target then return nil, target_error end
+        local opened, scope = self:_open_native_observation(manager, world, target.base, id, "inspect", nil, nil, principal.uid)
+        if not opened then return end
+        local previous = self.experiment_current
+        self.experiment_current = scope
+        local collected, details, detail_error = self:_native_step("experiment-inspection-details", function()
+            local groups_ok, inventory, biomes = self:_probe_group_inventory(manager)
+            if not groups_ok then return end
+            local geometry_ok, geometry = self:_probe_spawn_inventory(manager, target.base, biomes, world)
+            if not geometry_ok then return end
+            local workers = self.native_observer:workers(scope)
+            local sampled, state = self.native_observer:sample(scope)
+            if not sampled then return nil, "native observation scope became unavailable" end
+            local response = { observation = scope.id, slots = state.slots, occupied = state.occupied }
+            for key, value in pairs(geometry) do response[key] = value end
+            for key, value in pairs(workers) do response[key] = value end
+            if paths then
+                local queried, query_result = self.native_observer:path_queries(scope, requester.controller)
+                if not queried then return nil, query_result end
+                response.pathQueries, response.completePaths = query_result.queries, query_result.complete
+            end
+            return response
+        end)
+        self.experiment_current = previous
+        if not collected then return end
+        return details, detail_error
+    end)
+    if not ok then return false, result end
+    if not result then return false, inspection_error or "native inspection could not establish a current base and world" end
+    return true, result
 end
 
 function Bridge:attach_director(director)
@@ -367,6 +464,8 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.pending_admin_override = false
     self.event_nearest_test = self.pending_nearest_test
     self.pending_nearest_test = nil
+    self.event_native_control = self.pending_native_control
+    self.pending_native_control = nil
     self.event_manager_address = object_address(self.event_manager)
     self.event_world_address = object_address(self.event_world)
     if not self.event_manager_address or not self.event_world_address then
@@ -409,6 +508,7 @@ end
 function Bridge:end_event_tracking()
     self.pending_admin_override, self.event_admin_override = false, false
     self.pending_nearest_test, self.event_nearest_test = nil, nil
+    self.pending_native_control, self.event_native_control = nil, nil
     self.event_open = false
     self.discovery_open = false
     self.selection_open = false
@@ -1498,6 +1598,7 @@ function Bridge:register()
                 self.logger:error("Director tick failed", { error = tick_error })
             end
         end
+        if self.experiments then self:poll_native_observations() end
         return false
     end
     self.periodic_active = true
@@ -1555,6 +1656,7 @@ function Bridge:unregister()
     end
     self.loop_handle = nil
     self.registered = false
+    if self.experiments then self.experiments:clear() end
 end
 
 function Bridge:active_invasion_count(world)
@@ -1642,6 +1744,8 @@ end
 function Bridge:preflight_start(profile_id, control)
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
+    local control_ok, control_error = NativeExperiments.validate_context(control or {})
+    if not control_ok then return false, control_error end
     self.pending_expected_bases = {}
     self.pending_native_base_ids = {}
     self.pending_base_guilds = {}
@@ -1650,6 +1754,8 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_world = nil
     self.pending_admin_override = type(control) == "table" and control.admin == true
     self.pending_nearest_test = nil
+    self.pending_native_control = type(control) == "table"
+        and { requestNumber = control.requestNumber, requesterUid = control.requesterUid } or nil
     local environment_ok, environment_error = self:preflight_environment()
     if not environment_ok then
         return false, environment_error
@@ -1699,8 +1805,18 @@ function Bridge:preflight_start(profile_id, control)
         local id, nearest_error = self:_nearest_test_base(requester.controller, world)
         if not id then return false, nearest_error end
         if not base_set[id] then return false, "nearest base is outside the eligible online-guild target set" end
+        local route = control.nativeTestRoute or "debug"
+        local group = NativeExperiments.route(route).named_group and NATIVE_PROBE_GROUP or nil
+        if control.nativeTestGroup then
+            local read, inventory = self:_probe_group_inventory(manager, control.nativeTestGroup)
+            if not read then return false, inventory end
+            if inventory.probeGroupPresent ~= true then
+                return false, "requested group was not verified in the bounded loaded native inventory"
+            end
+            group = inventory.probeGroupName
+        end
         base_set, native_ids, base_guilds = { [id] = true }, { [id] = native_ids[id] }, { [id] = base_guilds[id] }
-        self.pending_nearest_test = { controller = requester.controller, world = world, baseId = id }
+        self.pending_nearest_test = { controller = requester.controller, world = world, baseId = id, route = route, group = group }
     end
     if #resolved_roster > self.config.limits.maxPlayers then
         return false, string.format("online roster count %d exceeds configured maximum %d", #resolved_roster, self.config.limits.maxPlayers)
@@ -1716,9 +1832,10 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_roster = resolved_roster
     self.pending_manager = manager
     self.pending_world = world
-    local method = self.pending_nearest_test and "Debug_InvaderMarchForNearCamp"
+    local test_route = self.pending_nearest_test and NativeExperiments.route(self.pending_nearest_test.route)
+    local method = test_route and test_route.method
         or self.pending_admin_override and "RequestIncidentInvaderEnemy" or "StartInvaderMarchForBaseCamp"
-    local owner = self.pending_nearest_test and "PalPlayerController" or "PalInvaderManager"
+    local owner = test_route and test_route.owner or "PalInvaderManager"
     local lookup_ok, function_object = self:_native_step("dispatch-function",
         function() return self:_static_find("/Script/Pal." .. owner .. ":" .. method) end)
     if not lookup_ok then return false, function_object end
@@ -1840,7 +1957,7 @@ function Bridge:_prepare_probe_handoff(manager)
     return true
 end
 
-function Bridge:_probe_group_inventory(manager)
+function Bridge:_probe_group_inventory(manager, requested_group)
     local found, data, row_count = self:_native_step("probe-table-metadata", function()
         local data = unwrap(manager.InvaderEnemyDataTable)
         if not valid(data) or data:type() ~= "UDataTable" then error("Native probe table schema is unsupported", 0) end
@@ -1856,8 +1973,9 @@ function Bridge:_probe_group_inventory(manager)
     return self:_native_step("probe-table-rows", function()
         if not valid(data) then error("Native probe table schema is unsupported", 0) end
         local summary = { invaderTableRows = row_count, invaderRowsScanned = 0, invaderMatchingRows = 0,
-            invaderMatchingWeightedRows = 0, probeGroupSpecified = self.event_nearest_test ~= nil }
+            invaderMatchingWeightedRows = 0, probeGroupSpecified = requested_group ~= nil }
         local biomes = {}
+        local catalog = {}
         data:ForEachRow(function(_, row)
             local name = unwrap(row.GroupName)
             if name == nil or name:type() ~= "FName" then error("Native probe data has an unexpected type", 0) end
@@ -1872,12 +1990,31 @@ function Bridge:_probe_group_inventory(manager)
                 error("Native probe data has an unexpected type", 0)
             end
             summary.invaderRowsScanned = summary.invaderRowsScanned + 1
-            if not summary.probeGroupSpecified or group == NATIVE_PROBE_GROUP then
+            if self.experiment_current then
+                local key = group .. "\0" .. tostring(biome)
+                local entry = catalog[key]
+                if not entry then
+                    entry = { group = group, biome = biome, rows = 0, weightedRows = 0, requiredBuildRows = 0,
+                        gradeMin = minimum, gradeMax = maximum,
+                        selected = requested_group ~= nil and group:lower() == requested_group:lower() }
+                    catalog[key] = entry
+                end
+                entry.rows = entry.rows + 1
+                if weight > 0 then entry.weightedRows = entry.weightedRows + 1 end
+                entry.gradeMin, entry.gradeMax = math.min(entry.gradeMin, minimum), math.max(entry.gradeMax, maximum)
+                local wave = probe_field(row, "Wave", "number")
+                entry.waveMin, entry.waveMax = math.min(entry.waveMin or wave, wave), math.max(entry.waveMax or wave, wave)
+                local condition = unwrap(row.ConditionBuildObjectId)
+                if condition == nil or condition:type() ~= "FName" then error("Native probe data has an unexpected type", 0) end
+                if condition:ToString():lower() ~= "none" then entry.requiredBuildRows = entry.requiredBuildRows + 1 end
+            end
+            if not summary.probeGroupSpecified or group:lower() == requested_group:lower() then
                 summary.invaderMatchingRows = summary.invaderMatchingRows + 1
                 if weight > 0 then summary.invaderMatchingWeightedRows = summary.invaderMatchingWeightedRows + 1 end
                 summary.invaderMatchingGradeMin = math.min(summary.invaderMatchingGradeMin or minimum, minimum)
                 summary.invaderMatchingGradeMax = math.max(summary.invaderMatchingGradeMax or maximum, maximum)
                 biomes[biome] = true
+                if summary.probeGroupSpecified then summary.probeGroupName = group end
             end
             -- This iterator also double-removes Boolean false; nil continues safely.
             if summary.invaderRowsScanned >= PROBE_LIMITS.rows then return true end
@@ -1889,12 +2026,17 @@ function Bridge:_probe_group_inventory(manager)
             if summary.invaderMatchingRows > 0 then summary.probeGroupPresent = true
             elseif summary.invaderRowsComplete then summary.probeGroupPresent = false end
         end
+        for _, key in ipairs(util.sorted_keys(catalog)) do
+            catalog[key].complete = summary.invaderRowsComplete
+            self:_experiment_detail("group", catalog[key])
+        end
         return summary, biomes
     end)
 end
 
-function Bridge:_probe_spawn_inventory(manager, base, biomes)
-    local settings_ok, settings = self:_native_call("probe-game-setting", self:_utility(), "GetGameSetting", self.event_world)
+function Bridge:_probe_spawn_inventory(manager, base, biomes, world)
+    world = world or self.event_world
+    local settings_ok, settings = self:_native_call("probe-game-setting", self:_utility(), "GetGameSetting", world)
     if not settings_ok then return false, settings end
     local scanned, summary, candidates = self:_native_step("probe-spawn-geometry", function()
         if not valid(settings) or not valid(base) or not valid(manager) then
@@ -1904,6 +2046,9 @@ function Bridge:_probe_spawn_inventory(manager, base, biomes)
         local maximum = probe_field(settings, "InvadeStartPoint_BaseCampRadius_Max_cm", "number")
         if minimum < 0 or maximum < minimum then error("Native probe data has an unexpected type", 0) end
         local origin = probe_vector(unwrap(base.Transform).Translation)
+        if self.experiment_current then
+            self:_experiment_detail("worker", { gradeOffset = probe_field(settings, "InvadeGradeOffset", "number") })
+        end
         local points = unwrap(manager.InvadeStartLocationList)
         local count = #points
         if not util.is_integer(count) or count < 0 then error("Native probe data has an unexpected type", 0) end
@@ -1916,7 +2061,7 @@ function Bridge:_probe_spawn_inventory(manager, base, biomes)
             probeRadiusMatches2D = 0, probeRadiusMatches3D = 0, probeBiomeMatches2D = 0, probeBiomeMatches3D = 0,
             probeNavigationCandidates = 0, probeNavigationChecked = 0, probeNavigationNotDisabled = 0,
             probeNavigationDisabled = 0, probeNavigationUnavailable = 0, probeNavigationForeignWorld = 0 }
-        local candidates = {}
+        local candidates, detail_rows = {}, {}
         local min_squared, max_squared = minimum * minimum, maximum * maximum
         points:ForEach(function(_, entry)
             local point = unwrap(entry)
@@ -1942,14 +2087,25 @@ function Bridge:_probe_spawn_inventory(manager, base, biomes)
             if in_2d or in_3d then
                 result.probeNavigationCandidates = result.probeNavigationCandidates + 1
                 if #candidates < PROBE_LIMITS.navigation then
-                    candidates[#candidates + 1] = { actor = unwrap(point.SourceActor) }
+                    candidates[#candidates + 1] = { actor = unwrap(point.SourceActor), index = result.probeStartPointsScanned,
+                        location = { X = location[1], Y = location[2], Z = location[3] }, spatial = spatial, in3D = in_3d }
                 end
+            end
+            if self.experiment_current then
+                detail_rows[#detail_rows + 1] = { index = result.probeStartPointsScanned,
+                    horizontalMeters = math.sqrt(horizontal) / 100, spatialMeters = math.sqrt(spatial) / 100,
+                    verticalMeters = math.abs(dz) / 100, biome = biome, radius2D = in_2d, radius3D = in_3d,
+                    biomeMatch = biomes[biome] == true, actorValid = valid(unwrap(point.SourceActor)), inspected = false }
             end
             if result.probeStartPointsScanned >= PROBE_LIMITS.points then return true end
             return nil
         end)
         if #points ~= count then error("Native probe data changed during observation", 0) end
         result.probeGeometryComplete = result.probeStartPointsScanned == count
+        if self.experiment_current then
+            self.experiment_current.query_origin = { X = origin[1], Y = origin[2], Z = origin[3] }
+            self.experiment_current.candidate_details = detail_rows
+        end
         return result, candidates
     end)
     if not scanned then return false, summary end
@@ -1959,12 +2115,15 @@ function Bridge:_probe_spawn_inventory(manager, base, biomes)
             return unwrap(candidate.actor.NavInvokerComponent)
         end)
         if not read then return false, invoker end
+        local detail = self.experiment_current and self.experiment_current.candidate_details[candidate.index]
+        if detail then detail.invokerValid = valid(invoker) end
         if not valid(invoker) then
             summary.probeNavigationUnavailable = summary.probeNavigationUnavailable + 1
         else
-            local world_ok, world = self:_native_call("probe-navigation-world", invoker, "GetWorld")
-            if not world_ok then return false, world end
-            if not same_object(world, self.event_world) then
+            local world_ok, invoker_world = self:_native_call("probe-navigation-world", invoker, "GetWorld")
+            if not world_ok then return false, invoker_world end
+            if detail then detail.sameWorld = same_object(invoker_world, world) end
+            if not same_object(invoker_world, world) then
                 summary.probeNavigationForeignWorld = summary.probeNavigationForeignWorld + 1
             else
                 local checked, disabled = self:_native_call("probe-navigation-disabled", invoker, "IsDisableInvorker")
@@ -1973,6 +2132,7 @@ function Bridge:_probe_spawn_inventory(manager, base, biomes)
                     if type(disabled) ~= "boolean" then error("Native probe data has an unexpected type", 0) end
                 end)
                 if not boolean_ok then return false, boolean_error end
+                if detail then detail.disabled, detail.inspected = disabled, true end
                 summary.probeNavigationChecked = summary.probeNavigationChecked + 1
                 if disabled then summary.probeNavigationDisabled = summary.probeNavigationDisabled + 1
                 else summary.probeNavigationNotDisabled = summary.probeNavigationNotDisabled + 1 end
@@ -1981,13 +2141,31 @@ function Bridge:_probe_spawn_inventory(manager, base, biomes)
     end
     summary.probeNavigationComplete = summary.probeGeometryComplete
         and summary.probeNavigationChecked == summary.probeNavigationCandidates
+    if self.experiment_current then
+        local recorded, record_error = self:_native_step("experiment-candidate-records", function()
+            local scope = self.experiment_current
+            for _, detail in ipairs(scope.candidate_details) do self:_experiment_detail("candidate", detail, scope) end
+            table.sort(candidates, function(left, right)
+                if left.in3D ~= right.in3D then return left.in3D end
+                if left.spatial ~= right.spatial then return left.spatial < right.spatial end
+                return left.index < right.index
+            end)
+            scope.query_points = {}
+            for index = 1, math.min(3, #candidates) do scope.query_points[index] = candidates[index].location end
+            scope.candidate_details = nil
+        end)
+        if not recorded then return false, record_error end
+    end
     return true, summary
 end
 
 function Bridge:_capture_probe_prerequisites(manager, base)
     local observed, observer_error = self:_prepare_probe_handoff(manager)
     if not observed then return false, observer_error end
-    local grouped, summary, biomes = self:_probe_group_inventory(manager)
+    local test = self.event_nearest_test
+    local route = test and NativeExperiments.route(test.route)
+    local group = route and route.named_group and (test.group or NATIVE_PROBE_GROUP) or nil
+    local grouped, summary, biomes = self:_probe_group_inventory(manager, group)
     if not grouped then return false, summary end
     local sampled, geometry = self:_probe_spawn_inventory(manager, base, biomes)
     if not sampled then return false, geometry end
@@ -2124,6 +2302,42 @@ function Bridge:_log_dispatch_snapshot(diagnostic)
 end
 
 function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
+    if not self.experiments or dispatch_phase ~= "probe" then
+        return self:_dispatch_selected_base_core(base_id, dispatch_phase)
+    end
+    local previous = self.experiment_current
+    local called, result = self:_native_step("experiment-probe", function()
+        local allowed, reason = self:native_start_guard()
+        if not allowed then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = reason } end
+        local target, target_error = self:_resolve_dispatch_target(self.event_manager, base_id)
+        if not target then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = target_error } end
+        local test, control = self.event_nearest_test, self.event_native_control or {}
+        local route = test and (test.route or "debug") or "regular"
+        local specification = test and NativeExperiments.route(test.route)
+        if test and not specification then
+            return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = "native experiment route is invalid" }
+        end
+        local group = specification and specification.named_group and (test.group or NATIVE_PROBE_GROUP) or nil
+        local opened, scope = self:_open_native_observation(self.event_manager, self.event_world, target.base, base_id,
+            route, group, control.requestNumber, control.requesterUid)
+        if not opened then return end
+        self.experiment_current = scope
+        self.native_observer:workers(scope)
+        self:_experiment_detail("scope", { phase = "before", route = route }, scope)
+        local dispatched = self:_dispatch_selected_base_core(base_id, dispatch_phase)
+        if self.native_fault then return dispatched end
+        self:_experiment_detail("scope", { phase = "after",
+            code = (dispatched.status == "dispatch_call_failed" or dispatched.status == "dispatch_precondition_failed") and "rejected" or "returned" }, scope)
+        self.native_observer:sample(scope)
+        scope.query_points, scope.query_origin = nil, nil
+        return dispatched
+    end)
+    self.experiment_current = previous
+    if not called then return { baseId = base_id, phase = dispatch_phase, status = "dispatch_call_failed", error = result } end
+    return result
+end
+
+function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
     local allowed, reason = self:native_start_guard()
     if not allowed then return { baseId = base_id, status = "dispatch_quarantined", error = reason } end
     local manager = self.event_manager
@@ -2162,34 +2376,42 @@ function Bridge:_dispatch_selected_base(base_id, dispatch_phase)
     self.dispatching_base_id = base_id
     self.selection_open = true
     local ok, result
+    local test_route
     if self.event_nearest_test then
         local test = self.event_nearest_test
+        test_route = NativeExperiments.route(test.route)
         local current_id, target_error = self:_nearest_test_base(test.controller, test.world)
-        if current_id ~= base_id or current_id ~= test.baseId then
+        if not test_route then
+            ok, result = false, "native experiment route is invalid"
+        elseif current_id ~= base_id or current_id ~= test.baseId then
             ok, result = false, target_error or "requester moved away from the selected native-test base"
-        else
+        end
+    end
+    if ok ~= false then
+        if test_route and test_route.named_group then
+            local test = self.event_nearest_test
             local name_ok, group = self:_native_step("test-native-group", function()
                 local constructor = fname_constructor()
                 if not constructor then error("FName constructor unavailable", 0) end
-                return constructor(NATIVE_PROBE_GROUP)
+                return constructor(test.group or NATIVE_PROBE_GROUP)
             end)
             if name_ok then
                 ok, result = self:_native_call("debug-nearest-native", test.controller, "Debug_InvaderMarchForNearCamp", group, true)
             else
                 ok, result = false, group
             end
+        elseif (test_route and test_route.method == "RequestIncidentInvaderEnemy") or (not test_route and self.event_admin_override) then
+            ok, result = self:_native_call("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
+            if ok then
+                ok, result = self:_native_step("admin-admission-result", function()
+                    if type(result) ~= "boolean" then error("Unexpected native enemy-incident admission result", 0) end
+                    return result
+                end)
+                if ok and not result then ok, result = false, "Native enemy-incident request rejected the base; no invasion was accepted." end
+            end
+        else
+            ok, result = self:_native_call("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
         end
-    elseif self.event_admin_override then
-        ok, result = self:_native_call("admin-request-incident", manager, "RequestIncidentInvaderEnemy", target.nativeId, target.observer)
-        if ok then
-            ok, result = self:_native_step("admin-admission-result", function()
-                if type(result) ~= "boolean" then error("Unexpected native enemy-incident admission result", 0) end
-                return result
-            end)
-            if ok and not result then ok, result = false, "Native enemy-incident request rejected the base; no invasion was accepted." end
-        end
-    else
-        ok, result = self:_native_call("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
     end
     self.selection_open = false
     self.dispatching_base_id = nil

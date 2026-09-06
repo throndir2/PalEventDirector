@@ -344,6 +344,60 @@ return function(test, equal, truthy, native_fname_constructor)
         equal(bridge:_nearest_test_base(controller, world), nil)
     end)
 
+    test("explicit admission and march experiments stay on the same single target without fallback", function()
+        for _, route in ipairs({ "admission", "march" }) do
+            local calls = {}
+            local bridge = Bridge.new({ config = Config.defaults(), logger = {
+                info = function() end, error = function() end, preflight_breadcrumb = function() return true end,
+            } })
+            bridge.config.capabilities.startAllInvasions = true
+            bridge.registered, bridge.periodic_active, bridge.event_admin_override = true, true, true
+            local observer = { IsValid = function() return true end }
+            local manager = { IsValid = function() return true end,
+                RequestIncidentInvaderEnemy = function(_, id, value)
+                    equal(route, "admission"); equal(id, "fixed-guid"); equal(value, observer)
+                    calls[#calls + 1] = "admission"
+                    return false
+                end,
+                StartInvaderMarchForBaseCamp = function(_, id)
+                    equal(route, "march"); equal(id, "fixed-guid"); calls[#calls + 1] = "march"
+                end,
+                StartInvaderMarchAll = function() error("experiment widened its scope") end }
+            bridge.event_manager = manager
+            bridge.event_nearest_test = { route = route, baseId = "base", world = {}, controller = {
+                Debug_InvaderMarchForNearCamp = function() error("experiment fell back to the debug RPC") end,
+            } }
+            bridge._nearest_test_base = function() return "base" end
+            bridge._dispatch_snapshot = function()
+                return { worldInvaderEnabled = true, baseAvailable = true, baseIgnoreInvader = false,
+                    observerInvading = false, observerPathSearching = false, observerCoolTime = true, incidentForBase = false },
+                    { nativeId = "fixed-guid", observer = observer }
+            end
+            local result = bridge:_dispatch_selected_base("base", "probe")
+            equal(#calls, 1)
+            equal(result.status, route == "admission" and "dispatch_call_failed" or "probe_call_returned")
+            equal(bridge.probe_confirmed, false)
+        end
+    end)
+
+    test("inspection and navigation experiments remain admin-only under any-user start policy", function()
+        local director, replies = command_fixture()
+        local count = 0
+        director.bridge.inspect_native_control = function(_, principal, paths)
+            count = count + 1
+            equal(principal.uid, "fixture-admin")
+            equal(paths, true)
+            return true, { observation = 1, slots = 1, occupied = true, probeRadiusMatches2D = 1,
+                probeRadiusMatches3D = 1, probeNavigationNotDisabled = 1, probeNavigationChecked = 1,
+                completePaths = 0, pathQueries = 1 }
+        end
+        director:handle_chat({ uid = "ordinary", palworldAdmin = false, palworldAdminReadable = true }, "!siege inspect-native")
+        equal(count, 0)
+        director:handle_chat({ uid = "fixture-admin", palworldAdmin = true, palworldAdminReadable = true }, "!siege test-path")
+        equal(count, 1)
+        truthy(replies[#replies]:find("complete default-agent paths=0/1", 1, true))
+    end)
+
     test("nearest native validation narrows scope to one eligible requester base", function()
         local world = { IsValid = function() return true end, GetAddress = function() return 1 end }
         local manager = { IsValid = function() return true end, GetAddress = function() return 2 end, GetWorld = function() return world end }

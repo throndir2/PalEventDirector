@@ -2269,6 +2269,8 @@ end)
 dofile(join(root, "tests", "preflight-diagnostic.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "admin-control.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "native-probe-diagnostics.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "native-experiments.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "native-observer.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)
