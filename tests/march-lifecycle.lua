@@ -116,6 +116,65 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("an overdue native preparation timer never faults or bypasses the first-wave flag", function()
+        local now = 1000
+        fixture({ clock = function() return now end }, function(bridge, manager, base, stats)
+            local director, control, _, info = setup(bridge, manager, base, stats, function() return now end)
+            control.phase = "declare-on-call"
+            truthy(director:arm_start("test", "native", 0, true))
+            info.GetRemainInvadeStartRealTimeSeconds = function() return -4745581 end
+            control.phase = "attack"
+            now = 1005
+            director:tick()
+            equal(bridge.native_fault, nil)
+            equal(director.state.status, "starting")
+            equal(director.state.event.bases["fixture-base"].nativeProgress.phase, "preparing")
+            equal(director.state.event.bases["fixture-base"].nativeProgress.remainingSeconds, 0)
+            equal(director.state.event.confirmedBaseCount, 0)
+            info.bIsFirstWaveStarted = true
+            info.GetRemainInvadeStartRealTimeSeconds = function() error("inactive preparation timer was queried") end
+            now = 1010
+            director:tick()
+            equal(bridge.native_fault, nil)
+            equal(director.state.status, "active")
+            equal(director.state.event.confirmedBaseCount, 1)
+            equal(control.calls, 1)
+        end)
+    end)
+
+    test("invalid or excessively future preparation times still stop native observation", function()
+        for _, value in ipairs({ "invalid", 0 / 0, math.huge, -math.huge, 604801 }) do
+            local now = 1000
+            fixture({ clock = function() return now end }, function(bridge, manager, base, stats)
+                local director, control, _, info = setup(bridge, manager, base, stats, function() return now end)
+                control.phase = "declare-on-call"
+                truthy(director:arm_start("test", "native", 0, true))
+                info.GetRemainInvadeStartRealTimeSeconds = function() return value end
+                now = 1005
+                director:tick()
+                truthy(bridge.native_fault)
+                equal(director.state.event.confirmedBaseCount, 0)
+                equal(control.calls, 1)
+            end)
+        end
+    end)
+
+    test("an initializing enemy without group identities is pending rather than reported as old", function()
+        local now = 1000
+        fixture({ clock = function() return now end }, function(bridge, manager, base, stats)
+            local director, control, incident = setup(bridge, manager, base, stats, function() return now end)
+            truthy(director:arm_start("test", "native", 0, true))
+            control.phase = "attack"
+            incident.GroupGuid, incident.BroadcastGroupGuid = nil, nil
+            now = 1005
+            director:tick()
+            equal(director.state.event.bases["fixture-base"].nativeProgress.phase, "enemy-pending")
+            equal(director.state.event.confirmedBaseCount, 0)
+            equal(control.aliveCalls, 0)
+            equal(bridge.native_fault, nil)
+        end)
+    end)
+
     test("a lone visitor or pre-existing enemy never confirms the new public march request", function()
         for _, phase in ipairs({ "visitor", "existing" }) do
             local now = 1000

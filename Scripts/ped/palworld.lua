@@ -581,12 +581,14 @@ function Bridge:poll_invasion_progress()
                 if info_base and info_group and wanted[info_base] and self:_request_identity_is_new(info_base, info_group) then
                     first_wave = property(info, "bIsFirstWaveStarted")
                     if type(first_wave) ~= "boolean" then error("Native invasion progress state is unreadable", 0) end
-                    local time_ok, seconds = self:_native_call("progress-preparation-time", info, "GetRemainInvadeStartRealTimeSeconds")
-                    if not time_ok then return end
-                    if type(seconds) ~= "number" or seconds ~= seconds or math.abs(seconds) > 604800 then
-                        error("Native invasion progress state is unreadable", 0)
+                    if not first_wave then
+                        local time_ok, seconds = self:_native_call("progress-preparation-time", info, "GetRemainInvadeStartRealTimeSeconds")
+                        if not time_ok then return end
+                        if type(seconds) ~= "number" or seconds ~= seconds or math.abs(seconds) == math.huge or seconds > 604800 then
+                            error("Native invasion progress state is unreadable", 0)
+                        end
+                        remaining = math.max(0, math.ceil(seconds))
                     end
-                    remaining = math.max(0, math.ceil(seconds))
                 end
             end
         end
@@ -645,8 +647,10 @@ function Bridge:poll_invasion_progress()
                                     end
                                 end
                             end
-                        else
+                        elseif internal_id or broadcast_id then
                             result.phase = "pre-existing"
+                        else
+                            result.phase = "enemy-pending"
                         end
                     end
                 end
