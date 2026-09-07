@@ -19,8 +19,10 @@ local function layout_report(access, label)
             layout = label, actualFields = actual_count, expectedFields = expected_count,
         })
         for field_name, field in pairs(fields) do
+            local safe_name = type(field_name) == "string" and #field_name <= 96
+                and field_name:match("^[A-Za-z_][A-Za-z0-9_]*$") and not field_name:find(string.rep("%x", 32))
             access.logger:error("Native raid bootstrap field metadata", {
-                layout = label, field = expected[field_name] and field_name or "unexpected-field",
+                layout = label, field = safe_name and field_name or "withheld-field",
                 kind = FIELD_KINDS[field.kind] and field.kind or "unsupported",
                 offset = util.is_integer(field.offset) and math.abs(field.offset) < 1048576 and field.offset or -1,
             })
@@ -30,7 +32,7 @@ end
 
 local function expect_struct(field, name, expected, access)
     local owner = field:GetStruct()
-    if not access.valid(owner) or owner:GetFName():ToString() ~= name then error(SIGNATURE_ERROR, 0) end
+    if not access.valid(owner) or owner:GetFName():ToString():lower() ~= name:lower() then error(SIGNATURE_ERROR, 0) end
     return Layout.expect(owner, expected, access.valid, SIGNATURE_ERROR, layout_report(access, name))
 end
 

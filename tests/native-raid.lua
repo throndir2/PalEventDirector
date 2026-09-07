@@ -89,9 +89,9 @@ return function(test, equal, truthy)
                 return { Ticks = options.bad_clock and 1 or -clock_ticks }
             end)
             bind(library, "BeginDeferredActorSpawnFromClass", {
-                { "WorldContextObject", "ObjectProperty", 0 }, { "ActorClass", "ClassProperty", 8 },
+                { "WorldContextObject", "ObjectProperty", 0 }, { "actorClass", "ClassProperty", 8 },
                 { "SpawnTransform", "StructProperty", 16, transform },
-                { "CollisionHandlingOverride", options.old_enum_shape and "ByteProperty" or "EnumProperty", 112 },
+                { "collisionHandlingOverride", options.old_enum_shape and "ByteProperty" or "EnumProperty", 112 },
                 { "Owner", "ObjectProperty", 120 }, { "ReturnValue", "ObjectProperty", options.bad_signature and 640 or 128 },
             }, function(...)
                 equal(select("#", ...), 5, "the trailing nil Owner argument was dropped")

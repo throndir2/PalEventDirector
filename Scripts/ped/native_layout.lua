@@ -8,11 +8,13 @@ function Layout.fields(owner, maximum, valid, reason)
         return nil
     end)
     if #properties > maximum then error(reason, 0) end
-    local fields = {}
+    local fields, names = {}, {}
     for _, field in ipairs(properties) do
         if not valid(field) then error(reason, 0) end
         local name = field:GetFName():ToString()
-        if fields[name] then error(reason, 0) end
+        local key = name:lower()
+        if names[key] then error(reason, 0) end
+        names[key] = true
         fields[name] = { field = field, kind = field:GetClass():GetFName():ToString(), offset = field:GetOffset_Internal() }
     end
     return fields, #properties
@@ -23,15 +25,19 @@ function Layout.expect(owner, expected, valid, reason, mismatch)
     for _ in pairs(expected) do count = count + 1 end
     local fields, actual_count = Layout.fields(owner, math.max(count, 16), valid, reason)
     local matches = actual_count == count
+    -- FName equality ignores case; display casing can come from an earlier interned name.
+    local by_name, canonical = {}, {}
+    for name, field in pairs(fields) do by_name[name:lower()] = field end
     for name, specification in pairs(expected) do
-        local field = fields[name]
+        local field = by_name[name:lower()]
         if not field or field.kind ~= specification[1] or field.offset ~= specification[2] then matches = false end
+        canonical[name] = field
     end
     if not matches then
         if mismatch then mismatch(fields, expected, actual_count, count) end
         error(reason, 0)
     end
-    return fields
+    return canonical
 end
 
 return Layout
