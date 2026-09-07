@@ -5,7 +5,7 @@ local Config = require("ped.config")
 local logger = Logger.new({ breadcrumb_file_path = assert(arg[1]) })
 local env = {
     COMPUTERNAME = "IMOUTO",
-    PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = "24575149",
+    PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = "25080279",
     PAL_EVENT_DIRECTOR_UE4SS_TAG = "2281fa31",
     PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = "3.0.1",
 }

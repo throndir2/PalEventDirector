@@ -115,7 +115,7 @@ try {
       local Config = require("ped.config")
       local records = {}
       local env = {
-        COMPUTERNAME = "IMOUTO", PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = "24575149",
+        COMPUTERNAME = "IMOUTO", PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = "25080279",
         PAL_EVENT_DIRECTOR_UE4SS_TAG = "2281fa31", PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = "3.0.1",
       }
       local diagnostic = Diagnostic.new({

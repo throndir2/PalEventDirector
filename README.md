@@ -30,7 +30,7 @@ The primary admin command is `!siege start all-bounty [0-60 minutes]`. At `0`, e
 
 Normal starts now use the public `StartInvaderMarchForBaseCamp` route used by Endless Siege, with an eight-minute observation window for native declaration/preparation. A start callback or newly correlated executing enemy incident with live attackers confirms the assault; preparation, visitors and old incidents never do. `!siege test-native march` provides the same route at one base without bounty substitution or fanout. PED does not import Endless Siege's all-base/random retries or global startup cancellation.
 
-`!siege test-native blueprint` explicitly compares the current game's Blueprint handoff using a real per-base incident parameter object. It reports a returned incident separately from a confirmed raid and does not edit native incident maps. This single-base experiment is not a default-route change or an automatic direct-spawn fallback; see the [current-build Blueprint findings](docs/10-research-sources.md#current-build-executable-blueprint-inspection).
+On qualified dedicated build `25080279`, `!siege test-native blueprint` now initializes the game's real raid-state actor before native incident creation. It is a one-base, native-composition control at grade 1, with an immediate native start time and no bounty substitution. Native `BeginPlay` registers the actor and binds wave handlers; the game creates and registers the enemy incident. PED never calls the unsafe bare Blueprint handoff, manufactures a manager-map entry, or substitutes a dummy cleanup actor. Live enemy evidence is still required; see the [native lifecycle repair](docs/10-research-sources.md#native-raid-state-initialization-repair).
 
 Built-in profiles:
 

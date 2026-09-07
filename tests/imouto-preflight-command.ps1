@@ -10,7 +10,7 @@ try {
     New-Item -ItemType Directory -Path $deployRoot, $directory -Force | Out-Null
     Copy-Item (Join-Path $repository 'operations\imouto\Invoke-PalEventDirectorPreflight.ps1') $command
     [IO.File]::WriteAllText((Join-Path $deployRoot 'deployment.json'), (@{
-        deliveryProfile = 'preflight-diagnostic-only'; serverBuildId = '24575149'; preflightCommandSha256 = (Get-FileHash $command -Algorithm SHA256).Hash
+        deliveryProfile = 'preflight-diagnostic-only'; serverBuildId = '25080279'; preflightCommandSha256 = (Get-FileHash $command -Algorithm SHA256).Hash
     } | ConvertTo-Json))
     $queued = & $command -ServerRoot $serverRoot -SyntheticTestFixture -Preview
     if ($queued.Status -ne 'Queued' -or $queued.PreviewOnly -ne $true) { throw 'Preview did not queue the expected request.' }

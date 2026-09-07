@@ -71,7 +71,7 @@ try {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $InstallerFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
 
-    $absent = New-LauncherFixture -Name 'absent' -ManifestBuildId '' -DeploymentBuildId '24575149'
+    $absent = New-LauncherFixture -Name 'absent' -ManifestBuildId '' -DeploymentBuildId '25080279'
     try {
         & $absent.Launcher -ServerRoot $absent.ServerRoot -SyntheticTestFixture -ValidateOnly | Out-Null
         throw 'Absent build ID unexpectedly passed launcher validation.'
@@ -79,7 +79,7 @@ try {
         if ($_.Exception.Message -notmatch 'does not contain a server build ID') { throw }
     }
 
-    $mismatch = New-LauncherFixture -Name 'mismatch' -ManifestBuildId '24575149' -DeploymentBuildId '99999999'
+    $mismatch = New-LauncherFixture -Name 'mismatch' -ManifestBuildId '25080279' -DeploymentBuildId '99999999'
     try {
         & $mismatch.Launcher -ServerRoot $mismatch.ServerRoot -SyntheticTestFixture -ValidateOnly | Out-Null
         throw 'Mismatched build ID unexpectedly passed launcher validation.'
@@ -87,9 +87,9 @@ try {
         if ($_.Exception.Message -notmatch 'does not match the verified Steam manifest') { throw }
     }
 
-    $matching = New-LauncherFixture -Name 'matching' -ManifestBuildId '24575149' -DeploymentBuildId '24575149'
+    $matching = New-LauncherFixture -Name 'matching' -ManifestBuildId '25080279' -DeploymentBuildId '25080279'
     $result = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -ValidateOnly
-    if ($result.LaunchIntegrationReady -ne $true -or $result.ServerBuildId -ne '24575149' -or
+    if ($result.LaunchIntegrationReady -ne $true -or $result.ServerBuildId -ne '25080279' -or
         $result.DataDirectory -ne (Join-Path $matching.ServerRoot 'Pal\Saved\PalEventDirector') -or
         $result.EnvironmentScope -ne 'child-process-only') {
         throw 'Matching launcher validation returned the wrong launch contract.'
@@ -104,15 +104,15 @@ try {
         throw 'Laboratory launch unexpectedly required manual preflight.'
     }
 
-    $installerMatching = New-LauncherFixture -Name 'matching' -ManifestBuildId '24575149' `
-        -DeploymentBuildId '24575149' -Root $InstallerFixtureRoot
+    $installerMatching = New-LauncherFixture -Name 'matching' -ManifestBuildId '25080279' `
+        -DeploymentBuildId '25080279' -Root $InstallerFixtureRoot
     $installerResult = & $installerMatching.Launcher -ServerRoot $installerMatching.ServerRoot `
         -SyntheticTestFixture -ValidateOnly
     if ($installerResult.LaunchIntegrationReady -ne $true) {
         throw 'Launcher rejected the confined installer integration fixture.'
     }
 
-    $incomplete = New-LauncherFixture -Name 'incomplete' -ManifestBuildId '24575149' -DeploymentBuildId '24575149'
+    $incomplete = New-LauncherFixture -Name 'incomplete' -ManifestBuildId '25080279' -DeploymentBuildId '25080279'
     $incompleteRecordPath = Join-Path $incomplete.ServerRoot 'PalEventDirectorDeployments\deployment.json'
     $incompleteRecord = Get-Content $incompleteRecordPath -Raw | ConvertFrom-Json
     $incompleteRecord.sourceRevision = 'invalid'
@@ -124,7 +124,7 @@ try {
         if ($_.Exception.Message -notmatch 'deployment record is not for Pal Event Director') { throw }
     }
 
-    $tampered = New-LauncherFixture -Name 'tampered' -ManifestBuildId '24575149' -DeploymentBuildId '24575149'
+    $tampered = New-LauncherFixture -Name 'tampered' -ManifestBuildId '25080279' -DeploymentBuildId '25080279'
     [IO.File]::AppendAllText((Join-Path $tampered.ServerRoot 'PalServer.exe'), 'tampered')
     try {
         & $tampered.Launcher -ServerRoot $tampered.ServerRoot -SyntheticTestFixture -ValidateOnly | Out-Null
@@ -133,7 +133,7 @@ try {
         if ($_.Exception.Message -notmatch 'server bytes no longer match') { throw }
     }
 
-    $runtimeTampered = New-LauncherFixture -Name 'runtime-tampered' -ManifestBuildId '24575149' -DeploymentBuildId '24575149'
+    $runtimeTampered = New-LauncherFixture -Name 'runtime-tampered' -ManifestBuildId '25080279' -DeploymentBuildId '25080279'
     [IO.File]::AppendAllText((Join-Path $runtimeTampered.ServerRoot 'Pal\Binaries\Win64\ue4ss\UE4SS.dll'), 'tampered')
     try {
         & $runtimeTampered.Launcher -ServerRoot $runtimeTampered.ServerRoot -SyntheticTestFixture -ValidateOnly | Out-Null
@@ -142,7 +142,7 @@ try {
         if ($_.Exception.Message -notmatch 'UE4SS runtime bytes/API') { throw }
     }
 
-    $layoutTampered = New-LauncherFixture -Name 'layout-tampered' -ManifestBuildId '24575149' -DeploymentBuildId '24575149'
+    $layoutTampered = New-LauncherFixture -Name 'layout-tampered' -ManifestBuildId '25080279' -DeploymentBuildId '25080279'
     [IO.File]::AppendAllText((Join-Path $layoutTampered.ServerRoot 'Pal\Binaries\Win64\ue4ss\MemberVariableLayout.ini'), 'tampered')
     try {
         & $layoutTampered.Launcher -ServerRoot $layoutTampered.ServerRoot -SyntheticTestFixture -ValidateOnly | Out-Null
@@ -174,7 +174,7 @@ try {
         $started = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript
         if ($started.Started -ne $true -or -not (Test-Path $capturePath)) { throw 'Synthetic child did not run.' }
         $captured = Get-Content $capturePath -Raw | ConvertFrom-Json
-        if ($captured.buildId -ne '24575149' -or
+        if ($captured.buildId -ne '25080279' -or
             $captured.runtimeTag -ne '2281fa31' -or $captured.runtimeApi -ne '3.0.1' -or
             $captured.dataDirectory -ne (Join-Path $matching.ServerRoot 'Pal\Saved\PalEventDirector')) {
             throw 'Required launch variables did not reach the child process.'

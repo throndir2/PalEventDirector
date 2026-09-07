@@ -9,8 +9,8 @@ function M.defaults()
         schemaVersion = 3,
         mode = "laboratory",
         compatibility = {
-            requiredAdapter = "palworld-1.0.3-lab",
-            allowedServerBuildIds = json.array({ "24575149" }),
+            requiredAdapter = "palworld-build-25080279-lab",
+            allowedServerBuildIds = json.array({ "25080279" }),
             allowedUe4ssVersions = json.array(),
         },
         runtime = {

@@ -2,6 +2,7 @@ local util = require("ped.util")
 local json = require("ped.json")
 local filesystem = require("ped.filesystem")
 local NativeExperiments = require("ped.native_experiments")
+local version = require("ped.version")
 
 local Logger = {}
 Logger.__index = Logger
@@ -56,7 +57,7 @@ function Logger:preflight_breadcrumb(step, build_id, object_valid)
     -- Never stringify a native object/error or serialize a returned settings struct.
     if type(step) ~= "string" or not step:match("^%d+%-%d+%-[a-z0-9%-]+%.%a+$")
         or (not step:match("%.before$") and not step:match("%.after$"))
-        or build_id ~= "24575149" or type(object_valid) ~= "boolean"
+        or build_id ~= version.tested_server_build_id or type(object_valid) ~= "boolean"
         or type(self.breadcrumb_file_path) ~= "string" then
         return false
     end

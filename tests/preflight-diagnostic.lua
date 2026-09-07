@@ -14,7 +14,7 @@ return function(test, equal, truthy)
         local records, operations = {}, {}
         local env = {
             COMPUTERNAME = "IMOUTO",
-            PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = "24575149",
+            PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = "25080279",
             PAL_EVENT_DIRECTOR_UE4SS_TAG = "2281fa31",
             PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = "3.0.1",
         }
@@ -367,7 +367,7 @@ return function(test, equal, truthy)
         for index = 1, #records, 2 do
             local before, after = records[index], records[index + 1]
             equal(before.step:gsub("%.before$", ""), after.step:gsub("%.after$", ""))
-            equal(before.buildId, "24575149")
+            equal(before.buildId, "25080279")
             equal(type(before.objectValid), "boolean")
             equal(util.count(before), 3)
         end
@@ -551,14 +551,14 @@ return function(test, equal, truthy)
             level = "error", breadcrumb_file_path = "fixture.ndjson",
             filesystem = { append = function(_, line) output[#output + 1] = line; return true end },
         })
-        truthy(logger:preflight_breadcrumb("100-0001-manager-lookup.before", "24575149", true))
+        truthy(logger:preflight_breadcrumb("100-0001-manager-lookup.before", "25080279", true))
         local record = json.decode(output[1])
         equal(util.count(record), 3)
         equal(record.objectValid, true)
-        equal(record.buildId, "24575149")
+        equal(record.buildId, "25080279")
         local sentinel = setmetatable({}, { __tostring = function() error("sensitive value stringified") end })
-        equal(logger:preflight_breadcrumb(sentinel, "24575149", true), false)
-        equal(logger:preflight_breadcrumb("100-0002-test.after", "24575149", sentinel), false)
+        equal(logger:preflight_breadcrumb(sentinel, "25080279", true), false)
+        equal(logger:preflight_breadcrumb("100-0002-test.after", "25080279", sentinel), false)
         equal(#output, 1)
     end)
 

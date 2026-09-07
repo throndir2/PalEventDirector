@@ -401,7 +401,7 @@ function Director:_report_native_results(result)
     self:_chat(string.format("PED request #%d results: %d native call(s) returned; %d native false rejection(s); %s%d PED pre-call error(s); %d call/inspection error(s); %d skipped. Rejected is not the same as invalid.",
         event.requestNumber or 0, returned, rejected, no_incident_summary, precall, call_errors, skipped), event.requesterUid)
     local methods = { RequestIncidentInvaderEnemy = true, RequestIncidentInvaderEnemy_BP = true,
-        StartInvaderMarchForBaseCamp = true, Debug_InvaderMarchForNearCamp = true }
+        StartInvaderMarchForBaseCamp = true, Debug_InvaderMarchForNearCamp = true, FinishSpawningActor = true }
     local function value(item)
         if type(item) == "boolean" then return item and "yes" or "no" end
         if type(item) == "number" and item == math.floor(item) and item >= 0 and item <= 1000000 then return tostring(item) end
@@ -441,6 +441,9 @@ function Director:_report_native_results(result)
             end
         elseif request.status == "awaiting_probe_confirmation" then
             detail = "Not yet submitted: ordinary-user fanout is awaiting probe confirmation."
+        elseif native and native.raidStateInitialized == true then
+            detail = "Native raid state is initialized at control grade " .. value(native.grade)
+                .. "; Palworld now owns incident creation and waves. Live enemy evidence is still required."
         elseif native and native.incidentReturned == true then
             detail = method .. " returned an incident object; initialization and live enemy-start evidence are still required."
         else

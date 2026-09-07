@@ -52,7 +52,8 @@ local function boot()
     local command_directory_ok = path.ensure_directory(command_directory)
     if not command_directory_ok then error("Unable to create local preflight command directory") end
     local bridge = Bridge.new({ config = config, logger = logger, diagnostic_command_directory = command_directory,
-        observe_native_experiments = version.delivery_profile == "laboratory-native-test" })
+        observe_native_experiments = version.delivery_profile == "laboratory-native-test",
+        qualify_raid_layout = version.delivery_profile == "laboratory-native-test" and config.capabilities.startAllInvasions })
     local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger })
     bridge:attach_director(director)
     local registered, registration_error = bridge:register()

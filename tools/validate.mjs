@@ -28,7 +28,9 @@ const required = [
   'Scripts/ped/path.lua',
   'Scripts/ped/preflight_diagnostic.lua',
   'Scripts/ped/native_experiments.lua',
+  'Scripts/ped/native_layout.lua',
   'Scripts/ped/native_observer.lua',
+  'Scripts/ped/native_raid.lua',
   'Scripts/ped/diagnostic_ingress.lua',
   'Scripts/ped/rewards.lua',
   'Scripts/ped/scheduler.lua',
@@ -57,7 +59,7 @@ const required = [
   'tests/native-observer.lua',
   'tests/admin-native-policy.lua',
   'tests/march-lifecycle.lua',
-  'tests/blueprint-incident.lua',
+  'tests/native-raid.lua',
   'tests/preflight-failfast.lua',
   'tests/preflight-failfast.mjs',
   'tests/preflight-property-binding.mjs',
@@ -242,7 +244,7 @@ if (await exists('operations/imouto/Enable-PalEventDirectorLaboratory.ps1')) {
   const activation = await readFile(imoutoActivationPath, 'utf8');
   for (const requiredGuard of [
     "ExpectedUe4ssApiVersion = '3.0.1'",
-    "ExpectedBuildId = '24575149'",
+    "ExpectedBuildId = '25080279'",
     "AuthorizationPolicy = 'operatorOrPalworldAdmin'",
     "$NativeTest = $deployment.deliveryProfile -eq 'laboratory-native-test'",
     '$config.capabilities.chatCommands = $NativeTest',
@@ -392,7 +394,7 @@ if (!await exists(path.relative(root, luaRunner))) {
     }
     const lines = (await readFile(breadcrumbPath, 'utf8')).trim().split(/\r?\n/);
     const record = JSON.parse(lines[0]);
-    if (lines.length !== 1 || !record.step.endsWith('.before') || record.buildId !== '24575149' ||
+    if (lines.length !== 1 || !record.step.endsWith('.before') || record.buildId !== '25080279' ||
         typeof record.objectValid !== 'boolean' || Object.keys(record).sort().join(',') !== 'buildId,objectValid,step') {
       throw new Error('fail-fast breadcrumb was absent, unredacted, or incorrectly contained an after-marker');
     }

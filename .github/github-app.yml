@@ -15,6 +15,7 @@ instructions: |
   - The disposable world is already imported. Do not rerun its importer. Preserve interrupted events as recovery_required and never replay them.
 
   Gameplay testing and recovery:
+  - The current dedicated target is build 25080279. The bare RequestIncidentInvaderEnemy_BP experiment is retired: it spawned enemies without InvaderInfo and later crashed native cleanup. The repaired single-base control initializes the real APalInvaderInfo through deferred spawning and native BeginPlay; Palworld must own incident registration and wave handling.
   - In-game invasion commands must not require a manually completed stepped preflight. Authorized admins delegate gameplay policy to Palworld: log visitor/incident occupancy, busy/pathfinding/cooldown, world-enable and base availability/ignore flags, but do not use them as PED start vetoes. Ordinary users and schedules retain their configured policies.
   - Keep authentication, supported-runtime/call safety, valid exact targets, bounded work, durable recovery and truthful lifecycle correlation. Do not count an already-existing native group as success for a new request. Do not delete native incident entries or rewrite flags/timers to manufacture acceptance.
   - Detailed group/worker/spawn/path/signature inspection remains available explicitly; it must not be an extra unlock before an admin start. An admin all-target request must not depend on the first base accepting before other requested bases are submitted; stop further submissions on an actual native fault.

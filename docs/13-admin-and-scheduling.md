@@ -6,7 +6,7 @@
 
 Alpha.3 is a laboratory-only release. Its mutation preflight rejects any mode other than `laboratory`, and every capability is disabled in the generated configuration. It never requires a client mod: players connect with normal vanilla clients and use ordinary Palworld chat and server notices.
 
-On IMOUTO, the installed preparation command configures the attested profile while stopped. The `laboratory-native-test` profile enables chat/combat/invasion/substitution capabilities, with schedules and item grants disabled. The older isolated diagnostic profile disables all capabilities. Both preserve configuration backups and recovery evidence and pin build `24575149` / UE4SS API `3.0.1`. The local stepped helper is optional, not a gameplay unlock ceremony.
+On IMOUTO, the installed preparation command configures the attested profile while stopped. The `laboratory-native-test` profile enables chat/combat/invasion/substitution capabilities, with schedules and item grants disabled. The older isolated diagnostic profile disables all capabilities. Both preserve configuration backups and recovery evidence and pin build `25080279` / UE4SS API `3.0.1`. The local stepped helper is optional, not a gameplay unlock ceremony.
 
 The persistent configuration is `Pal/Saved/PalEventDirector/config.json` below the dedicated-server root, or the directory selected by `PAL_EVENT_DIRECTOR_DATA_DIR`. It is strict JSON, not JSONC. Stop the laboratory server before editing it and restart after every edit; configuration is loaded only at mod startup.
 
@@ -146,7 +146,7 @@ Public forms:
 | `operatorOrPalworldAdmin` | Either configured UID or current Palworld admin authentication; this is the default and the recommended IMOUTO policy. |
 | `anyUser` | Every player may use every privileged chat command. This legacy/private-server option also exposes cancel/resolve/abort/reset and should be selected deliberately. |
 
-Palworld admin authentication and PED operators are different. A player becomes a Palworld admin through Palworld's built-in administrator mechanism; PED reads only its validated result, `APalPlayerController.bAdmin`, from the server-side controller supplied by the chat callback. PED never reads `AdminPassword`, parses a password command, trusts a display name, or accepts a client-provided admin claim. The property is reflected as a replicated Boolean in the Palworld 1.0 Modding Kit and is runtime-gated to adapter `palworld-1.0.3-lab`, dedicated build `24575149`.
+Palworld admin authentication and PED operators are different. A player becomes a Palworld admin through Palworld's built-in administrator mechanism; PED reads only its validated result, `APalPlayerController.bAdmin`, from the server-side controller supplied by the chat callback. PED never reads `AdminPassword`, parses a password command, trusts a display name, or accepts a client-provided admin claim. The property is reflected as a replicated Boolean in the Palworld 1.0 Modding Kit and is runtime-gated to adapter `palworld-build-25080279-lab`, dedicated build `25080279`.
 
 The bridge reads `bAdmin` again for every command and retains no controller or authority cache. Admin logout or reconnect therefore uses the fresh controller state. A missing, throwing, non-Boolean, or otherwise ambiguous property produces a specific fail-closed denial under either policy that depends on Palworld admin state. Under the combined policy, an independently matching `operatorUids` entry remains sufficient. Every decision is audited with a masked stable UID; names never participate.
 
@@ -162,7 +162,7 @@ Privileged chat forms:
 | `!siege test-path` / `!ped test-path` | Explicit, bounded navigation experiment: at most three synchronous queries from nearby cached start points to the current base, using the requesting pawn and base navigation filter. No invasion is requested. |
 | `!siege test-native admission` / `!ped test-native admission` | Exactly one eligible current base through `RequestIncidentInvaderEnemy`. The game selects the native composition. Boolean acceptance still requires an actual start callback. |
 | `!siege test-native march` / `!ped test-native march` | Exactly one eligible current base through `StartInvaderMarchForBaseCamp`, preserving the native method's own behavior. No fallback and no fanout. |
-| `!siege test-native blueprint` / `!ped test-native blueprint` | Explicit current-build Blueprint handoff for one base, with a real `PalIncidentDynamicParameterInvader`, not a null parameter. Reports whether an incident was returned; actual live enemy evidence is still required. Does not edit native maps, retry, or fall back to spawning. |
+| `!siege test-native blueprint` / `!ped test-native blueprint` | Repaired native-state control for one base at grade 1. Deferred-spawns the real `APalInvaderInfo`, sets the exact base and authoritative current time, then finishes native initialization. Palworld owns wave dispatch, Blueprint incident creation, registration and cleanup. No direct Blueprint invocation, map edits, retry or fallback. |
 | `!siege test-native debug [group]` / `!ped test-native debug [group]` | Exactly one current target base through `Debug_InvaderMarchForNearCamp` with declaration skip. A bounded group-name string is passed to native selection even if PED has not found it in its table scan. Omission retains the stock Hunter control. |
 | `!siege test-native` / `!ped test-native` | Backward-compatible shorthand for the default debug control. All single-base experiments use native composition, no bounty substitution, and no fanout. |
 | `!siege experiments` | Prints the experimental command forms without running them. |
@@ -226,7 +226,7 @@ Profiles never resize Palworld's native member array. A transformation failure l
 |---|---|
 | `schemaVersion` | Must be integer `3`. |
 | `mode` | `laboratory` or `production`; alpha.3 invasion preflight permits only `laboratory`. |
-| `compatibility.requiredAdapter` | Must exactly match the runtime adapter, currently `palworld-1.0.3-lab`. |
+| `compatibility.requiredAdapter` | Must exactly match the runtime adapter, currently `palworld-build-25080279-lab`. |
 | `compatibility.allowedServerBuildIds` | Exact numeric Steam build IDs. Mutation requires at least one and also requires the process environment `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` to match. |
 | `compatibility.allowedUe4ssVersions` | Exact `major.minor.patch` values returned by `UE4SS.GetVersion()`. Mutation requires a non-empty exact-match list. Do not guess this value from an archive filename. |
 

@@ -1,4 +1,5 @@
 local Experiments = require("ped.native_experiments")
+local Layout = require("ped.native_layout")
 
 local Observer = {}
 Observer.__index = Observer
@@ -369,21 +370,7 @@ function Observer:sample(scope)
 end
 
 function Observer:checked_fields(owner, maximum)
-    local fields = {}
-    owner:ForEachProperty(function(field)
-        fields[#fields + 1] = field
-        if #fields > maximum then return true end
-        return nil
-    end)
-    if #fields > maximum then error("Native navigation signature is unsupported", 0) end
-    local result = {}
-    for _, field in ipairs(fields) do
-        if not self.a.valid(field) then error("Native navigation signature is unsupported", 0) end
-        local name = field:GetFName():ToString()
-        if result[name] then error("Native navigation signature is unsupported", 0) end
-        result[name] = { field = field, kind = field:GetClass():GetFName():ToString(), offset = field:GetOffset_Internal() }
-    end
-    return result, #fields
+    return Layout.fields(owner, maximum, self.a.valid, "Native navigation signature is unsupported")
 end
 
 function Observer:vector_width(field)

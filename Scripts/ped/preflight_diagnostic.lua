@@ -1,7 +1,7 @@
 local Diagnostic = {}
 Diagnostic.__index = Diagnostic
 
-local BUILD_ID = "24575149"
+local BUILD_ID = require("ped.version").tested_server_build_id
 local RUNTIME_TAG = "2281fa31"
 local RUNTIME_API = "3.0.1"
 local TOKEN = "confirm-disposable-readonly"
@@ -30,6 +30,10 @@ local ERROR_SIGNATURES = {
     { text = "Blueprint incident signature is unsupported", code = "blueprint-incident-signature" },
     { text = "Blueprint incident parameter is unavailable", code = "blueprint-incident-parameter" },
     { text = "Blueprint incident result has unexpected scope", code = "blueprint-incident-scope" },
+    { text = "Native raid bootstrap signature is unsupported", code = "raid-bootstrap-signature" },
+    { text = "Native raid bootstrap scope is invalid", code = "raid-bootstrap-scope" },
+    { text = "Native raid state did not initialize", code = "raid-bootstrap-initialization" },
+    { text = "Native raid clock is unreadable", code = "raid-bootstrap-clock" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 local TARGET_FAILURES = {
@@ -44,6 +48,7 @@ local TARGET_FAILURES = {
     ["observer-id-unreadable"] = "The observer's TargetBaseCampID could not be read.",
     ["observer-id-mismatch"] = "The observer's TargetBaseCampID no longer matches the selected base.",
     ["model-id-mismatch"] = "The base model's GetId no longer matches the selected base.",
+    ["raid-state-already-exists"] = "A native raid-state actor already exists. Initializing another would replace its ownership; no actor or incident was created.",
 }
 
 local function failure_detail(value)

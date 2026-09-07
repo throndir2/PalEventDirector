@@ -235,13 +235,13 @@ test("bridge environment preflight distinguishes absent matching and mismatched 
         truthy(environment_error:match("not allowlisted: 99999999"))
 
         os.getenv = function(name)
-            if name == "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID" then return "24575149" end
+            if name == "PAL_EVENT_DIRECTOR_SERVER_BUILD_ID" then return "25080279" end
             return previous_getenv(name)
         end
         local details
         ok, details = bridge:preflight_environment()
         truthy(ok, details)
-        equal(details.serverBuildId, "24575149")
+        equal(details.serverBuildId, "25080279")
         equal(details.ue4ssVersion, "3.0.1")
     end, debug.traceback)
     os.getenv = previous_getenv
@@ -2274,7 +2274,7 @@ dofile(join(root, "tests", "native-experiments.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "native-observer.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "admin-native-policy.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "march-lifecycle.lua"))(test, equal, truthy)
-dofile(join(root, "tests", "blueprint-incident.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "native-raid.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)

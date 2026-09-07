@@ -18,7 +18,8 @@ $ErrorActionPreference = 'Stop'
 
 $CanonicalServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer'
 $ExpectedAppId = '2394010'
-$ExpectedBuildId = '24575149'
+$ExpectedBuildId = '25080279'
+$ExpectedAdapter = 'palworld-build-25080279-lab'
 $ExpectedUe4ssApiVersion = '3.0.1'
 $ExpectedUe4ssDllSha256 = '21b691a69a20c0801f465369d4fcbca7d7444764022fac2a7e8edc7709ef92b8'
 
@@ -264,6 +265,9 @@ try { $config = $configText | ConvertFrom-Json }
 catch { throw "PED configuration is invalid JSON: $($_.Exception.Message)" }
 Assert-PedConfigSchema3 -Config $config
 if ([string]$config.mode -ne 'laboratory') { throw 'Laboratory activation requires laboratory mode.' }
+if ([string]$config.compatibility.requiredAdapter -notin @($ExpectedAdapter, 'palworld-1.0.3-lab')) {
+    throw 'Configuration adapter is not a recognized migration source for this deployment.'
+}
 
 $NativeTest = $deployment.deliveryProfile -eq 'laboratory-native-test'
 $PreparationAction = if ($NativeTest) {
@@ -285,6 +289,7 @@ if (-not $PSCmdlet.ShouldProcess(
     $backupPath = Join-Path $BackupRoot ('config-before-activation-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N') + '.json')
     Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -ErrorAction Stop
 
+    $config.compatibility.requiredAdapter = $ExpectedAdapter
     $config.compatibility.allowedServerBuildIds = @($VerifiedBuildId)
     $config.compatibility.allowedUe4ssVersions = @($ExpectedUe4ssApiVersion)
     $config.siegeLeague.chatStartPolicy = $AuthorizationPolicy
@@ -306,6 +311,7 @@ if (-not $PSCmdlet.ShouldProcess(
         [IO.File]::WriteAllText($temporary, (($config | ConvertTo-Json -Depth 30) + [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
         $verified = Get-Content $temporary -Raw | ConvertFrom-Json
         Assert-PedConfigSchema3 -Config $verified
+        if ([string]$verified.compatibility.requiredAdapter -ne $ExpectedAdapter) { throw 'Activation adapter migration failed.' }
         $gameplayCapabilities = @('chatCommands', 'observeCombat', 'observeInvasions', 'startAllInvasions', 'substituteBountyMembers')
         foreach ($capability in $gameplayCapabilities) {
             if ($verified.capabilities.$capability -ne $NativeTest) { throw "Preparation failed to configure $capability for the attested profile." }
@@ -323,6 +329,7 @@ if (-not $PSCmdlet.ShouldProcess(
         Status = $(if ($NativeTest) { 'LaboratoryTestEnabled' } else { 'PreflightDiagnosticsOnly' })
         ServerBuildId = $VerifiedBuildId
         Ue4ssApiVersion = $ExpectedUe4ssApiVersion
+        Adapter = $ExpectedAdapter
         ConfigSchema = 3
         AuthorizationPolicy = $AuthorizationPolicy
         EnabledCapabilities = $(if ($NativeTest) { $gameplayCapabilities -join ',' } else { '' })

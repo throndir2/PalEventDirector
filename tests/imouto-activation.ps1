@@ -24,14 +24,14 @@ try {
     $ue4ssHash = (Get-FileHash (Join-Path $Ue4ssRoot 'UE4SS.dll') -Algorithm SHA256).Hash
     [IO.File]::WriteAllText(
         (Join-Path $SteamAppsRoot 'appmanifest_2394010.acf'),
-        "`"AppState`"`r`n{`r`n`t`"appid`"`t`t`"2394010`"`r`n`t`"buildid`"`t`t`"24575149`"`r`n}`r`n")
+        "`"AppState`"`r`n{`r`n`t`"appid`"`t`t`"2394010`"`r`n`t`"buildid`"`t`t`"25080279`"`r`n}`r`n")
     [IO.File]::WriteAllText(
         (Join-Path $DeployRoot 'deployment.json'),
         (@{
             schemaVersion = 1
             packageName = 'PalEventDirector'
             deliveryProfile = 'preflight-diagnostic-only'
-            serverBuildId = '24575149'
+            serverBuildId = '25080279'
             ue4ssApiVersion = '3.0.1'
             ue4ssDllSha256 = $ue4ssHash
             activationPath = $Activation
@@ -76,6 +76,9 @@ try {
     }
     Copy-Item $DefaultConfig $ConfigPath -Force
     $zeroCountdown = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    $zeroCountdown.compatibility.requiredAdapter = 'palworld-1.0.3-lab'
+    $zeroCountdown.compatibility.allowedServerBuildIds = @('24575149')
+    $zeroCountdown.siegeLeague.leaderboardSize = 7
     $zeroCountdown.siegeLeague.manualCountdownMinutes = 0
     $zeroCountdown.siegeLeague.PSObject.Properties.Remove('nativeMarchStartSeconds')
     $zeroCountdown.compatibility.allowedUe4ssVersions = @('3.0.1')
@@ -103,12 +106,16 @@ try {
     if (@($config.schedules | ForEach-Object { $_ } | Where-Object { $_.enabled }).Count -ne 0) { throw 'Activation enabled a schedule.' }
     if ($config.siegeLeague.chatStartPolicy -ne 'operatorOrPalworldAdmin') { throw 'Activation selected the wrong policy.' }
     if ($config.siegeLeague.manualCountdownMinutes -ne 0) { throw 'Activation rejected or replaced a zero-minute manual countdown.' }
+    if ($config.compatibility.requiredAdapter -ne 'palworld-build-25080279-lab' -or
+        $config.siegeLeague.leaderboardSize -ne 7 -or $result.Adapter -ne 'palworld-build-25080279-lab') {
+        throw 'Activation did not migrate the old adapter while preserving unrelated configuration.'
+    }
     if ($config.siegeLeague.nativeMarchStartSeconds -ne 480 -or $result.NativeMarchStartSeconds -ne 480) {
         throw 'Activation did not add the public-march preparation window to the existing schema-3 config.'
     }
     $versions = @($config.compatibility.allowedUe4ssVersions | ForEach-Object { $_ })
     $builds = @($config.compatibility.allowedServerBuildIds | ForEach-Object { $_ })
-    if ($versions.Count -ne 1 -or $versions[0] -ne '3.0.1' -or $builds.Count -ne 1 -or $builds[0] -ne '24575149') {
+    if ($versions.Count -ne 1 -or $versions[0] -ne '3.0.1' -or $builds.Count -ne 1 -or $builds[0] -ne '25080279') {
         throw 'Activation wrote the wrong compatibility allowlists.'
     }
     foreach ($schedule in @($config.schedules | ForEach-Object { $_ })) {
@@ -119,6 +126,10 @@ try {
     }
     if ($result.RestartRequired -ne $true -or -not (Test-Path $result.ConfigBackup)) {
         throw 'Activation did not report restart/backup requirements.'
+    }
+    $original = Get-Content -LiteralPath $result.ConfigBackup -Raw | ConvertFrom-Json
+    if ($original.compatibility.requiredAdapter -ne 'palworld-1.0.3-lab') {
+        throw 'Activation failed to preserve the pre-migration adapter in its backup.'
     }
 
     $deploymentPath = Join-Path $DeployRoot 'deployment.json'

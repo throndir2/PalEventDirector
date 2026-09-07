@@ -4,6 +4,7 @@ local PreflightDiagnostic = require("ped.preflight_diagnostic")
 local DiagnosticIngress = require("ped.diagnostic_ingress")
 local NativeExperiments = require("ped.native_experiments")
 local NativeObserver = require("ped.native_observer")
+local NativeRaid = require("ped.native_raid")
 
 local Bridge = {}
 Bridge.__index = Bridge
@@ -95,10 +96,10 @@ local function call(object, method_name, ...)
     if not valid(object) then
         return false, "invalid object for " .. method_name
     end
-    local arguments = { ... }
+    local arguments = table.pack(...)
     local ok, result = pcall(function()
         local method = object[method_name]
-        return method(object, table.unpack(arguments))
+        return method(object, table.unpack(arguments, 1, arguments.n))
     end)
     return ok, result
 end
@@ -280,6 +281,7 @@ function Bridge.new(options)
         native_trace_ordinal = 0,
         native_trace_run = os.time(),
         diagnostic_command_directory = options.diagnostic_command_directory,
+        qualify_raid_layout = options.qualify_raid_layout == true,
         delivery_profile = options.delivery_profile or require("ped.version").delivery_profile,
     }, Bridge)
     if options.observe_native_experiments then
@@ -521,7 +523,12 @@ function Bridge:_confirm_native_start(base_id, group_id, invader_type, evidence,
         or not self.expected_bases[base_id] or not self.director
         or not self:_request_identity_is_new(base_id, group_id, incident) then return false end
     local request = self.request_windows[base_id]
-    if request.route == "blueprint" and not same_object(incident, request.blueprintIncident) then return false end
+    if request.route == "blueprint" then
+        local info = property(self.event_manager, "InvaderInfo")
+        if not valid(incident) or not same_object(info, request.raidInfo)
+            or guid_string(property(info, "BaseCampId")) ~= base_id
+            or guid_string(property(info, "BroadcastGroupId")) ~= group_id then return false end
+    end
     local event_base = self.director.state.event and self.director.state.event.bases[base_id]
     if not event_base or (event_base.groupId and event_base.groupId ~= group_id) then return false end
     local owned = self.owned_groups[group_id] == base_id
@@ -592,7 +599,6 @@ function Bridge:poll_invasion_progress()
             local id = ids[index]
             local result = { baseId = id, phase = "waiting" }
             local lookup_ok, incident = self:_native_step("progress-incident-lookup", function()
-                if wanted[id].blueprintIncident then return wanted[id].blueprintIncident end
                 local key = wanted[id].nativeId
                 if key == nil then error("Native invasion progress scope is unavailable", 0) end
                 -- Find throws for absent keys in this UE4SS pin; neither operation mutates the map.
@@ -1751,6 +1757,16 @@ function Bridge:register()
     local poll = function()
         if not self.periodic_active then return true end
         if not self.registered then return false end
+        if self.qualify_raid_layout then
+            self.qualify_raid_layout = false
+            local qualified = self:_native_step("raid-bootstrap-layout", function()
+                NativeRaid.prepare(self, { valid = valid })
+                self.logger:info("Native raid bootstrap layout qualified", {
+                    serverBuildId = require("ped.version").tested_server_build_id, mutation = false,
+                })
+            end)
+            if not qualified then return false end
+        end
         if self.director then
             local ok, tick_error = xpcall(function() self.director:tick() end, debug.traceback)
             if not ok then
@@ -2585,51 +2601,6 @@ function Bridge:_capture_system_incident_baseline(baseline, scope)
     end)
 end
 
-function Bridge:_blueprint_incident_parameter(base_id, target, scope)
-    local checked, reason = self:_native_step("blueprint-incident-signature", function()
-        local fn = self.event_manager.RequestIncidentInvaderEnemy_BP
-        if not valid(fn) or fn:type() ~= "UFunction" then error("Blueprint incident signature is unsupported", 0) end
-        local owner = fn:GetOuter()
-        if not valid(owner) or not owner:IsA("/Script/Engine.BlueprintGeneratedClass") then
-            error("Blueprint incident signature is unsupported", 0)
-        end
-        -- The cooked Blueprint also has one local pointer; it is not a fourth call argument.
-        local expected = { OccuredBaseCamp = 0, Parameter = 8, ReturnValue = 16, CallFunc_RequestIncident_ReturnValue = 24 }
-        local count = 0
-        fn:ForEachProperty(function(field)
-            count = count + 1
-            if count > 4 then return true end
-            if not valid(field) then error("Blueprint incident signature is unsupported", 0) end
-            local name = field:GetFName():ToString()
-            if expected[name] == nil or field:GetOffset_Internal() ~= expected[name]
-                or field:GetClass():GetFName():ToString() ~= "ObjectProperty" then
-                error("Blueprint incident signature is unsupported", 0)
-            end
-            expected[name] = nil
-            return nil
-        end)
-        if count ~= 4 or next(expected) ~= nil then error("Blueprint incident signature is unsupported", 0) end
-    end)
-    if not checked then return false, reason end
-    local captured, capture_error = self:_capture_system_incident_baseline(self.request_windows[base_id].baseline, scope)
-    if not captured then return false, capture_error end
-    return self:_native_step("blueprint-incident-parameter", function()
-        local class = self:_static_find("/Script/Pal.PalIncidentDynamicParameterInvader")
-        local construct = global("StaticConstructObject")
-        if not valid(class) or class:type() ~= "UClass" or type(construct) ~= "function" then
-            error("Blueprint incident parameter is unavailable", 0)
-        end
-        local parameter = construct(class, self.event_manager)
-        if not valid(parameter) or not parameter:IsA("/Script/Pal.PalIncidentDynamicParameterInvader")
-            or not same_object(parameter:GetOuter(), self.event_manager) then
-            error("Blueprint incident parameter is unavailable", 0)
-        end
-        parameter.TargetBaseCampID = target.nativeId
-        if guid_string(parameter.TargetBaseCampID) ~= base_id then error("Blueprint incident parameter is unavailable", 0) end
-        return parameter
-    end)
-end
-
 function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
     local allowed, reason = self:native_start_guard()
     if not allowed then return { baseId = base_id, status = "dispatch_quarantined", error = reason } end
@@ -2703,7 +2674,7 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
         observation = scope
     end
     local ok, result
-    local native_result
+    local native_result, dispatch_failure_code
     local function invoke(label, owner, method, ...)
         local called, returned = self:_native_call(label, owner, method, ...)
         native_result = { method = method, returned = called, returnKind = called and type(returned) or "error" }
@@ -2745,33 +2716,12 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
                 if ok and not result then ok, result = false, "Native enemy-incident request rejected the base; no invasion was accepted." end
             end
         elseif test_route and test_route.method == "RequestIncidentInvaderEnemy_BP" then
-            local prepared, parameter = self:_blueprint_incident_parameter(base_id, target, observation or self.experiment_current)
-            if not prepared then
-                ok, result = false, parameter
-            else
-                self.request_windows[base_id].blueprintParameter = parameter
-                self.blueprint_used = true
-                ok, result = invoke("blueprint-request-incident", manager, "RequestIncidentInvaderEnemy_BP", target.base, parameter)
-                if ok then
-                    local inspected, returned = self:_native_step("blueprint-incident-result", function()
-                        native_result.incidentReturned = valid(result)
-                        if not native_result.incidentReturned then return false end
-                        if not result:IsA("/Script/Pal.PalInvaderIncidentBase") then
-                            error("Blueprint incident result has unexpected scope", 0)
-                        end
-                        self.request_windows[base_id].blueprintIncident = result
-                        local scope = observation or self.experiment_current
-                        if scope then scope.returned_incident = result end
-                        local world_ok, world = self:_native_call("blueprint-incident-world", result, "GetWorld")
-                        if not world_ok then return end
-                        if not same_object(world, self.event_world) then error("Blueprint incident result has unexpected scope", 0) end
-                        return true
-                    end)
-                    if not inspected then ok, result = false, returned
-                    elseif returned ~= true then
-                        ok, result = false, "Blueprint handoff returned no incident. Its native incident-system request supplied no rejection reason."
-                    end
-                end
+            ok, result, dispatch_failure_code = NativeRaid.start(self, {
+                valid = valid, same = same_object, guid = guid_string, property = property,
+            }, base_id, target, observation or self.experiment_current)
+            if not dispatch_failure_code then
+                native_result = { method = "FinishSpawningActor", returned = ok,
+                    returnKind = ok and "userdata" or "error", raidStateInitialized = ok, grade = NativeRaid.control_grade }
             end
         else
             ok, result = invoke("start-invader-march", manager, "StartInvaderMarchForBaseCamp", target.nativeId)
@@ -2809,6 +2759,7 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
             before = before,
             after = after,
             inspectionError = inspection_error,
+            failureCode = dispatch_failure_code,
             native = native_result,
         }
     end

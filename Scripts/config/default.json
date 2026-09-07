@@ -2,9 +2,9 @@
   "schemaVersion": 3,
   "mode": "laboratory",
   "compatibility": {
-    "requiredAdapter": "palworld-1.0.3-lab",
+    "requiredAdapter": "palworld-build-25080279-lab",
     "allowedServerBuildIds": [
-      "24575149"
+      "25080279"
     ],
     "allowedUe4ssVersions": []
   },

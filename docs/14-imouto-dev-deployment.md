@@ -27,7 +27,7 @@ The sibling Palworld client directory is not a valid target. The installer requi
 
 - the target leaf directory is named `PalServer`;
 - the sibling Steam manifest is App ID `2394010`, Palworld Dedicated Server;
-- the manifest build is the validated build `24575149`;
+- the manifest build is the validated build `25080279`;
 - the dedicated-server executable and `Pal-WindowsServer.pak` match the validated hashes;
 - no process whose executable is below the dedicated-server root is running;
 - the target path does not traverse an NTFS reparse point;
@@ -44,35 +44,35 @@ The installer source lives at:
 operations\imouto\Install-PalEventDirectorImouto.ps1
 ```
 
-Because IMOUTO can read MIKO's files, no manual package-copy step is required. MIKO creates a standalone directory containing the installer, clean-build manifest, exact mod archive, and bundle provenance. Run `npm run build:imouto` after the clean artifact build. The resulting directory is named `dist\IMOUTO-<version>-<revision>`.
+Build locally from the current IMOUTO workspace checkout. Run `npm run build:imouto` after the clean artifact build. The resulting `dist\IMOUTO-<version>-<revision>` directory contains the installer, clean-build manifest, exact mod archive and bundle provenance. Do not build or deploy through the old MIKO share.
 
-When `ArtifactPath` is omitted, the bundled installer reads `manifest.json` beside itself and deploys the exact adjacent archive named by that manifest. This works through a UNC share or mapped drive and snapshots both files locally before extraction so a concurrent MIKO build cannot alter an in-progress install.
+When `ArtifactPath` is omitted, the bundled installer reads `manifest.json` beside itself and deploys the exact adjacent archive named by that manifest. It snapshots the inputs locally before extraction so a concurrent build cannot alter an in-progress install.
 
 For each revision:
 
-1. On MIKO, inventory all repository changes.
+1. On IMOUTO, read repository instructions and inventory all workspace changes.
 2. Run the complete test and static-validation gate.
 3. Commit and push the coherent revision to canonical `origin/main`.
 4. Verify local and remote canonical SHAs match.
 5. Build again from the clean pushed revision with `REQUIRE_CLEAN_BUILD=1`, then run `npm run build:imouto`.
-6. Stop only the IMOUTO dedicated server.
-7. From a PowerShell session on IMOUTO, invoke the installer through the MIKO share.
+6. Stop only the IMOUTO dedicated server and preserve private evidence. Standing authorization covers routine restarts without another permission/disconnect prompt.
+7. From PowerShell on IMOUTO, invoke the installer in the local workspace's generated bundle.
 8. Review the reported version, source revision, artifact SHA-256, and backup path.
 9. Run `PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1` after every install and confirm the configuration validation/mutation. Persistent capability values may survive an upgrade, but the installer deliberately reports them as requiring reactivation against the new deployment.
-10. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch to start only the diagnostic build. Do not use Steam Play; diagnostics require launcher-supplied build/runtime pins.
-11. Use the installed local preflight helper as described in [the diagnostic runbook](15-preflight-crash-diagnostics.md). Do not issue siege or native-all commands.
+10. Run `PalEventDirectorDeployments\Start-PalEventDirectorImouto.ps1 -ValidateOnly`, then use the same script without that switch. Do not use Steam Play; PED requires launcher-supplied build/runtime pins.
+11. Follow the installed profile's controls in [the diagnostic runbook](15-preflight-crash-diagnostics.md). The stepped preflight remains optional; ordinary admin starts do not require it. Never replay an interrupted request.
 
 The normal invocation needs no arguments when the repository is reached through the script path:
 
 ```powershell
-& '<MIKO repository share>\dist\IMOUTO-0.1.0-alpha.3-<revision>\Install-PalEventDirectorImouto.ps1'
+& '.\dist\IMOUTO-0.1.0-alpha.3-<revision>\Install-PalEventDirectorImouto.ps1'
 ```
 
-If PowerShell marks network scripts as remote, invoke the same file from a trusted PowerShell session with the appropriate local execution policy. Do not weaken machine-wide execution policy solely for this installer.
+Use a trusted local PowerShell session. Do not weaken machine-wide execution policy solely for this installer.
 
 The installer and generated launcher support the built-in Windows PowerShell 5.1 on IMOUTO. The startup banner suggesting a newer PowerShell release is informational; upgrading PowerShell is not required for deployment.
 
-## Diagnostic-only laboratory preparation
+## Laboratory preparation
 
 Ordinary installation does not auto-enable server mutation. To make the private IMOUTO laboratory work without hand-editing JSON, stop the server and run:
 
@@ -80,23 +80,17 @@ Ordinary installation does not auto-enable server mutation. To make the private 
 & 'D:\SteamLibrary\steamapps\common\PalServer\PalEventDirectorDeployments\Enable-PalEventDirectorLaboratory.ps1'
 ```
 
-The command requires explicit confirmation. It validates dedicated build `24575149`, the pinned UE4SS DLL/API `3.0.1`, deployment provenance, configuration schema 3, laboratory mode, command policy, and every mandatory warning offset. It creates a timestamped configuration backup and **disables**:
-
-- `chatCommands`;
-- `observeCombat`;
-- `observeInvasions`;
-- `startAllInvasions`; and
-- `substituteBountyMembers`.
-
-It preserves an approved future command policy, pins the verified build/runtime allowlists, disables every recurring schedule and diagnostic tracing hook, and leaves `grantItems=false`. Its result is `PreflightDiagnosticsOnly` with `NativeStartsQuarantined=True`. No JSON setting can re-enable starts in this revision.
+The command supports confirmation and can use `-Confirm:$false` under standing authorization. It validates dedicated build `25080279`, the pinned UE4SS DLL/API `3.0.1`, deployment provenance, configuration schema 3, laboratory mode, command policy, and every mandatory warning offset. It creates a timestamped configuration backup and migrates the recognized old `palworld-1.0.3-lab` adapter to `palworld-build-25080279-lab`; unknown adapter identities are rejected, and unrelated configuration/recovery files are preserved. For `laboratory-native-test`, it enables chat, combat/invasion observation, native starts and bounty substitution; for the isolated diagnostic profile it disables those capabilities. Recurring schedules and item grants stay disabled in both profiles.
 
 The activation validator accepts `siegeLeague.manualCountdownMinutes` from 0 through 60. Zero is an explicit immediate manual start; it does not alter the mandatory warning offsets retained on recurring schedules.
 
-After restart through the generated launcher, use the trusted local preflight helper. Player/chat commands are disabled; no admin password is requested by the diagnostic.
+Restart through the installed launcher. Native-test chat controls are available after startup; the read-only bootstrap layout qualification never starts an invasion. No admin password is requested by the diagnostic.
 
-`StartInvaderMarchForBaseCamp` is a native `void` function. A normal Lua return means only that UE4SS completed the invocation. PED first calls one deterministic selected probe base, records masked native state immediately before and after it, and waits for a correlated `BroadcastInvaderStart`. Only that callback produces `RAID STARTED` and permits fanout. If no probe callback arrives before `startDiscoverySeconds`, PED records `event_start_failed`, skips the remaining calls, and emits no rankings, normal results, or rewards.
+`StartInvaderMarchForBaseCamp` is a native `void` function. A normal Lua return is not raid confirmation. Admin all-target requests submit each intended target once; ordinary users/schedules retain confirmed-probe fanout. Public march and the explicit repaired `blueprint` control have an eight-minute default start window. No confirmed native enemies means no rankings or rewards. See the administration reference for exact current routing and state correlation.
 
-## One-time Production world seed
+## Historical one-time Production world seed
+
+The disposable world is already imported. This historical workflow and its old-build pins are not part of routine deployment; do not rerun its builder or importer.
 
 World data is intentionally separate from routine mod bundles because it contains private Production player data. From a clean, pushed MIKO revision, run `npm run build:world-seed`. The MIKO-only builder selects the newest managed daily backup that is at least ten minutes old, requires the nonempty settings file copied as the managed backup producer's final completion sentinel without reading or packaging its contents, verifies that the currently running Production process was launched after that snapshot, confirms every selected save predates the relaunch, reads the save files into immutable buffers, verifies they remain unchanged during the snapshot, and creates:
 
@@ -169,8 +163,8 @@ Repeated deployment is supported. Every run replaces only the Pal Event Director
 The current gate permits:
 
 - Palworld Dedicated Server App ID `2394010`;
-- server build ID `24575149`;
-- server pak SHA-256 `bffab47cbd3b3c6d14d616376d4e0b060b2429a5eb4c2022820d4f38d36a0770`;
+- server build ID `25080279`;
+- server pak SHA-256 `2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe`;
 - Okaetsu Palworld UE4SS tag `2281fa31`;
 - archive `UE4SS-Palworld-g2281fa31-zDev.zip`; and
 - archive SHA-256 `3b5c8ad11ed7983edde08412eac214222749e83e4b47f12476741c6c536bf060`.
