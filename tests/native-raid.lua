@@ -90,7 +90,8 @@ return function(test, equal, truthy)
             end)
             bind(library, "BeginDeferredActorSpawnFromClass", {
                 { "WorldContextObject", "ObjectProperty", 0 }, { "ActorClass", "ClassProperty", 8 },
-                { "SpawnTransform", "StructProperty", 16, transform }, { "CollisionHandlingOverride", "ByteProperty", 112 },
+                { "SpawnTransform", "StructProperty", 16, transform },
+                { "CollisionHandlingOverride", options.old_enum_shape and "ByteProperty" or "EnumProperty", 112 },
                 { "Owner", "ObjectProperty", 120 }, { "ReturnValue", "ObjectProperty", options.bad_signature and 640 or 128 },
             }, function(...)
                 equal(select("#", ...), 5, "the trailing nil Owner argument was dropped")
@@ -172,7 +173,7 @@ return function(test, equal, truthy)
     end)
 
     test("bootstrap ABI and clock errors stop before creating native actors", function()
-        for _, options in ipairs({ { bad_signature = true }, { bad_clock = true }, { unreadable_state = true } }) do
+        for _, options in ipairs({ { bad_signature = true }, { old_enum_shape = true }, { bad_clock = true }, { unreadable_state = true } }) do
             raid_fixture(options, function(bridge, state)
                 equal(bridge:_dispatch_selected_base("fixture-base", "probe").status, "dispatch_call_failed")
                 equal(state.spawns, 0); equal(state.finishes, 0)

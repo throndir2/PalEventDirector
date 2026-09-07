@@ -8,11 +8,30 @@ local SIGNATURE_ERROR = "Native raid bootstrap signature is unsupported"
 local SCOPE_ERROR = "Native raid bootstrap scope is invalid"
 local INITIALIZATION_ERROR = "Native raid state did not initialize"
 local INFO_CLASS = "/Script/Pal.PalInvaderInfo"
+local FIELD_KINDS = {
+    ObjectProperty = true, ClassProperty = true, StructProperty = true, ByteProperty = true,
+    EnumProperty = true, IntProperty = true, Int64Property = true, FloatProperty = true, DoubleProperty = true,
+}
+
+local function layout_report(access, label)
+    return function(fields, expected, actual_count, expected_count)
+        access.logger:error("Native raid bootstrap layout mismatch", {
+            layout = label, actualFields = actual_count, expectedFields = expected_count,
+        })
+        for field_name, field in pairs(fields) do
+            access.logger:error("Native raid bootstrap field metadata", {
+                layout = label, field = expected[field_name] and field_name or "unexpected-field",
+                kind = FIELD_KINDS[field.kind] and field.kind or "unsupported",
+                offset = util.is_integer(field.offset) and math.abs(field.offset) < 1048576 and field.offset or -1,
+            })
+        end
+    end
+end
 
 local function expect_struct(field, name, expected, access)
     local owner = field:GetStruct()
     if not access.valid(owner) or owner:GetFName():ToString() ~= name then error(SIGNATURE_ERROR, 0) end
-    return Layout.expect(owner, expected, access.valid, SIGNATURE_ERROR)
+    return Layout.expect(owner, expected, access.valid, SIGNATURE_ERROR, layout_report(access, name))
 end
 
 local function expect_transform(field, access)
@@ -35,10 +54,11 @@ local function expect_function(owner, method, expected, access)
     if not access.valid(fn) or fn:type() ~= "UFunction" or (fn:GetFunctionFlags() & 0x2400) ~= 0x2400 then
         error(SIGNATURE_ERROR, 0)
     end
-    return Layout.expect(fn, expected, access.valid, SIGNATURE_ERROR)
+    return Layout.expect(fn, expected, access.valid, SIGNATURE_ERROR, layout_report(access, method))
 end
 
 function Raid.prepare(bridge, access)
+    access.logger = bridge.logger
     local library = bridge:_static_find("/Script/Engine.Default__GameplayStatics")
     local class = bridge:_static_find(INFO_CLASS)
     local utility = bridge:_utility()
@@ -48,7 +68,7 @@ function Raid.prepare(bridge, access)
     end
     local begin = expect_function(library, "BeginDeferredActorSpawnFromClass", {
         WorldContextObject = { "ObjectProperty", 0 }, ActorClass = { "ClassProperty", 8 },
-        SpawnTransform = { "StructProperty", 16 }, CollisionHandlingOverride = { "ByteProperty", 112 },
+        SpawnTransform = { "StructProperty", 16 }, CollisionHandlingOverride = { "EnumProperty", 112 },
         Owner = { "ObjectProperty", 120 }, ReturnValue = { "ObjectProperty", 128 },
     }, access)
     expect_transform(begin.SpawnTransform.field, access)
