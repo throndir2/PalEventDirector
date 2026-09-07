@@ -4,7 +4,6 @@ return function(test, equal, truthy)
     local Experiments = require("ped.native_experiments")
     local Director = require("ped.director")
     local json = require("ped.json")
-    local clock_ticks = 1000000000
 
     local function name(value) return { ToString = function() return value end } end
     local function metadata(fields, struct_name)
@@ -65,7 +64,8 @@ return function(test, equal, truthy)
                 GetWorld = function()
                     return options.foreign_world and { IsValid = function() return true end, GetAddress = function() return 999 end } or stats.world
                 end,
-                bIsFirstWaveStarted = false, GetRemainInvadeStartRealTimeSeconds = function() return 0 end }
+                bIsFirstWaveStarted = false,
+                GetRemainInvadeStartRealTimeSeconds = function() return options.bad_clock and 10 or -1 end }
             local incident = { IsValid = function() return true end, GetAddress = function() return 851 end,
                 IsA = function() return true end, GetWorld = function() return stats.world end,
                 GetTargetCampModel = function() return base end, InvaderType = 1,
@@ -76,18 +76,13 @@ return function(test, equal, truthy)
                 { "Z", "DoubleProperty", 16 }, { "W", "DoubleProperty", 24 } }, "Quat")
             local transform = metadata({ { "Rotation", "StructProperty", 0, quat },
                 { "Translation", "StructProperty", 32, vector }, { "Scale3D", "StructProperty", 64, vector } }, "Transform")
-            local date = metadata({ { "Ticks", "Int64Property", 0 } }, "DateTime")
-            local span = metadata({ { "Ticks", "Int64Property", 0 } }, "Timespan")
             local library = { IsValid = function() return true end }
             local class = { IsValid = function() return true end, type = function() return "UClass" end,
                 GetFName = function() return name("PalInvaderInfo") end }
-            bind(bridge.utility, "CalcRealTimeDifferenceToNow", {
-                { "WorldContextObject", "ObjectProperty", 0 }, { "OriginalDate", "StructProperty", 8, date },
-                { "Offset", "StructProperty", 16, span }, { "ReturnValue", "StructProperty", 24, span },
-            }, function(world, original, offset)
-                equal(world, stats.world); equal(original.Ticks, 0); equal(offset.Ticks, 0)
-                return { Ticks = options.bad_clock and 1 or -clock_ticks }
-            end)
+            bridge.utility.CalcRealTimeDifferenceToNow = function() error("Bootstrap marshaled an opaque DateTime") end
+            local remaining = metadata({ { "ReturnValue", "FloatProperty", 0 } })
+            remaining.type = function() return "UFunction" end
+            remaining.GetFunctionFlags = function() return 0x400 end
             bind(library, "BeginDeferredActorSpawnFromClass", {
                 { "WorldContextObject", "ObjectProperty", 0 }, { "actorClass", "ClassProperty", 8 },
                 { "SpawnTransform", "StructProperty", 16, transform },
@@ -107,7 +102,7 @@ return function(test, equal, truthy)
                 { "ReturnValue", "ObjectProperty", 112 },
             }, function(actor)
                 equal(actor, info)
-                equal(info.StartRealTime.Ticks, clock_ticks)
+                equal(info.StartRealTime, nil, "Bootstrap rewrote an opaque DateTime")
                 equal(info.BaseCampId, "fixture-base")
                 equal(info.InvadeGrade, 1)
                 state.finishes = state.finishes + 1
@@ -116,6 +111,7 @@ return function(test, equal, truthy)
             end)
             bridge._static_find = function(_, path)
                 if path == "/Script/Engine.Default__GameplayStatics" then return library end
+                if path == "/Script/Pal.PalInvaderInfo:GetRemainInvadeStartRealTimeSeconds" then return remaining end
                 equal(path, "/Script/Pal.PalInvaderInfo")
                 return class
             end
@@ -172,8 +168,8 @@ return function(test, equal, truthy)
         end)
     end)
 
-    test("bootstrap ABI and clock errors stop before creating native actors", function()
-        for _, options in ipairs({ { bad_signature = true }, { old_enum_shape = true }, { bad_clock = true }, { unreadable_state = true } }) do
+    test("bootstrap ABI and state-read errors stop before creating native actors", function()
+        for _, options in ipairs({ { bad_signature = true }, { old_enum_shape = true }, { unreadable_state = true } }) do
             raid_fixture(options, function(bridge, state)
                 equal(bridge:_dispatch_selected_base("fixture-base", "probe").status, "dispatch_call_failed")
                 equal(state.spawns, 0); equal(state.finishes, 0)
@@ -194,11 +190,11 @@ return function(test, equal, truthy)
     end)
 
     test("failed native actor creation or registration cannot be retried or reported as a raid", function()
-        for _, options in ipairs({ { invalid_spawn = true }, { unregistered = true }, { foreign_world = true } }) do
+        for _, options in ipairs({ { invalid_spawn = true }, { unregistered = true }, { foreign_world = true }, { bad_clock = true } }) do
             raid_fixture(options, function(bridge, state)
                 equal(bridge:_dispatch_selected_base("fixture-base", "probe").status, "dispatch_call_failed")
                 equal(state.spawns, 1); equal(state.confirmations, 0)
-                if options.foreign_world or options.invalid_spawn then equal(state.finishes, 0) end
+                if options.foreign_world or options.invalid_spawn or options.bad_clock then equal(state.finishes, 0) end
                 truthy(bridge.native_fault)
                 equal(bridge:_dispatch_selected_base("fixture-base", "probe").status, "dispatch_quarantined")
                 equal(state.spawns, 1)

@@ -63,9 +63,8 @@ function Raid.prepare(bridge, access)
     access.logger = bridge.logger
     local library = bridge:_static_find("/Script/Engine.Default__GameplayStatics")
     local class = bridge:_static_find(INFO_CLASS)
-    local utility = bridge:_utility()
     if not access.valid(library) or not access.valid(class) or class:type() ~= "UClass"
-        or class:GetFName():ToString() ~= "PalInvaderInfo" or not access.valid(utility) then
+        or class:GetFName():ToString():lower() ~= "palinvaderinfo" then
         error(SCOPE_ERROR, 0)
     end
     local begin = expect_function(library, "BeginDeferredActorSpawnFromClass", {
@@ -79,14 +78,12 @@ function Raid.prepare(bridge, access)
         ReturnValue = { "ObjectProperty", 112 },
     }, access)
     expect_transform(finish.SpawnTransform.field, access)
-    local clock = expect_function(utility, "CalcRealTimeDifferenceToNow", {
-        WorldContextObject = { "ObjectProperty", 0 }, OriginalDate = { "StructProperty", 8 },
-        Offset = { "StructProperty", 16 }, ReturnValue = { "StructProperty", 24 },
-    }, access)
-    expect_struct(clock.OriginalDate.field, "DateTime", { Ticks = { "Int64Property", 0 } }, access)
-    expect_struct(clock.Offset.field, "Timespan", { Ticks = { "Int64Property", 0 } }, access)
-    expect_struct(clock.ReturnValue.field, "Timespan", { Ticks = { "Int64Property", 0 } }, access)
-    return { library = library, class = class, utility = utility }
+    local remaining = bridge:_static_find("/Script/Pal.PalInvaderInfo:GetRemainInvadeStartRealTimeSeconds")
+    if not access.valid(remaining) or remaining:type() ~= "UFunction"
+        or (remaining:GetFunctionFlags() & 0x2400) ~= 0x400 then error(SIGNATURE_ERROR, 0) end
+    Layout.expect(remaining, { ReturnValue = { "FloatProperty", 0 } }, access.valid, SIGNATURE_ERROR,
+        layout_report(access, "GetRemainInvadeStartRealTimeSeconds"))
+    return { library = library, class = class }
 end
 
 function Raid.start(bridge, access, base_id, target, scope)
@@ -108,15 +105,6 @@ function Raid.start(bridge, access, base_id, target, scope)
     end
     local captured, capture_error = bridge:_capture_system_incident_baseline(request.baseline, scope)
     if not captured then return false, capture_error end
-    local clock_ok, span = bridge:_native_call("raid-bootstrap-clock", bindings.utility,
-        "CalcRealTimeDifferenceToNow", bridge.event_world, { Ticks = 0 }, { Ticks = 0 })
-    if not clock_ok then return false, span end
-    local time_ok, ticks = bridge:_native_step("raid-bootstrap-clock-result", function()
-        local value = access.property(span, "Ticks")
-        if not util.is_integer(value) or value >= 0 then error("Native raid clock is unreadable", 0) end
-        return -value
-    end)
-    if not time_ok then return false, ticks end
     local transform = {
         Rotation = { X = 0, Y = 0, Z = 0, W = 1 },
         Translation = { X = 0, Y = 0, Z = 0 },
@@ -131,14 +119,20 @@ function Raid.start(bridge, access, base_id, target, scope)
         local world_ok, world = bridge:_native_call("raid-bootstrap-deferred-world", info, "GetWorld")
         if not world_ok then return end
         if not access.same(world, bridge.event_world) then error(SCOPE_ERROR, 0) end
-        -- These are the game's deferred-spawn inputs. BeginPlay owns registration and wave bindings.
-        info.StartRealTime = { Ticks = ticks }
+        -- Keep the fresh actor's default due time; DateTime is opaque to this Lua binding.
         info.BaseCampId = target.nativeId
         info.InvadeGrade = Raid.control_grade
-        if access.guid(info.BaseCampId) ~= base_id or access.property(info.StartRealTime, "Ticks") ~= ticks
-            or info.InvadeGrade ~= Raid.control_grade then error(INITIALIZATION_ERROR, 0) end
+        if access.guid(info.BaseCampId) ~= base_id or info.InvadeGrade ~= Raid.control_grade then error(INITIALIZATION_ERROR, 0) end
     end)
     if not initialized then return false, initialization_error end
+    local due_ok, remaining = bridge:_native_call("raid-bootstrap-due-time", info, "GetRemainInvadeStartRealTimeSeconds")
+    if not due_ok then return false, remaining end
+    local checked_time, time_error = bridge:_native_step("raid-bootstrap-due-result", function()
+        if type(remaining) ~= "number" or remaining ~= remaining or math.abs(remaining) == math.huge or remaining > 0 then
+            error("Native raid default start time is not immediately due", 0)
+        end
+    end)
+    if not checked_time then return false, time_error end
     bridge.blueprint_used = true
     local finished, actor = bridge:_native_call("raid-bootstrap-finish-spawning", bindings.library,
         "FinishSpawningActor", info, transform)

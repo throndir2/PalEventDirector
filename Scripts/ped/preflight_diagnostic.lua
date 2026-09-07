@@ -33,7 +33,7 @@ local ERROR_SIGNATURES = {
     { text = "Native raid bootstrap signature is unsupported", code = "raid-bootstrap-signature" },
     { text = "Native raid bootstrap scope is invalid", code = "raid-bootstrap-scope" },
     { text = "Native raid state did not initialize", code = "raid-bootstrap-initialization" },
-    { text = "Native raid clock is unreadable", code = "raid-bootstrap-clock" },
+    { text = "Native raid default start time is not immediately due", code = "raid-bootstrap-clock" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 local TARGET_FAILURES = {
