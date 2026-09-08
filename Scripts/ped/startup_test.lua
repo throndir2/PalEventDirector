@@ -36,6 +36,36 @@ function Test.read_state(directory, run_id, logger, fs)
     return Test.validate_state(last.state, run_id)
 end
 
+function Test.finalize_legacy_spawn(store, evidence)
+    local last = store.records[#store.records]
+    local previous = last and last.state
+    assert(previous, "No startup test state is available for finalization")
+    Test.validate_state(previous, previous.runId)
+    assert(previous.sourceRevision == "f671c2200ba6a83ba879e19c2b7acbf92d2fcbc8"
+        and previous.artifactSha256 == "de3f829239dda321796229d5b40274b9587a8fe7c17e764ab898b10a639d6643"
+        and previous.case == "spawn-cleanup" and previous.status == "failed" and previous.stage == "spawn"
+        and previous.code == "custom-assault-identity" and previous.spawned == 0
+        and previous.initialized == 0 and previous.mutationStarted and not previous.cleanupComplete,
+        "This startup failure is outside the audited legacy finalization scope")
+    local member = previous.members and previous.members[1]
+    assert(#previous.members == 1 and member.characterId == "BOSS_Hunter_Rifle" and member.level == 30
+        and member.spawnRequested == true and not member.instanceGuid, "Legacy spawn parameters do not match")
+    assert(type(evidence) == "table" and evidence.processExitVerified == true and evidence.runId == previous.runId
+        and evidence.certificateSha256 == "47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f"
+        and evidence.serverExecutableSha256 == "61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02"
+        and evidence.serverPakSha256 == "2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe",
+        "Verified old-process teardown and the pinned native certificate are required")
+    local state = util.deep_copy(previous)
+    state.status, state.code, state.cleanupComplete = "blocked", "legacy-runtime-finalized", true
+    state.failedArtifactSha256 = previous.artifactSha256
+    state.finalization = util.deep_copy(evidence)
+    state.finalization.disposition = "old-runtime-ended; ownership-transfers-preserved"
+    state.finalizedRequests = 1
+    local ok, reason = store:append("startup_legacy_runtime_finalized", { disposition = state.finalization.disposition }, state)
+    if not ok then return false, reason end
+    return store:save_snapshot(state)
+end
+
 function Test.new(options)
     local plan = assert(options.plan)
     assert(plan.schemaVersion == 1 and CASES[plan.case], "Startup test plan is invalid")
@@ -288,7 +318,8 @@ function Test.attach(bridge, data_directory, options)
         local previous = assert(Test.read_state(path.join(root, plan.previousRunId), plan.previousRunId, bridge.logger, fs),
             "Previous startup test has no durable outcome")
         assert(not previous.mutationStarted or previous.cleanupComplete, "Previous startup test retains uncertain entities")
-        assert(not ((previous.status == "failed" or previous.status == "running") and previous.artifactSha256 == plan.artifactSha256),
+        assert(previous.failedArtifactSha256 ~= plan.artifactSha256
+            and not ((previous.status == "failed" or previous.status == "running") and previous.artifactSha256 == plan.artifactSha256),
             "Failed startup tests cannot repeat on the same artifact")
     end
     local store = Store.new(directory, bridge.logger, fs)

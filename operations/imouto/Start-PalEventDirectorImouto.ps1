@@ -272,7 +272,9 @@ if ($StartupTest -ne 'None') {
         if ($previousTest.mutationStarted -and -not $previousTest.cleanupComplete) {
             throw 'A previous startup test retains uncertain spawned entities; no new mutation test may start.'
         }
-        if ($previousTest.status -in @('failed', 'running') -and $previousTest.artifactSha256 -eq $deployment.artifactSha256) {
+        $failedArtifact = $previousTest.PSObject.Properties['failedArtifactSha256']
+        if (($null -ne $failedArtifact -and $failedArtifact.Value -eq $deployment.artifactSha256) -or
+            ($previousTest.status -in @('failed', 'running') -and $previousTest.artifactSha256 -eq $deployment.artifactSha256)) {
             throw 'Do not retry the failed/interrupted startup test on the same artifact.'
         }
     }

@@ -172,4 +172,31 @@ return function(test, equal, truthy)
         truthy(bridge.startup_quarantine)
         equal(Startup.read_state(directory,"fixture-run",logger,fs).cleanupComplete,false)
     end)
+
+    test("legacy finalization requires audited parameters and verified full-process exit", function()
+        local original = { schemaVersion=1,runId="legacy-run",case="spawn-cleanup",
+            sourceRevision="f671c2200ba6a83ba879e19c2b7acbf92d2fcbc8",
+            artifactSha256="de3f829239dda321796229d5b40274b9587a8fe7c17e764ab898b10a639d6643",
+            status="failed",stage="spawn",code="custom-assault-identity",mutationStarted=true,cleanupComplete=false,
+            spawned=0,initialized=0,moved=0,cleaned=0,members={{characterId="BOSS_Hunter_Rifle",level=30,spawnRequested=true}} }
+        local written
+        local store = {records={{state=original}},append=function(_,kind,_,state)
+            equal(kind,"startup_legacy_runtime_finalized"); written=state; return true end,
+            save_snapshot=function() return true end}
+        local proof = {runId="legacy-run",processExitVerified=false,
+            certificateSha256="47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f",
+            serverExecutableSha256="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02",
+            serverPakSha256="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"}
+        equal(pcall(Startup.finalize_legacy_spawn,store,proof),false)
+        equal(written,nil)
+        proof.processExitVerified=true
+        truthy(Startup.finalize_legacy_spawn(store,proof))
+        equal(written.status,"blocked")
+        equal(written.cleanupComplete,true)
+        equal(written.failedArtifactSha256,original.artifactSha256)
+        equal(original.cleanupComplete,false)
+        equal(written.spawned,0)
+        original.members[1].characterId="unrelated-character"
+        equal(pcall(Startup.finalize_legacy_spawn,store,proof),false)
+    end)
 end

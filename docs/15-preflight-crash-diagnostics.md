@@ -10,6 +10,8 @@ Each launch creates a fresh private `Pal\Saved\PalEventDirector\startup-tests\<r
 
 Native character creation has three separate milestones: a returned handle, an assigned nonzero individual ID, then an initialized actor. On the dedicated path the handle's ID can initially be zero while a creation continuation is queued. Retain that original handle and poll boundedly; do not treat a pending ID as a failed spawn or issue another spawn. Persist the full ID as soon as assigned, before actor readiness. A missing ID return structure is a different binding failure, not a valid pending ID.
 
+The first `f671c22` smoke test predates that correction. Its narrowly scoped recovery can append a runtime-finalization disposition only after verified old-process/world termination and the pinned native persistence certificate. It does not identify/delete an NPC by name, clear the original failure history, erase world effects or remove legitimately transferred ownership. The original faulty artifact remains prohibited from replay.
+
 A fault ends that run. Uncertain spawned entities block another mutation test and ordinary native starts. A failed/interrupted test without mutations cannot be retried on the same artifact; investigate and deploy a corrected attested build. These server-side scenarios do not yet establish player attribution, captures, loot pickup or client replication.
 
 ## Simultaneous custom assault boundary
