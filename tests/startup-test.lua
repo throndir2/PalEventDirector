@@ -326,4 +326,26 @@ return function(test, equal, truthy)
         original.members[1].characterId="unrelated-character"
         equal(pcall(Startup.finalize_legacy_spawn,store,proof),false)
     end)
+
+    test("support-only crash finalization preserves failure and rejects any NPC intent", function()
+        local state = {schemaVersion=1,runId="support-crash",case="two-base-movement",status="running",stage="support-wait",
+            sourceRevision="122eea9932ff9bd8286277a2525d9d78828de601",
+            artifactSha256="c60075ba179ef7d5d01f493b8cf9b13fa191ceb4aad967a0f8e3865d8c57f30f",
+            mutationStarted=true,cleanupComplete=false,spawned=0,initialized=0,moved=0,cleaned=0,members={},
+            helpersCreated=2,helpersCleaned=0}
+        local proof = {runId="support-crash",processExitVerified=true,
+            dumpSha256="d9e0840ab4d5d1f3e375daba5f47bb85eea46b49b28377b5ceeb184bd872985a",
+            serverExecutableSha256="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02",
+            serverPakSha256="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"}
+        local written
+        local store = {records={{kind="startup_support_observation",state=state}},
+            append=function(_,kind,_,value) equal(kind,"startup_support_runtime_finalized"); written=value; return true end,
+            save_snapshot=function() return true end}
+        truthy(Startup.finalize_support_only(store,proof))
+        equal(written.helpersCleaned,0); equal(written.helpersFinalized,2)
+        equal(written.status,"blocked"); equal(written.cleanupComplete,true)
+        equal(state.cleanupComplete,false)
+        store.records[1].kind="startup_spawn_intent"
+        equal(pcall(Startup.finalize_support_only,store,proof),false)
+    end)
 end

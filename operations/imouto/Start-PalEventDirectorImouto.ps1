@@ -259,8 +259,10 @@ function Read-StartupTestOutcome {
         ($state.status -notin @('passed','blocked') -or $state.cleaned -ne $state.spawned)) {
         throw 'Startup test cleanup outcome is inconsistent.'
     }
+    $finalizedHelpers = 0
+    if ($null -ne $state.PSObject.Properties['helpersFinalized']) { $finalizedHelpers = $state.helpersFinalized }
     if ($state.cleanupComplete -and $null -ne $state.PSObject.Properties['helpersCreated'] -and
-        $state.helpersCreated -ne $state.helpersCleaned) { throw 'Startup support cleanup is incomplete.' }
+        $state.helpersCreated -ne ($state.helpersCleaned + $finalizedHelpers)) { throw 'Startup support cleanup is incomplete.' }
     $state
 }
 $previousTestRunId = $null

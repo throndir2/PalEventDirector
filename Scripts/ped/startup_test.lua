@@ -25,7 +25,7 @@ function Test.validate_state(state, run_id)
     if state.cleanupComplete and state.mutationStarted then
         assert((state.status == "passed" or state.status == "blocked") and state.cleaned == state.spawned,
             "Startup test cleanup outcome is inconsistent")
-        assert((state.helpersCreated or 0) == (state.helpersCleaned or 0), "Startup support cleanup is incomplete")
+        assert((state.helpersCreated or 0) == (state.helpersCleaned or 0) + (state.helpersFinalized or 0), "Startup support cleanup is incomplete")
     end
     return state
 end
@@ -63,6 +63,34 @@ function Test.finalize_legacy_spawn(store, evidence)
     state.finalization.disposition = "old-runtime-ended; ownership-transfers-preserved"
     state.finalizedRequests = 1
     local ok, reason = store:append("startup_legacy_runtime_finalized", { disposition = state.finalization.disposition }, state)
+    if not ok then return false, reason end
+    return store:save_snapshot(state)
+end
+
+function Test.finalize_support_only(store, evidence)
+    local last = store.records[#store.records]
+    local previous = last and last.state
+    assert(previous, "No startup support state is available")
+    Test.validate_state(previous, previous.runId)
+    assert(previous.sourceRevision == "122eea9932ff9bd8286277a2525d9d78828de601"
+        and previous.artifactSha256 == "c60075ba179ef7d5d01f493b8cf9b13fa191ceb4aad967a0f8e3865d8c57f30f"
+        and previous.case == "two-base-movement" and previous.status == "running" and previous.stage == "support-wait"
+        and previous.spawned == 0 and previous.initialized == 0 and #previous.members == 0
+        and previous.helpersCreated == 2 and previous.mutationStarted and not previous.cleanupComplete,
+        "This failure is outside the audited support-only finalization scope")
+    for _, record in ipairs(store.records) do assert(record.kind ~= "startup_spawn_intent", "NPC work prevents support-only finalization") end
+    assert(type(evidence) == "table" and evidence.processExitVerified == true and evidence.runId == previous.runId
+        and evidence.dumpSha256 == "d9e0840ab4d5d1f3e375daba5f47bb85eea46b49b28377b5ceeb184bd872985a"
+        and evidence.serverExecutableSha256 == "61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02"
+        and evidence.serverPakSha256 == "2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe",
+        "Verified crashed-world exit and pinned support-only evidence are required")
+    local state = util.deep_copy(previous)
+    state.status, state.code, state.cleanupComplete = "blocked", "support-runtime-finalized", true
+    state.failedArtifactSha256 = previous.artifactSha256
+    state.helpersFinalized = previous.helpersCreated - previous.helpersCleaned
+    state.finalization = util.deep_copy(evidence)
+    state.finalization.disposition = "noncharacter-support-world-ended"
+    local ok, reason = store:append("startup_support_runtime_finalized", {disposition=state.finalization.disposition}, state)
     if not ok then return false, reason end
     return store:save_snapshot(state)
 end
