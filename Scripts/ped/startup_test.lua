@@ -154,7 +154,8 @@ function Test:_tick()
         for index, scope in ipairs(self.scopes) do
             self.state.members[index] = { index = index, baseId = scope.baseId,
                 groupId = "startup:" .. self.state.runId, slot = 1, characterId = "BOSS_Hunter_Rifle",
-                level = 30, phase = "planned" }
+                level = 30, phase = "planned", spawnLocation = scope.positions and util.shallow_copy(scope.positions[1]) or nil,
+                baseOrigin = util.shallow_copy(scope.origin), leashRadius = scope.leashRadius }
         end
         return self:_stage("spawn")
     elseif stage == "spawn" then
@@ -191,12 +192,16 @@ function Test:_tick()
             end
             member.phase = observation.phase
             member.waitingOn = observation.waitingOn
+            member.scopeReason = observation.scopeReason
+            member.distanceFromBase, member.heightFromBase = observation.distanceFromBase, observation.heightFromBase
+            if observation.location then member.lastLocation = util.shallow_copy(observation.location) end
             if observation.phase == "alive" then
                 ready = ready + 1
                 if not member.initialized then
                     member.initialized, member.healthBudget = true, observation.healthBudget
                     member.targetId = observation.targetId
                     runtime.initialLocation = util.shallow_copy(observation.location)
+                    member.initialLocation = util.shallow_copy(observation.location)
                     self.state.initialized = self.state.initialized + 1
                     if not self:_save("startup_member_initialized") then return end
                 end

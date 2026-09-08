@@ -425,11 +425,13 @@ function Native:_owned_state(handle, member)
     record.actor, record.parameter, record.handle, record.initialized = actor, parameter, current, true
     if active and not dead then
         local location = vector(self:_call("actor-location", actor, "K2_GetActorLocation"))
-        if distance_squared(location, record.scope.origin) > record.scope.leashRadius ^ 2 then state.phase = "escaped" end
+        state.distanceFromBase = math.sqrt(distance_squared(location, record.scope.origin))
+        state.heightFromBase = location.Z - record.scope.origin.Z
+        if state.distanceFromBase > record.scope.leashRadius then state.phase, state.scopeReason = "escaped", "outside-leash" end
         state.location = location
         local scoped = self:_combat_targets_scoped(actions, record.scope)
         if scoped == false then
-            state.phase = "escaped"
+            state.phase, state.scopeReason = "escaped", "combat-target"
         elseif scoped == nil then
             local now = self.bridge.clock()
             if not finite(now) then error(SCOPE, 0) end
@@ -438,7 +440,7 @@ function Native:_owned_state(handle, member)
                 self.bridge.logger:info("Custom attacker combat scope is awaiting evidence", { member = member.index })
             end
             if now >= record.combatPendingAt + self.bridge.config.customAssault.initializationSeconds then
-                state.phase = "escaped"
+                state.phase, state.scopeReason = "escaped", "combat-state-timeout"
             elseif state.phase ~= "escaped" then
                 state.phase = "inactive"
             end
