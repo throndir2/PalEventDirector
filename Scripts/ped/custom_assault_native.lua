@@ -247,13 +247,14 @@ function Native:startup_prepare(count)
         self.navigationLibrary = self.bridge:_static_find("/Script/NavigationSystem.Default__NavigationSystemV1")
         if not self.a.valid(self.navigationLibrary) then error(SCOPE, 0) end
         local scopes = {}
-        local physical = { sampled = 0, floor = 0, spawnNav = 0, goalNav = 0 }
+        local physical = { sampled = 0, floor = 0, centerFloor = 0, spawnNav = 0, goalNav = 0 }
         for _, id in ipairs(ids) do
             local target, reason = self.bridge:_resolve_dispatch_target(manager, id)
             if not target then error(reason, 0) end
             local scope = self:prepare_base(id, target, world, {})
             if not scope.unavailable then
                 physical.sampled = physical.sampled + 1
+                if self:startup_floor(world, scope.origin) then physical.centerFloor = physical.centerFloor + 1 end
                 local floor = self:startup_floor(world, scope.positions[1])
                 if floor then
                     physical.floor = physical.floor + 1
