@@ -168,7 +168,6 @@ function Test:_tick()
         self.state.physical = result.physical
         self.state.availableBases = result.availableBases
         if result.blockedCode then
-            if self.state.case ~= "prewarm" then return self:_finish("blocked", result.blockedCode) end
             self.scopes = result.candidates
             if type(self.scopes) ~= "table" or #self.scopes ~= CASES[self.state.case] then return self:_finish("blocked", result.blockedCode) end
             self.support = self.engine:startup_support(self.scopes)
@@ -212,7 +211,8 @@ function Test:_tick()
         end
         if ready == self.state.helpersCreated then
             self.state.physicalPrewarmPassed = true
-            return self:_stage("support-cleanup")
+            if self.state.case == "prewarm" then return self:_stage("support-cleanup") end
+            return self:_plan_members()
         end
         if now >= self.state.stageStartedAt + 120 then
             self.state.failure = "physical-prewarm-timeout"
