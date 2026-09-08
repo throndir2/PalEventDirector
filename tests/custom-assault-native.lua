@@ -587,6 +587,15 @@ return function(test, equal, truthy)
             equal(engine:startup_nav(engine.world,point),nil)
             f.nav_missing=false; f.nav_offset=10000
             equal(engine:startup_nav(engine.world,point),nil)
+            engine.physicsLibrary={IsValid=function() return true end,
+                LineTraceSingleByPalTraceType=function(_,world,start_point,end_point,kind,complex,material,trace_index,hit,draw)
+                    equal(world,engine.world); equal(start_point.Z,800); equal(end_point.Z,-200)
+                    equal(kind,3); equal(complex,false); equal(material,false); equal(trace_index,false); equal(draw,0)
+                    return f.trace_hit == true
+                end}
+            equal(engine:startup_trace(engine.world,point),false)
+            f.trace_hit=true
+            equal(engine:startup_trace(engine.world,point),true)
             equal(f.spawns,1)
         end)
     end)

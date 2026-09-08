@@ -160,6 +160,14 @@ function Native:qualify()
         FilterClass = { "ClassProperty", 64 }, QueryExtent = { "StructProperty", 72 },
         ReturnValue = { "BoolProperty", 96 },
     })
+    self:_signature("/Script/Pal.PalPhysicsUtility:LineTraceSingleByPalTraceType", {
+        WorldContextObject = { "ObjectProperty", 0 }, Start = { "StructProperty", 8 }, End = { "StructProperty", 32 },
+        PalTraceType = { "EnumProperty", 56 }, bTraceComplex = { "BoolProperty", 57 },
+        bReturnPhysicalMaterial = { "BoolProperty", 58 }, bReturnTraceIndex = { "BoolProperty", 59 },
+        HitResult = { "StructProperty", 64 }, DrawDebugType = { "ByteProperty", 296 },
+        TraceColor = { "StructProperty", 300 }, TraceHitColor = { "StructProperty", 316 },
+        DrawTime = { "FloatProperty", 332 }, ReturnValue = { "BoolProperty", 336 },
+    })
     self.qualified = true
     return true
 end
@@ -246,8 +254,10 @@ function Native:startup_prepare(count)
         if not self.a.valid(self:_call("startup-pawn-cdo", self.startupPawnClass, "GetCDO")) then error(SCOPE, 0) end
         self.navigationLibrary = self.bridge:_static_find("/Script/NavigationSystem.Default__NavigationSystemV1")
         if not self.a.valid(self.navigationLibrary) then error(SCOPE, 0) end
+        self.physicsLibrary = self.bridge:_static_find("/Script/Pal.Default__PalPhysicsUtility")
+        if not self.a.valid(self.physicsLibrary) then error(SCOPE, 0) end
         local scopes = {}
-        local physical = { sampled = 0, floor = 0, centerFloor = 0, spawnNav = 0, goalNav = 0 }
+        local physical = { sampled = 0, floor = 0, centerFloor = 0, centerTrace = 0, spawnNav = 0, goalNav = 0 }
         for _, id in ipairs(ids) do
             local target, reason = self.bridge:_resolve_dispatch_target(manager, id)
             if not target then error(reason, 0) end
@@ -255,6 +265,7 @@ function Native:startup_prepare(count)
             if not scope.unavailable then
                 physical.sampled = physical.sampled + 1
                 if self:startup_floor(world, scope.origin) then physical.centerFloor = physical.centerFloor + 1 end
+                if self:startup_trace(world, scope.origin) then physical.centerTrace = physical.centerTrace + 1 end
                 local floor = self:startup_floor(world, scope.positions[1])
                 if floor then
                     physical.floor = physical.floor + 1
@@ -277,6 +288,16 @@ function Native:startup_prepare(count)
         end
         return { scopes = scopes, physical = physical, availableBases = #ids }
     end)
+end
+
+function Native:startup_trace(world, location)
+    local start_point, end_point = vector(location), vector(location)
+    start_point.Z, end_point.Z = start_point.Z + 500, end_point.Z - 500
+    local hit, color = {}, { R=0, G=0, B=0, A=0 }
+    local found = self:_call("startup-ground-trace", self.physicsLibrary, "LineTraceSingleByPalTraceType",
+        world, start_point, end_point, 3, false, false, false, hit, 0, color, color, 0)
+    if type(found) ~= "boolean" then error(SCOPE, 0) end
+    return found
 end
 
 function Native:startup_floor(world, location)
