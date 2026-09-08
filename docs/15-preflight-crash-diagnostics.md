@@ -12,6 +12,8 @@ The planar base sampler preserves the supplied Z and does not establish collisio
 
 NPC startup scenarios use that same bounded prewarm when their initial physical checks fail, retaining support until all test NPCs have been cleaned up. If prewarming never produces physical floor/nav readiness, the helpers are cleaned and no NPC is requested.
 
+Blueprint class wrappers are not GC roots. Reacquire the exact class and its CDO immediately before each CDO floor query, and reacquire action classes before dispatch. The two-source crash on `122eea9` reached an invalid `InClass` ancestry check at Shipping RVA `0x3173098`, before CDO/physics access; stale lifetime is consistent with the dump, but the specific invalidation mechanism was not proven. Physical probes wait for the relevant streaming source to finish, then still require real floor/nav results.
+
 Each launch creates a fresh private `Pal\Saved\PalEventDirector\startup-tests\<run-id>` directory containing its source-pinned plan, checksummed journal and snapshot. The snapshot's payload reports `running`, `passed`, `blocked` or `failed`, the current stage, observed counts and cleanup completeness. Normal event state, including interrupted request16, is separate and is not replayed or cleared.
 
 Native character creation has three separate milestones: a returned handle, an assigned nonzero individual ID, then an initialized actor. On the dedicated path the handle's ID can initially be zero while a creation continuation is queued. Retain that original handle and poll boundedly; do not treat a pending ID as a failed spawn or issue another spawn. Persist the full ID as soon as assigned, before actor readiness. A missing ID return structure is a different binding failure, not a valid pending ID.

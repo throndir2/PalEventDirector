@@ -233,6 +233,7 @@ return function(test, equal, truthy)
         function source:DisableStreamingSource() self.enabled=false end
         function source:EnableStreamingSource() self.enabled=true end
         function source:IsStreamingSourceEnabled() return self.enabled end
+        function source:IsStreamingCompleted() return self.complete==true end
         actor.AddComponentByClass=function(_,_,manual,_,deferred) equal(manual,false); equal(deferred,true); return source end
         actor.FinishAddComponent=function() equal(source.Shapes[1].Radius,12000); equal(source.Shapes[1].bUseGridLoadingRange,false) end
         local nav = {RegisterNavigationInvoker=function(_,which,generation,removal)
@@ -251,6 +252,17 @@ return function(test, equal, truthy)
         support.records[1]={actor=actor,world=world,name="OwnedHelper",transform={}}
         truthy(support:finish(1))
         equal(source.Shapes[1].bIsSector,false)
+        local queries=0
+        native.startup_floor=function() queries=queries+1; return nil end
+        native.startup_nav=function() return nil end
+        native.startup_trace=function() return false end
+        local observed, result = support:poll(1)
+        truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,false)
+        equal(queries,0)
+        source.complete=true
+        observed,result=support:poll(1)
+        truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,true)
+        equal(queries,1)
         truthy(support:close(1))
         truthy(support:close(1))
         equal(destroyed,1)

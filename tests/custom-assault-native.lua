@@ -148,6 +148,7 @@ return function(test, equal, truthy)
         for _, key in ipairs({ "travel", "encounter", "combat", "melee", "invoker" }) do
             engine.classes[key] = object({ type = function() return "UClass" end, IsClass = function() return true end })
         end
+        engine._action_class = function(_, key) return engine.classes[key] end
         local scope = { world = world, origin = { X = 0, Y = 0, Z = 0 }, range = 1000, players = {},
             baseId = "9-0-0-0", leashRadius = 1000, guildId = "8-0-0-0",
             positions = { { X = 100, Y = 0, Z = 0 } }, base = object({
@@ -563,8 +564,12 @@ return function(test, equal, truthy)
 
     test("startup floor and navigation require positive bounded physical results", function()
         fixture(function(engine, _, f)
-            local pawn = {IsValid=function() return true end}
-            engine.startupPawnClass = pawn
+            local pawn = {IsValid=function() return true end,GetCDO=function()
+                return {IsValid=function() return f.cdo_missing ~= true end}
+            end}
+            engine.startupPawnClass = {IsValid=function() return false end}
+            local lookups=0
+            engine._class=function() lookups=lookups+1; return pawn end
             engine.utility.CanAdjustLocationToFloorFromCDO = function(_,world,class,point,up,out,short)
                 equal(world,engine.world); equal(class,pawn); equal(up,100); equal(short,true)
                 out.X,out.Y,out.Z=point.X,point.Y,point.Z+(f.floor_offset or 80)
@@ -582,6 +587,10 @@ return function(test, equal, truthy)
             equal(engine:startup_floor(engine.world,point),nil)
             f.floor_missing=false; f.floor_offset=-10000
             equal(engine:startup_floor(engine.world,point),nil)
+            equal(lookups,3)
+            f.cdo_missing=true
+            equal(pcall(engine.startup_floor,engine,engine.world,point),false)
+            f.cdo_missing=false
             truthy(engine:startup_nav(engine.world,point))
             f.nav_missing=true
             equal(engine:startup_nav(engine.world,point),nil)
@@ -597,6 +606,25 @@ return function(test, equal, truthy)
             f.trace_hit=true
             equal(engine:startup_trace(engine.world,point),true)
             equal(f.spawns,1)
+        end)
+    end)
+
+    test("action dispatch reacquires Blueprint classes instead of trusting cached wrappers", function()
+        fixture(function(engine)
+            engine._action_class = Native._action_class
+            local lookups, seen = 0, {}
+            engine._class = function(_, class_path)
+                truthy(class_path:find("TravelToBaseCamp",1,true))
+                lookups=lookups+1
+                return {IsValid=function() return true end,type=function() return "UClass" end,generation=lookups}
+            end
+            local component = {IsValid=function() return true end,SetActionClassParameter=function(_, class)
+                seen[#seen+1]=class.generation
+                return {IsValid=function() return true end}
+            end}
+            engine:_set_action(component,"travel",{X=0,Y=0,Z=0},nil)
+            engine:_set_action(component,"travel",{X=0,Y=0,Z=0},nil)
+            equal(lookups,2); equal(seen[1],1); equal(seen[2],2)
         end)
     end)
 end

@@ -10,6 +10,7 @@ local OWNERSHIP = "Custom assault ownership is unreadable"
 local IDENTITY = "Custom assault actor identity changed"
 local INITIALIZATION = "Custom assault initialization is incomplete"
 local ACTION = "Custom assault native action failed"
+local STARTUP_PAWN = "/Game/Pal/Blueprint/Character/NPC/Normal/BP_NPC_Hunter_Boss.BP_NPC_Hunter_Boss_C"
 local CLASSES = {
     travel = "/Game/Pal/Blueprint/Controller/AIAction/Visitor/BP_AIAction_Visitor_TravelToBaseCamp.BP_AIAction_Visitor_TravelToBaseCamp_C",
     encounter = "/Game/Pal/Blueprint/Controller/AIAction/NPC/BP_AIAction_NPC_Encount.BP_AIAction_NPC_Encount_C",
@@ -250,7 +251,7 @@ function Native:startup_prepare(count)
         if #ids > self.bridge.config.limits.maxBases then error(SCOPE, 0) end
         table.sort(ids)
         self:prepare(world)
-        self.startupPawnClass = self:_class("/Game/Pal/Blueprint/Character/NPC/Normal/BP_NPC_Hunter_Boss.BP_NPC_Hunter_Boss_C")
+        self.startupPawnClass = self:_class(STARTUP_PAWN)
         if not self.a.valid(self:_call("startup-pawn-cdo", self.startupPawnClass, "GetCDO")) then error(SCOPE, 0) end
         self.navigationLibrary = self.bridge:_static_find("/Script/NavigationSystem.Default__NavigationSystemV1")
         if not self.a.valid(self.navigationLibrary) then error(SCOPE, 0) end
@@ -306,9 +307,13 @@ function Native:startup_trace(world, location)
 end
 
 function Native:startup_floor(world, location)
+    -- Lua references do not keep Blueprint classes/CDOs alive across streaming and GC.
+    local pawn_class = self:_class(STARTUP_PAWN)
+    local cdo = self:_call("startup-floor-cdo", pawn_class, "GetCDO")
+    if not self.a.valid(cdo) then error(SCOPE, 0) end
     local output = {}
     local ok = self:_call("startup-floor", self.utility, "CanAdjustLocationToFloorFromCDO",
-        world, self.startupPawnClass, vector(location), 100, output, true)
+        world, pawn_class, vector(location), 100, output, true)
     if type(ok) ~= "boolean" then error(SCOPE, 0) end
     if not ok then return nil end
     local point = vector(output)
@@ -640,7 +645,14 @@ function Native:_choose_defender(scope)
     return nil
 end
 
-function Native:_set_action(component, class, point, target)
+function Native:_action_class(key)
+    local class_path = CLASSES[key]
+    if not class_path then error(SCOPE, 0) end
+    return self:_class(class_path)
+end
+
+function Native:_set_action(component, key, point, target)
+    local class = self:_action_class(key)
     if not self.a.valid(class) or class:type() ~= "UClass" then error(SCOPE, 0) end
     local action = self:_call("ai-action", component, "SetActionClassParameter", class, action_parameter(point, target))
     if not self.a.valid(action) then error(ACTION, 0) end
@@ -675,7 +687,7 @@ function Native:startup_travel(scope, member)
         self:_configure_movement(self.records[member_key(member)], state, scope)
         local actions = self:_call("startup-ai-component", state.controller, "GetAIActionComponent")
         if not self.a.valid(actions) then error(INITIALIZATION, 0) end
-        self:_set_action(actions, self.classes.travel, scope.origin, nil)
+        self:_set_action(actions, "travel", scope.origin, nil)
         return true
     end)
 end
@@ -701,7 +713,7 @@ function Native:engage(scope, member)
                 if type(player) ~= "boolean" then error(SCOPE, 0) end
                 self:_call("combat-target", controller, player and "AddTargetPlayer_ForEnemy" or "AddTargetNPC", defender)
                 self:_call("stop-movement", controller, "StopMovement")
-                self:_set_action(actions, self.classes.encounter, scope.origin, defender)
+                self:_set_action(actions, "encounter", scope.origin, defender)
                 self:_behavior(record, member, "combat", defender)
             end
             return true
@@ -711,8 +723,7 @@ function Native:engage(scope, member)
             local base_id = self.a.guid(self:_call("building-base", building, "GetBaseCampIdBelongTo"))
             local location = vector(self:_call("building-location", building, "K2_GetActorLocation"))
             if base_id == scope.baseId and distance_squared(location, scope.origin) <= (scope.range + 1000) ^ 2 then
-                if not self.a.valid(self.classes.travel) then error(SCOPE, 0) end
-                self:_call("stop-travel-action", actions, "TerminateCurrentActionByClass", self.classes.travel)
+                self:_call("stop-travel-action", actions, "TerminateCurrentActionByClass", self:_action_class("travel"))
                 if distance_squared(state.location, location) <= 300 * 300 then
                     self:_call("stop-at-building", controller, "StopMovement")
                     local now = self.bridge.clock()
@@ -730,8 +741,7 @@ function Native:engage(scope, member)
                     local idle = self:_call("body-action-idle", body, "ActionIsEmpty")
                     if type(idle) ~= "boolean" then error(ACTION, 0) end
                     if in_reach and idle then
-                        if not self.a.valid(self.classes.melee) or self.classes.melee:IsClass() ~= true then error(SCOPE, 0) end
-                        local action = self:_call("attack-building", body, "PlayAction", building, self.classes.melee)
+                        local action = self:_call("attack-building", body, "PlayAction", building, self:_action_class("melee"))
                         if not self.a.valid(action) then error(ACTION, 0) end
                     end
                 else
@@ -747,7 +757,7 @@ function Native:engage(scope, member)
             end
         end
         if record.mode ~= "travel" then
-            self:_set_action(actions, self.classes.travel, scope.origin, nil)
+            self:_set_action(actions, "travel", scope.origin, nil)
             self:_behavior(record, member, "travel", nil)
         end
         return true

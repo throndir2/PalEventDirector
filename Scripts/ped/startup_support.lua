@@ -126,6 +126,9 @@ function Support:poll(index)
         local enabled = n:_call("support-enabled",record.source,"IsStreamingSourceEnabled")
         local complete = n:_call("support-streaming-complete",record.source,"IsStreamingCompleted")
         if type(enabled) ~= "boolean" or type(complete) ~= "boolean" then error(ERROR,0) end
+        if not enabled or not complete then
+            return {enabled=enabled,streamingComplete=complete,physicalQueried=false,ready=false}
+        end
         local floor = n:startup_floor(scope.world,scope.positions[1])
         local nav = floor and n:startup_nav(scope.world,floor) or nil
         local goal = n:startup_nav(scope.world,scope.origin)
@@ -133,7 +136,7 @@ function Support:poll(index)
         local corrected = nav and n:startup_floor(scope.world,nav) or nil
         local ready = enabled and complete and corrected ~= nil and goal ~= nil
         if ready then scope.positions[1] = corrected end
-        return {enabled=enabled,streamingComplete=complete,floor=floor~=nil,nav=nav~=nil,goal=goal~=nil,centerTrace=center,ready=ready}
+        return {enabled=enabled,streamingComplete=complete,physicalQueried=true,floor=floor~=nil,nav=nav~=nil,goal=goal~=nil,centerTrace=center,ready=ready}
     end)
 end
 
