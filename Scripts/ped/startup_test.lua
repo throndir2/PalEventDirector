@@ -413,6 +413,11 @@ function Test:_tick()
                     local engaged, result = self.engine:engage(self.scopes[index],plan)
                     if not engaged then return self:halt(result) end
                     member.behavior = self.engine:startup_behavior(member)
+                    local observed, details = self.engine:startup_combat_observation(self.scopes[index],plan)
+                    if not observed then return self:halt(details) end
+                    member.combatObservation = details
+                    self.state.damageHookCalls = self.engine.bridge and self.engine.bridge.hook_observed
+                        and self.engine.bridge.hook_observed.damage or 0
                     if not self:_save("startup_engagement_returned") then return end
                     if result == "unavailable" then
                         self.state.failure = "engagement-unavailable"

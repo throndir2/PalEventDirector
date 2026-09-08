@@ -48,6 +48,7 @@ return function(test, equal, truthy)
         end
         function engine:engage() f.engages=(f.engages or 0)+1; return true,true end
         function engine:startup_behavior() return "combat" end
+        function engine:startup_combat_observation() return true,{currentAction="fixture-combat",healthRatio=1} end
         function engine:sameActor(a,b) return a==b end
         function engine:startup_damage_target(_, actor) return true,actor==f.legal_target end
         function engine:startup_travel()

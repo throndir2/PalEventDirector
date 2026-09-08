@@ -453,6 +453,7 @@ return function(test, equal, truthy)
             equal(f.action_parameter.GeneralActor1, defender)
             equal(f.player_target, nil)
             equal(actor:GetCharacterParameterComponent().bIsAttackNonCriminal, true)
+            equal(f.terminated, 1)
         end)
     end)
 

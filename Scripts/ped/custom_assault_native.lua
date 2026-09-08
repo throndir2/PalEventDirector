@@ -149,6 +149,7 @@ function Native:qualify()
     })
     self:_signature("/Script/Pal.PalAIActionComponent:GetCurrentAction_BP", { ReturnValue = { "ObjectProperty", 0 } })
     self:_signature("/Script/Pal.PalAICombatModule:GetTargetActor", { ReturnValue = { "ObjectProperty", 0 } })
+    self:_signature("/Script/Pal.PalCharacterParameterComponent:GetHPRate", { ReturnValue = { "FloatProperty", 0 } })
     self:_signature("/Script/Pal.PalUtility:CanAdjustLocationToFloorFromCDO", {
         WorldContext = { "ObjectProperty", 0 }, InClass = { "ClassProperty", 8 },
         InLocation = { "StructProperty", 16 }, UpOffset = { "FloatProperty", 40 },
@@ -348,6 +349,29 @@ end
 function Native:startup_damage_target(scope, actor)
     return self.bridge:_native_step("startup-damage-target", function()
         return self:_character_scope(actor, scope) == true
+    end)
+end
+
+function Native:startup_combat_observation(scope, member)
+    return self.bridge:_native_step("startup-combat-observation", function()
+        local state = self:_owned_state(member.handle, member)
+        if state.phase ~= "alive" then return { phase = state.phase } end
+        local actions = self:_call("startup-current-ai", state.controller, "GetAIActionComponent")
+        local action = self:_call("startup-current-action", actions, "GetCurrentAction_BP")
+        local result = { phase = state.phase, currentAction = "none" }
+        if self.a.valid(action) then
+            local name = action:GetClass():GetFName():ToString()
+            if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
+            result.currentAction = name
+        end
+        result.healthRatio = self:_call("startup-health-ratio", state.component, "GetHPRate")
+        if not finite(result.healthRatio) then error(SCOPE, 0) end
+        local record = self.records[member_key(member)]
+        if self.a.valid(record.target) then
+            local target_location = vector(self:_call("startup-target-distance", record.target, "K2_GetActorLocation"))
+            result.targetDistanceCm = math.sqrt(distance_squared(state.location, target_location))
+        end
+        return result
     end)
 end
 
@@ -726,6 +750,7 @@ function Native:engage(scope, member)
                 if type(player) ~= "boolean" then error(SCOPE, 0) end
                 self:_call("combat-target", controller, player and "AddTargetPlayer_ForEnemy" or "AddTargetNPC", defender)
                 self:_call("stop-movement", controller, "StopMovement")
+                self:_call("stop-travel-for-combat", actions, "TerminateCurrentActionByClass", self:_action_class("travel"))
                 self:_set_action(actions, "encounter", scope.origin, defender)
                 self:_behavior(record, member, "combat", defender)
             end
