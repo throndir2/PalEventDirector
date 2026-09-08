@@ -161,8 +161,31 @@ function Native:qualify()
         SelfActor={"ObjectProperty",0},Target={"ObjectProperty",8},Radius={"FloatProperty",16},ReturnValue={"BoolProperty",20},
     })
     self:_signature("/Script/Pal.PalShooterComponent:GetHasWeapon", {ReturnValue={"ObjectProperty",0}})
-    for _, method in ipairs({"CanShoot","IsShooting","IsReloading","IsAiming","IsRequestAiming","IsPlayShootingAnimation"}) do
+    for _, method in ipairs({"CanShoot","CanAim","IsShooting","IsReloading","IsAiming","IsRequestAiming","IsPlayShootingAnimation"}) do
         self:_signature("/Script/Pal.PalShooterComponent:" .. method, {ReturnValue={"BoolProperty",0}})
+    end
+    for _, method in ipairs({"IsAiming_Layered","IsRequestAiming_Layered"}) do
+        self:_signature("/Script/Pal.PalShooterComponent:" .. method, {
+            Priority={"EnumProperty",0},ReturnValue={"BoolProperty",1},
+        })
+    end
+    for _, method in ipairs({"InFanShap","InFanShapAimTarget"}) do
+        self:_signature("/Script/Pal.PalUtility:" .. method, {
+            SelfActor={"ObjectProperty",0},TargetActor={"ObjectProperty",8},Degree={"FloatProperty",16},
+            ReturnValue={"BoolProperty",20},
+        })
+    end
+    self:_signature("/Script/Pal.PalUtility:IsAIAttackAbleByPlayerCamera", {
+        SelfActor={"ObjectProperty",0},TargetActor={"ObjectProperty",8},ReturnValue={"BoolProperty",16},
+    })
+    for _, method in ipairs({"GetPendingMovementInputVector","GetLastMovementInputVector"}) do
+        self:_signature("/Script/Engine.Pawn:" .. method, {ReturnValue={"StructProperty",0}})
+    end
+    self:_signature("/Script/Engine.CharacterMovementComponent:GetCurrentAcceleration", {ReturnValue={"StructProperty",0}})
+    self:_signature("/Script/Engine.Actor:K2_GetActorRotation", {ReturnValue={"StructProperty",0}})
+    self:_signature("/Script/Engine.ActorComponent:GetOwner", {ReturnValue={"ObjectProperty",0}})
+    for _, method in ipairs({"IsMovingOnGround","IsFalling","IsFlying"}) do
+        self:_signature("/Script/Engine.NavMovementComponent:" .. method, {ReturnValue={"BoolProperty",0}})
     end
     self:_signature("/Script/Pal.PalUtility:CanAdjustLocationToFloorFromCDO", {
         WorldContext = { "ObjectProperty", 0 }, InClass = { "ClassProperty", 8 },
@@ -397,13 +420,43 @@ function Native:_line_of_sight(actor, target, radius)
     return visible
 end
 
-function Native:startup_combat_observation(scope, member)
+function Native:_movement_observation(state)
+    local movement = self.a.unwrap(state.actor.CharacterMovement)
+    local result = { available = self.a.valid(movement) }
+    if not result.available then return result end
+    if not movement:IsA("/Script/Pal.PalCharacterMovementComponent")
+        or not self.a.same(self:_call("movement-owner", movement, "GetOwner"), state.actor) then error(SCOPE, 0) end
+    local root = self.a.unwrap(state.actor.RootComponent)
+    result.updatedRoot = self.a.valid(root) and self.a.same(self.a.unwrap(movement.UpdatedComponent), root)
+    result.mode, result.customMode = movement.MovementMode, movement.CustomMovementMode
+    for _, key in ipairs({"mode","customMode"}) do
+        if not util.is_integer(result[key]) or result[key] < 0 or result[key] > 255 then error(SCOPE, 0) end
+    end
+    for _, pair in ipairs({{"grounded","IsMovingOnGround"},{"falling","IsFalling"},{"flying","IsFlying"}}) do
+        local value = self:_call("movement-" .. pair[1], movement, pair[2])
+        if type(value) ~= "boolean" then error(SCOPE, 0) end
+        result[pair[1]] = value
+    end
+    result.velocityZ = vector(self.a.unwrap(movement.Velocity)).Z
+    result.accelerationZ = vector(self:_call("movement-acceleration", movement, "GetCurrentAcceleration")).Z
+    result.pendingInputZ = vector(self:_call("movement-pending-input", state.actor, "GetPendingMovementInputVector")).Z
+    result.lastInputZ = vector(self:_call("movement-last-input", state.actor, "GetLastMovementInputVector")).Z
+    local rotation = self:_call("movement-rotation", state.actor, "K2_GetActorRotation")
+    if not finite(rotation.Pitch) or not finite(rotation.Roll) then error(SCOPE, 0) end
+    result.pitch, result.roll = rotation.Pitch, rotation.Roll
+    result.heightFromBase = state.heightFromBase
+    return result
+end
+
+function Native:startup_combat_observation(scope, member, movement_only)
     return self.bridge:_native_step("startup-combat-observation", function()
         local state = self:_owned_state(member.handle, member)
-        if state.phase ~= "alive" then return { phase = state.phase } end
+        if state.phase ~= "alive" and state.phase ~= "escaped" then return { phase = state.phase } end
+        local result = { phase = state.phase, movement = self:_movement_observation(state) }
+        if movement_only or state.phase ~= "alive" then return result end
         local actions = self:_call("startup-current-ai", state.controller, "GetAIActionComponent")
         local action = self:_call("startup-current-action", actions, "GetCurrentAction_BP")
-        local result = { phase = state.phase, currentAction = "none" }
+        result.currentAction = "none"
         if self.a.valid(action) then
             local name = action:GetClass():GetFName():ToString()
             if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
@@ -431,11 +484,20 @@ function Native:startup_combat_observation(scope, member)
                     local name = current:GetClass():GetFName():ToString()
                     if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
                     result.gunState = name
+                    if name == "BP_AINPC_CombatGunState_FireMove_C" then
+                        result.fireState = {}
+                        for _, key in ipairs({"Timer","Interval","ShootCount","ShootAbleTimer","temp_DeltaTime"}) do
+                            local value = current[key]
+                            if not finite(value) then error(SCOPE, 0) end
+                            result.fireState[key] = value
+                        end
+                    end
                 end
             end
             local target = self.a.unwrap(action.TargetActor)
             result.actualTarget = self.a.valid(target)
             result.requestedTargetMatches = result.actualTarget and self.a.same(target,record.target)
+            result.actionSelfMatches = self.a.same(self.a.unwrap(action.SelfActor), state.actor)
             if result.weaponReady then
                 result.remainingBullets = self:_call("startup-ammo", weapon, "GetRemainingBullet")
                 result.magazineEmpty = self:_call("startup-magazine-empty", weapon, "IsMagazineEmpty")
@@ -443,21 +505,44 @@ function Native:startup_combat_observation(scope, member)
                     or type(result.magazineEmpty) ~= "boolean" then error(SCOPE, 0) end
                 if result.actualTarget and self:_character_scope(target,scope) == true then
                     result.lineOfSight = self:_line_of_sight(state.actor, target, self:_shot_radius(weapon))
+                    local location = vector(self:_call("startup-actual-target-location", target, "K2_GetActorLocation"))
+                    result.actualTargetHeightDelta = location.Z - state.location.Z
+                    result.actualTargetDistanceCm = math.sqrt(distance_squared(location, state.location))
+                    if result.actionSelfMatches then
+                        for _, pair in ipairs({{"rootFacing","InFanShap"},{"aimFacing","InFanShapAimTarget"}}) do
+                            local value = self:_call("startup-" .. pair[1]:lower(), self.utility, pair[2], state.actor, target, 5)
+                            if type(value) ~= "boolean" then error(SCOPE, 0) end
+                            result[pair[1]] = value
+                        end
+                        result.cameraAttackAllowed = self:_call("startup-camera-attack", self.utility,
+                            "IsAIAttackAbleByPlayerCamera", state.actor, target)
+                        if type(result.cameraAttackAllowed) ~= "boolean" then error(SCOPE, 0) end
+                    end
                 end
             end
         end
         local shooterClass = self:_class("/Script/Pal.PalShooterComponent")
         local shooter = self:_call("startup-shooter",state.actor,"GetComponentByClass",shooterClass)
         result.shooter = self.a.valid(shooter)
+        if result.weaponHandle then
+            local stored = self.a.unwrap(weapon.ShooterHuman)
+            result.storedShooterValid = self.a.valid(stored)
+            result.storedShooterMatches = result.storedShooterValid and self.a.same(stored, state.actor)
+        end
         if result.shooter then
             result.equippedWeapon = self.a.valid(self:_call("startup-equipped-weapon",shooter,"GetHasWeapon"))
             result.npcWeapon = self.a.valid(self.a.unwrap(shooter.NPCWeapon))
             if result.weaponReady and result.equippedWeapon and result.npcWeapon then
-                for _, pair in ipairs({{"canShoot","CanShoot"},{"shooting","IsShooting"},{"reloading","IsReloading"},
+                for _, pair in ipairs({{"canShoot","CanShoot"},{"canAim","CanAim"},{"shooting","IsShooting"},{"reloading","IsReloading"},
                     {"aiming","IsAiming"},{"requestAiming","IsRequestAiming"},{"shootAnimation","IsPlayShootingAnimation"}}) do
                     local value = self:_call("startup-shooter-" .. pair[1]:lower(),shooter,pair[2])
                     if type(value) ~= "boolean" then error(SCOPE,0) end
                     result[pair[1]]=value
+                end
+                for _, pair in ipairs({{"layerZeroAiming","IsAiming_Layered"},{"layerZeroRequest","IsRequestAiming_Layered"}}) do
+                    local value = self:_call("startup-" .. pair[1]:lower(), shooter, pair[2], 0)
+                    if type(value) ~= "boolean" then error(SCOPE, 0) end
+                    result[pair[1]] = value
                 end
             end
         end

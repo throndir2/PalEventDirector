@@ -49,7 +49,11 @@ return function(test, equal, truthy)
         end
         function engine:engage() f.engages=(f.engages or 0)+1; return true,true end
         function engine:startup_behavior() return "combat" end
-        function engine:startup_combat_observation() return true,{currentAction="fixture-combat",healthRatio=1} end
+        function engine:startup_combat_observation(_, _, movement_only)
+            f.observations = (f.observations or 0) + 1
+            f.movement_only = movement_only
+            return true,{currentAction="fixture-combat",healthRatio=1}
+        end
         function engine:sameActor(a,b) return a==b end
         function engine:startup_damage_target(_, actor) return true,actor==f.legal_target end
         function engine:startup_travel()
@@ -241,6 +245,22 @@ return function(test, equal, truthy)
         equal(f.runner.state.status,"passed")
         equal(f.runner.state.cleaned,1)
         equal(f.runner.state.helpersCleaned,1)
+    end)
+
+    test("startup engagement samples between dispatches and captures escape without more combat", function()
+        local f = fixture("engagement")
+        f:tick(6)
+        f.arrived = true
+        f:tick(3)
+        local before, engages = f.observations, f.engages
+        f:tick(2)
+        equal(f.observations, before + 2)
+        equal(f.engages, engages)
+        f.phases[1] = "escaped"
+        f:tick()
+        equal(f.movement_only, true)
+        equal(f.engages, engages)
+        equal(f.runner.state.stage, "cleanup")
     end)
 
     test("startup engagement requires a real positive damage callback to a scoped defender", function()

@@ -770,4 +770,77 @@ return function(test, equal, truthy)
             equal(result.currentAction,"BP_AIAction_NPC_Combat_Gun_C")
         end)
     end)
+
+    test("movement evidence reads the owned component and preserves signed vertical state", function()
+        fixture(function(engine, member, _, _, actor)
+            local ok, state = engine:inspect(member.handle, member)
+            truthy(ok, state)
+            local root = {IsValid=function() return true end}
+            actor.RootComponent = root
+            actor.CharacterMovement = {
+                IsValid=function() return true end, IsA=function() return true end,
+                GetOwner=function() return actor end, UpdatedComponent=root,
+                MovementMode=3, CustomMovementMode=0, Velocity={X=0,Y=0,Z=900},
+                IsMovingOnGround=function() return false end, IsFalling=function() return true end,
+                IsFlying=function() return false end, GetCurrentAcceleration=function() return {X=0,Y=0,Z=0} end,
+            }
+            actor.GetPendingMovementInputVector=function() return {X=0,Y=0,Z=120} end
+            actor.GetLastMovementInputVector=function() return {X=0,Y=0,Z=-80} end
+            actor.K2_GetActorRotation=function() return {Pitch=0,Yaw=10,Roll=0} end
+            local result=engine:_movement_observation(state)
+            equal(result.mode,3); equal(result.falling,true); equal(result.flying,false)
+            equal(result.velocityZ,900); equal(result.accelerationZ,0)
+            equal(result.pendingInputZ,120); equal(result.lastInputZ,-80); equal(result.updatedRoot,true)
+            actor.CharacterMovement.GetOwner=function() return {} end
+            equal(pcall(engine._movement_observation,engine,state),false)
+        end)
+    end)
+
+    test("fire-state evidence uses the actual action target and separates aim from shoot eligibility", function()
+        fixture(function(engine, member, f, _, actor, scope)
+            local ok, state = engine:inspect(member.handle, member)
+            truthy(ok, state)
+            state.component.GetHPRate = function() return 1 end
+            local target, requested = f:defender_at(200), f:defender_at(500)
+            f:weapon(true)
+            local weapon = state.controller.WeaponHandle
+            weapon.ShooterHuman = actor
+            weapon.GetRemainingBullet = function() return 30 end
+            weapon.IsMagazineEmpty = function() return false end
+            target.visible = true
+            local function class(name)
+                return {GetFName=function() return {ToString=function() return name end} end}
+            end
+            local fire = {IsValid=function() return true end,Timer=-0.1,Interval=0.1,ShootCount=0,
+                ShootAbleTimer=0,temp_DeltaTime=0.25,GetClass=function() return class("BP_AINPC_CombatGunState_FireMove_C") end}
+            local action = f:combat_action(target,target)
+            action.SelfActor, action.IsStopTick = actor,false
+            action.GetClass=function() return class("BP_AIAction_NPC_Combat_Gun_C") end
+            action.StateMachine={IsValid=function() return true end,GetCurrentState=function() return fire end}
+            f.current_action=action
+            engine.records[member.groupId..":"..member.index].target=requested
+            engine._class=function() return {} end
+            local shooter={IsValid=function() return true end,NPCWeapon=weapon,GetHasWeapon=function() return weapon end,
+                CanShoot=function() return true end,CanAim=function() return false end}
+            for _,method in ipairs({"IsShooting","IsReloading","IsAiming","IsRequestAiming","IsPlayShootingAnimation"}) do
+                shooter[method]=function() return false end
+            end
+            shooter.IsAiming_Layered=function(_,priority) equal(priority,0); return false end
+            shooter.IsRequestAiming_Layered=function(_,priority) equal(priority,0); return true end
+            actor.GetComponentByClass=function() return shooter end
+            engine.utility.InFanShap=function(_,self_actor,actual,degree)
+                equal(self_actor,actor); equal(actual,target); equal(degree,5); return true
+            end
+            engine.utility.InFanShapAimTarget=function(_,_,actual) equal(actual,target); return false end
+            engine.utility.IsAIAttackAbleByPlayerCamera=function(_,_,actual) equal(actual,target); return true end
+            local observed,result=engine:startup_combat_observation(scope,member)
+            truthy(observed,result)
+            equal(result.fireState.Timer,-0.1); equal(result.fireState.ShootCount,0)
+            equal(result.requestedTargetMatches,false); equal(result.actualTargetDistanceCm,200)
+            equal(result.storedShooterMatches,true); equal(result.canShoot,true); equal(result.canAim,false)
+            equal(result.rootFacing,true); equal(result.aimFacing,false)
+            equal(result.layerZeroAiming,false); equal(result.layerZeroRequest,true)
+            equal(f.spawns,1); equal(f.despawns,nil); equal(f.action_parameter,nil)
+        end)
+    end)
 end
