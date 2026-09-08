@@ -687,10 +687,10 @@ test("bridge replaces every selected member while preserving native level and co
     }
     bridge.event_open = true
     bridge.selection_open = true
-    bridge.profile_id = "all-bounty"
+    bridge.profile_id = "patrol"
     bridge.expected_bases["base-a"] = true
     bridge.request_windows["base-a"] = { expiresAt = math.huge, status = "request_issued" }
-    bridge.bounty_selector = bounties.new_selector("all-bounty", "occurrence")
+    bridge.bounty_selector = bounties.new_selector("patrol", "occurrence")
     bridge:_on_select_invaders(incident, members)
     _G.FName = previous_fname
     for index, member in ipairs(members_data) do
@@ -716,10 +716,10 @@ test("bridge never substitutes visitor selections", function()
     local bridge = Bridge.new({ config = Config.defaults(), logger = { info = function() end, warn = function() end, error = function() end } })
     bridge.event_open = true
     bridge.selection_open = true
-    bridge.profile_id = "all-bounty"
+    bridge.profile_id = "patrol"
     bridge.expected_bases["base-a"] = true
     bridge.request_windows["base-a"] = { expiresAt = math.huge, status = "request_issued" }
-    bridge.bounty_selector = bounties.new_selector("all-bounty", "occurrence")
+    bridge.bounty_selector = bounties.new_selector("patrol", "occurrence")
     bridge:_on_select_invaders(incident, members)
     _G.FName = previous_fname
     equal(member.CharacterID, "Visitor")
@@ -741,9 +741,9 @@ test("bridge never claims an enemy selection without a base request window", fun
         on_composition_result = function() error("unrelated selection was classified") end,
     }
     bridge.event_open = true
-    bridge.profile_id = "all-bounty"
+    bridge.profile_id = "patrol"
     bridge.expected_bases["base-a"] = true
-    bridge.bounty_selector = bounties.new_selector("all-bounty", "occurrence")
+    bridge.bounty_selector = bounties.new_selector("patrol", "occurrence")
     bridge:_on_select_invaders(incident, members)
     _G.FName = previous_fname
     equal(member.CharacterID, "Native")
@@ -782,10 +782,10 @@ test("failed bounty mutation restores every member and selector cursor", functio
     }
     bridge.event_open = true
     bridge.selection_open = true
-    bridge.profile_id = "all-bounty"
+    bridge.profile_id = "patrol"
     bridge.expected_bases["base-a"] = true
     bridge.request_windows["base-a"] = { expiresAt = math.huge, status = "request_issued" }
-    bridge.bounty_selector = bounties.new_selector("all-bounty", "occurrence")
+    bridge.bounty_selector = bounties.new_selector("patrol", "occurrence")
     local original_cursor = bridge.bounty_selector.cursor
     bridge:_on_select_invaders(incident, members)
     _G.FName = previous_fname
@@ -818,10 +818,10 @@ test("second native group at the same pending base is never substituted", functi
         on_composition_result = function() end,
     }
     bridge.event_open = true
-    bridge.profile_id = "all-bounty"
+    bridge.profile_id = "patrol"
     bridge.expected_bases["base-a"] = true
     bridge.request_windows["base-a"] = { expiresAt = math.huge, status = "request_issued" }
-    bridge.bounty_selector = bounties.new_selector("all-bounty", "occurrence")
+    bridge.bounty_selector = bounties.new_selector("patrol", "occurrence")
     bridge:_on_select_invaders(first, member_array(first_member))
     bridge:_on_select_invaders(second, member_array(second_member))
     _G.FName = previous_fname
@@ -1782,7 +1782,7 @@ test("authenticated Palworld admin start arms exactly ten five one warnings", fu
     equal(bridge.announcements[1], "SIEGE LEAGUE - 10 MINUTES")
     equal(bridge.announcements[2], "SIEGE LEAGUE - 5 MINUTES")
     equal(bridge.announcements[3], "SIEGE LEAGUE - 1 MINUTE")
-    equal(bridge.announcements[4], "SIEGE LEAGUE - RAID STARTED")
+    equal(bridge.announcements[4], "SIEGE LEAGUE - CUSTOM ASSAULT STARTED")
     for _, title in ipairs(bridge.announcements) do truthy(#title <= 80, "banner title is too long") end
     equal(bridge.starts, 1)
 end)
@@ -1820,13 +1820,12 @@ test("authenticated zero-minute start runs immediately without countdown warning
     equal(occurrence.status, "awaiting_confirmation")
     truthy(director:on_invasion_start("base-a", "group-a"))
     equal(#bridge.announcements, 1)
-    equal(bridge.announcements[1], "SIEGE LEAGUE - RAID STARTED")
-    equal(#bridge.chats, 5)
+    equal(bridge.announcements[1], "SIEGE LEAGUE - CUSTOM ASSAULT STARTED")
+    equal(#bridge.chats, 4)
     truthy(bridge.chats[1].message:match("start request received"))
     truthy(bridge.chats[2].message:match("target%(s%) validated"))
-    truthy(bridge.chats[3].message:match("not yet a confirmed raid"))
-    truthy(bridge.chats[4].message:match("preparation"))
-    truthy(bridge.chats[5].message:match("A native invasion is confirmed"))
+    truthy(bridge.chats[3].message:match("not yet a confirmed assault"))
+    truthy(bridge.chats[4].message:match("Initialized PED%-owned attackers are active"))
     equal(director.state.event.profileId, "all-bounty")
     equal(occurrence.countdownSeconds, 0)
     equal(#occurrence.schedule.warningSeconds, 0)
@@ -2275,6 +2274,9 @@ dofile(join(root, "tests", "native-observer.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "admin-native-policy.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "march-lifecycle.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "native-raid.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "custom-assault.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "custom-assault-native.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "custom-assault-director.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)

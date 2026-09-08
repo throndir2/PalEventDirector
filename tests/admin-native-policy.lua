@@ -354,8 +354,8 @@ return function(test, equal, truthy)
                     callback("fixture-base", mode == "incomplete" and {} or old_incident)
                 end }
                 manager.RequestIncidentInvaderEnemy = function() stats.dispatches = stats.dispatches + 1; return true end
-                bridge.event_admin_override, bridge.event_nearest_test, bridge.profile_id = true, nil, "all-bounty"
-                bridge.bounty_selector = bounties.new_selector("all-bounty", "fixture")
+                bridge.event_admin_override, bridge.event_nearest_test, bridge.profile_id = true, nil, "patrol"
+                bridge.bounty_selector = bounties.new_selector("patrol", "fixture")
                 local compositions, mutations = 0, 0
                 bridge.director = { state = { event = { bases = { ["fixture-base"] = { status = "pending" } } } },
                     on_composition_result = function() compositions = compositions + 1 end }
@@ -402,7 +402,7 @@ return function(test, equal, truthy)
                     on_invasion_start = function() confirmations = confirmations + 1; return true end }
                 bridge.request_windows["fixture-base"] = { expiresAt = math.huge, status = "probe_call_returned",
                     baseline = { complete = true, groups = { ["old-group"] = true }, incidents = {} } }
-                bridge.profile_id = "all-bounty"
+                bridge.profile_id = "patrol"
                 bridge.owned_groups["old-group"] = "fixture-base"
                 local callback = callbacks["/Script/Pal.PalInvaderManager:BroadcastInvaderStart"]
                 callback(manager, { TargetBaseCamp = base, GroupGuid = "old-group", InvaderType = 1 })

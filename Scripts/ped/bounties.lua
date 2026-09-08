@@ -65,9 +65,10 @@ local PROFILES = {
     },
     ["all-bounty"] = {
         id = "all-bounty",
-        name = "All-Bounty Alarm",
-        description = "Every selected invasion member becomes a bounty target; the full 34-target catalog rotates across all bases.",
+        name = "All-Base Bounty Assault",
+        description = "Simultaneous PED-controlled bounty attackers at every eligible base; the full 34-target catalog rotates across bases.",
         mode = "replace",
+        backend = "custom-assault",
         minimumTokens = 1,
         maximumTokens = 5,
     },
@@ -123,6 +124,11 @@ end
 function M.profile(profile_id)
     local normalized = M.normalize_profile_id(profile_id)
     return normalized and PROFILES[normalized] or nil
+end
+
+function M.is_custom(profile_id)
+    local profile = M.profile(profile_id)
+    return profile ~= nil and profile.backend == "custom-assault"
 end
 
 function M.profiles()

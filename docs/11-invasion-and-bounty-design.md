@@ -2,6 +2,12 @@
 
 ## Decision
 
+**Simultaneous-assault decision (2026-09-07):** the user explicitly chose concurrent attacks over a one-base native queue. The `all-bounty` profile therefore uses PED-owned stock NPC spawns and base-local AI, not native invasion incidents or `InvaderInfo`. One command covers all eligible bases through interleaved spawn batches; another base's acceptance/completion is never a prerequisite. The native-route design below still describes the other profiles and historical investigation, not the current `all-bounty` backend.
+
+The custom control starts with three level-30 bounty NPCs per base. These are configurable fixed-level encounters, not a claim of native Work-Pal scaling. It reuses game-managed `SpawnNPCForServer` initialization, stock NPC AI/actions and safe handle-based despawn. Exact private identity/ownership evidence ties each actor to one base and HP budget. Capture-in-progress pauses control and credit; player-owned/captured actors are released rather than deleted. An inactive or disappearing actor is not invented death credit. Spatial/time bounds and journaled cleanup apply only to PED-owned entities.
+
+Native raid-state actors and manager maps must never be duplicated or rewritten to fake simultaneous native invasions. The UI calls the new mode a custom assault. Spawn/AI/cleanup behavior on the actual dedicated build still needs gameplay qualification; a returned handle or movement request alone is not evidence of damage or successful defense.
+
 Base-invasion events are mandatory world events. Pal Event Director will not add registration, consent, or guild opt-in before targeting an eligible base. The flagship policy does require that the base's guild have at least one online member at the start boundary.
 
 A scheduled event attempts every available idle observer base whose native guild ID appears in the online-player snapshot. Offline-only guilds are excluded. Warnings are informational rather than permission requests, but the 10-, 5-, and 1-minute sequence is mandatory before mutation. A base can still fail for technical reasons—no valid invasion start point, blocked navigation, invalid/unloaded model, an existing invasion, or a native engine restriction—but that is not treated as player choice.
@@ -324,7 +330,7 @@ The flagship command is:
 
 `!siege start all-bounty 10`
 
-The `all-bounty` profile attempts to replace every concrete member in each intercepted array Palworld selected. It does not enlarge that array. A deterministic cursor rotates through all 34 audited bounty IDs across base selections; therefore all 34 are attempted when the event supplies at least 34 concrete slots, while a smaller event receives a deterministic subset. The transform leaves native levels, companion fields, counts, waves, pathfinding, lifecycle, and completion context untouched; live tests must prove the game consumes those values as expected.
+Historically, `all-bounty` attempted to replace every concrete member in each intercepted array Palworld selected. It does not enlarge that array. A deterministic cursor rotates through all 34 audited bounty IDs across base selections; therefore all 34 are attempted when the event supplies at least 34 concrete slots, while a smaller event receives a deterministic subset. The transform leaves native levels, companion fields, counts, waves, pathfinding, lifecycle, and completion context untouched; live tests must prove the game consumes those values as expected.
 
 ### Highest-priority admin chat control
 

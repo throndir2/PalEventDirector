@@ -19,6 +19,11 @@ function Experiments.route(name)
 end
 
 function Experiments.start_window_seconds(config, route)
+    if route == "custom-assault" then
+        local spawn_seconds = math.ceil(config.limits.maxTargets / config.customAssault.spawnBatchSize)
+            * config.runtime.pollIntervalMs / 1000
+        return math.min(math.ceil(spawn_seconds + config.customAssault.initializationSeconds), config.siegeLeague.maxRuntimeSeconds)
+    end
     local seconds = (route == "march" or route == "blueprint")
         and config.siegeLeague.nativeMarchStartSeconds or config.siegeLeague.startDiscoverySeconds
     return math.min(seconds, config.siegeLeague.maxRuntimeSeconds)

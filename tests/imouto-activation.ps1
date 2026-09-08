@@ -77,6 +77,7 @@ try {
     Copy-Item $DefaultConfig $ConfigPath -Force
     $zeroCountdown = Get-Content $ConfigPath -Raw | ConvertFrom-Json
     $zeroCountdown.compatibility.requiredAdapter = 'palworld-1.0.3-lab'
+    $zeroCountdown.PSObject.Properties.Remove('customAssault')
     $zeroCountdown.compatibility.allowedServerBuildIds = @('24575149')
     $zeroCountdown.siegeLeague.leaderboardSize = 7
     $zeroCountdown.siegeLeague.manualCountdownMinutes = 0
@@ -109,6 +110,10 @@ try {
     if ($config.compatibility.requiredAdapter -ne 'palworld-build-25080279-lab' -or
         $config.siegeLeague.leaderboardSize -ne 7 -or $result.Adapter -ne 'palworld-build-25080279-lab') {
         throw 'Activation did not migrate the old adapter while preserving unrelated configuration.'
+    }
+    if ($config.customAssault.membersPerBase -ne 3 -or $config.customAssault.level -ne 30 -or
+        $config.customAssault.spawnBatchSize -ne 8) {
+        throw 'Activation did not add bounded custom-assault defaults to the old configuration.'
     }
     if ($config.siegeLeague.nativeMarchStartSeconds -ne 480 -or $result.NativeMarchStartSeconds -ne 480) {
         throw 'Activation did not add the public-march preparation window to the existing schema-3 config.'

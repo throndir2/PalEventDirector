@@ -249,7 +249,7 @@ return function(test, equal, truthy)
         local now = 1000
         fixture({ clock = function() return now end }, function(bridge, manager, base, stats)
             local director, control = setup(bridge, manager, base, stats, function() return now end)
-            truthy(director:arm_start("test", "all-bounty", 0, true, { requesterUid = "private-admin" }))
+            truthy(director:arm_start("test", "patrol", 0, true, { requesterUid = "private-admin" }))
             control.phase = "attack"
             now = 1310
             director:tick()

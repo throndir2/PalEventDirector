@@ -236,8 +236,19 @@ function Director:_notify(title, detail)
 end
 
 function Director:_active_event()
+    if self.custom_cleanup_in_progress or (self.state.event and self.state.event.customCleanupPending) then return nil end
     if self.state.status == "starting" or self.state.status == "active" then
         return self.state.event
+    end
+    return nil
+end
+
+function Director:_custom_event(occurrence_id)
+    local event = self.state.event
+    if event and event.backend == "custom-assault" and (occurrence_id == nil or occurrence_id == event.id)
+        and (self.state.status == "starting" or self.state.status == "active"
+            or self.state.status == "resolving" or self.state.status == "recovery_required") then
+        return event
     end
     return nil
 end
@@ -272,6 +283,10 @@ function Director:_supersede_tracking(successor)
     local previous = event and self.scheduler.state.occurrences[event.schedulerOccurrenceKey]
     if not previous or previous == successor or previous.status == "recovery_required" then
         return false, "current event cannot be superseded without recoverable scheduler identity"
+    end
+    if event.backend == "custom-assault" then
+        local cleaned, cleanup_error = self:_close_custom_assault("superseded", "abort")
+        if not cleaned then return false, cleanup_error end
     end
     local old_status, old_reason, old_successor = previous.status, previous.reason, previous.supersededByRequest
     local old_scoreboard, old_archived = self.scoreboard, self.state.lastSupersededEvent
@@ -379,6 +394,17 @@ end
 
 function Director:_report_native_results(result)
     if not self.state.event.requesterUid or type(result) ~= "table" or type(result.requests) ~= "table" then return end
+    if result.custom then
+        self:_chat(string.format("PED request #%d: custom bounty assault queued for %d of %d base(s). Spawns are interleaved; no native raid controller or probe gate is used. Initialized attackers are still required.",
+            self.state.event.requestNumber or 0, result.requested or 0, #result.requests), self.state.event.requesterUid)
+        for index, request in ipairs(result.requests) do
+            if index <= 16 and request.failureCode == "custom-placement-unavailable" then
+                self:_chat(string.format("PED #%d target %d: no bounded base-local spawn position was available; no attacker was spawned there.",
+                    self.state.event.requestNumber or 0, request.targetIndex or index), self.state.event.requesterUid)
+            end
+        end
+        return
+    end
     local returned, rejected, no_incident, precall, call_errors, skipped = 0, 0, 0, 0, 0, 0
     for _, request in ipairs(result.requests) do
         if request.native then
@@ -532,7 +558,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     local previous_status = self.state.status
     self.state.nonce = (self.state.nonce or 0) + 1
     local now = self.clock()
-    local native_route = scheduler_occurrence.nearestNativeTest and (scheduler_occurrence.nativeTestRoute or "debug") or "march"
+    local custom = bounties.is_custom(profile_id)
+    local native_route = custom and "custom-assault"
+        or scheduler_occurrence.nearestNativeTest and (scheduler_occurrence.nativeTestRoute or "debug") or "march"
     local start_window = NativeExperiments.start_window_seconds(self.config, native_route)
     local occurrence_id = util.new_occurrence_id(now, self.state.nonce)
     self.state.event = {
@@ -540,6 +568,7 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         name = self.config.siegeLeague.name,
         profileId = profile_id,
         profileName = bounties.profile(profile_id).name,
+        backend = custom and "custom-assault" or "native",
         status = "starting",
         source = source or "operator",
         adminOverride = admin_override,
@@ -554,8 +583,8 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         startConfirmationDeadline = now + start_window,
         startConfirmedAt = nil,
         confirmedBaseCount = 0,
-        fanoutDispatched = admin_override,
-        discoveryDeadline = admin_override and (now + start_window) or nil,
+        fanoutDispatched = custom or admin_override,
+        discoveryDeadline = (custom or admin_override) and (now + start_window) or nil,
         startedAtUtc = util.utc_now(),
         lastLifecycleAt = now,
         bases = {},
@@ -630,8 +659,9 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     end
 
     if self.state.event.requesterUid then
-        self:_chat(string.format("PED request #%d: %d target(s) validated; submitting native request(s)%s.",
+        self:_chat(string.format("PED request #%d: %d target(s) validated; submitting %s request(s)%s.",
             self.state.event.requestNumber or 0, util.count(self.state.event.bases),
+            custom and "custom assault" or "native",
             self.state.event.nearestNativeTest and (" using the single-base " .. (self.state.event.nativeTestRoute or "debug")
                 .. " experiment (native composition, no fanout)") or ""),
             self.state.event.requesterUid)
@@ -640,6 +670,12 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
     self:_report_native_results(start_result)
     if not started then
         self:_apply_dispatch_results(start_result)
+        if custom and self.bridge.has_custom_assault_members and self.bridge:has_custom_assault_members() then
+            self.state.status, self.state.event.status = "recovery_required", "recovery_required"
+            self.state.event.recoveryReason = "custom assault start interrupted with owned spawn outcomes"
+            self:_persist("custom_start_interrupted", { reason = self.state.event.recoveryReason })
+            return false, self.state.event.recoveryReason
+        end
         if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
         self.state.status = "aborted"
         self.state.event.status = "aborted"
@@ -673,13 +709,16 @@ function Director:start(source, requested_profile, scheduler_token, scheduler_oc
         self.state.event.status = "recovery_required"
         return false, "unable to persist selected-base dispatch results: " .. tostring(dispatch_error)
     end
-    self.logger:info("Native Siege League requests returned; awaiting new lifecycle confirmation", {
+    self.logger:info(custom and "Custom assault requests queued; awaiting initialized attackers"
+        or "Native Siege League requests returned; awaiting new lifecycle confirmation", {
         occurrence = occurrence_id,
         profile = profile_id,
         expectedBases = util.count(self.state.event.bases),
     })
     if self.state.event.requesterUid and not self.state.event.startConfirmedAt then
-        self:_chat(string.format("PED request #%d: native call returned; waiting up to %ds for new enemy-start evidence. This is not yet a confirmed raid.",
+        self:_chat(string.format(custom
+            and "PED request #%d: custom spawns queued; waiting up to %ds for initialized attacker evidence. This is not yet a confirmed assault."
+            or "PED request #%d: native call returned; waiting up to %ds for new enemy-start evidence. This is not yet a confirmed raid.",
             self.state.event.requestNumber or 0, math.max(0, self.state.event.startConfirmationDeadline - self.clock())),
             self.state.event.requesterUid)
         if native_route == "march" then
@@ -756,6 +795,155 @@ function Director:on_native_start_progress(progress)
     return true
 end
 
+function Director:on_custom_assault_record(kind, data, occurrence_id)
+    local event = self:_custom_event(occurrence_id)
+    if not event or type(data) ~= "table"
+        or type(kind) ~= "string" or not kind:match("^custom_") then
+        return false, "custom assault journal scope is invalid"
+    end
+    if kind == "custom_assault_plan" then
+        if event.customAssault or self.state.status ~= "starting" then return false, "custom assault plan is already fixed" end
+        if type(data.members) ~= "table" or #data.members < 1 or #data.members > self.config.limits.maxTargets then
+            return false, "custom assault plan exceeds its target bounds"
+        end
+        local members = {}
+        for _, member in ipairs(data.members) do
+            if type(member) ~= "table" or not event.bases[member.baseId] or not util.is_integer(member.index)
+                or member.index < 1 or member.index > self.config.limits.maxTargets or members[tostring(member.index)] then
+                return false, "custom assault member plan is invalid"
+            end
+            members[tostring(member.index)] = {
+                index = member.index, baseId = member.baseId, groupId = member.groupId,
+                characterId = member.characterId, name = member.name, level = member.level, slot = member.slot,
+                status = "planned",
+            }
+        end
+        event.customAssault = { schemaVersion = 1, planned = #data.members, members = members }
+    elseif data.index then
+        local member = event.customAssault and event.customAssault.members[tostring(data.index)]
+        if not member or (data.baseId and data.baseId ~= member.baseId)
+            or (data.characterId and data.characterId ~= member.characterId) then
+            return false, "custom assault transition has no matching member"
+        end
+        member.lastTransition = kind
+        if kind == "custom_spawn_intent" then
+            member.spawnRequested, member.status = true, "requested"
+        elseif kind == "custom_member_initialized" then
+            member.status = "initialized"
+        elseif kind == "custom_cleanup_intent" then
+            member.cleanupRequested = true
+        end
+        for _, key in ipairs({ "status", "phase", "outcome", "reason", "targetId", "healthBudget", "engaged" }) do
+            local value = data[key]
+            if value ~= nil then
+                if type(value) ~= "string" and type(value) ~= "number" and type(value) ~= "boolean" then
+                    return false, "custom assault transition contains an opaque value"
+                end
+                member[key] = value
+            end
+        end
+        for _, identity in ipairs({ "instanceGuid", "playerGuid" }) do
+            if data[identity] then
+                local guid = {}
+                for _, key in ipairs({ "A", "B", "C", "D" }) do
+                    local value = data[identity][key]
+                    if not util.is_integer(value) then return false, "custom assault identity is unreadable" end
+                    guid[key] = value
+                end
+                member[identity] = guid
+            end
+        end
+    end
+    local persisted, reason = self:_persist(kind, data)
+    if not persisted then
+        self.state.status, event.status = "recovery_required", "recovery_required"
+        event.recoveryReason = "unable to persist custom assault transition"
+        return false, reason
+    end
+    return true
+end
+
+function Director:on_custom_assault_progress(base_id, phase, alive, pending, occurrence_id)
+    local event = self:_custom_event(occurrence_id)
+    local base = event and event.bases[base_id]
+    if not base then return false end
+    local previous = base.customProgress
+    base.customProgress = { phase = phase, alive = alive, pending = pending, observedAt = self.clock() }
+    self:_mark_dirty()
+    if event.requesterUid and (not previous or previous.phase ~= phase) then
+        self:_chat(string.format("PED #%d target %d: custom assault %s; initialized attackers=%d, pending=%d.",
+            event.requestNumber or 0, base.dispatchIndex or 0, phase, alive or 0, pending or 0), event.requesterUid)
+    end
+    if base.status == "pending" and phase == "failed" and alive == 0 and pending == 0 then
+        base.status, base.endedAt = "custom_start_failed", self.clock()
+        event.lastLifecycleAt = self.clock()
+        local persisted, reason = self:_persist("custom_base_start_failed", { baseId = base_id })
+        if not persisted then
+            self.state.status, event.status = "recovery_required", "recovery_required"
+            event.recoveryReason = "unable to persist terminal custom base"
+            return false, reason
+        end
+    end
+    return true
+end
+
+function Director:on_custom_assault_finished(base_id, group_id, outcome, occurrence_id)
+    local event = self:_custom_event(occurrence_id)
+    local base = event and event.bases[base_id]
+    if not base or base.groupId ~= group_id then return false end
+    if outcome ~= "completed" and outcome ~= "timeout" and outcome ~= "cancelled" then
+        return false, "custom assault terminal outcome is invalid"
+    end
+    base.status, base.endedAt = outcome, self.clock()
+    event.lastLifecycleAt = self.clock()
+    return self:_persist("custom_base_finished", { baseId = base_id, outcome = outcome })
+end
+
+function Director:_close_custom_assault(reason, resume)
+    local event = self.state.event
+    if not event or event.backend ~= "custom-assault" or not event.customAssault or event.customCleanupComplete then return true end
+    if not self.bridge.close_custom_assault then return false, "custom assault cleanup is unavailable" end
+    local requested = { reason = reason, resume = resume or "cleanup" }
+    local previous = event.customCleanupPending
+    local new_intent = not previous or previous.reason ~= requested.reason or previous.resume ~= requested.resume
+        or self.custom_cleanup_occurrence ~= event.id
+    if new_intent and not self:_persist("custom_cleanup_intent", requested) then
+        self.state.status, event.status = "recovery_required", "recovery_required"
+        return false, "unable to persist custom assault cleanup intent"
+    end
+    self.custom_cleanup_in_progress = true
+    local closed, cleanup_error = self.bridge:close_custom_assault(reason, event.customAssault)
+    self.custom_cleanup_in_progress = false
+    if not closed then
+        event.customCleanupPending, self.custom_cleanup_occurrence = nil, nil
+        self.state.status, event.status = "recovery_required", "recovery_required"
+        event.recoveryReason = cleanup_error or "custom assault cleanup is incomplete"
+        self:_persist("custom_cleanup_failed", { reason = event.recoveryReason })
+        return false, event.recoveryReason
+    end
+    if cleanup_error == "pending" then
+        event.customCleanupPending = requested
+        self.custom_cleanup_occurrence = event.id
+        if new_intent then
+            if not self:_persist("custom_cleanup_pending", event.customCleanupPending) then
+                self.custom_cleanup_occurrence = nil
+                self.state.status, event.status = "recovery_required", "recovery_required"
+                return false, "unable to persist pending custom cleanup"
+            end
+        end
+        return false, "custom assault cleanup is awaiting native completion", true
+    end
+    event.customCleanupPending, self.custom_cleanup_occurrence = nil, nil
+    event.customCleanupComplete = true
+    local persisted, persist_error = self:_persist("custom_cleanup_complete", { reason = reason })
+    if not persisted then
+        self.state.status, event.status = "recovery_required", "recovery_required"
+        event.recoveryReason = "unable to persist custom assault cleanup completion"
+        return false, persist_error
+    end
+    return true
+end
+
 function Director:on_invasion_start(base_id, group_id)
     local event = self:_active_event()
     if not event or type(base_id) ~= "string" or base_id == "" then
@@ -806,10 +994,12 @@ function Director:on_invasion_start(base_id, group_id)
         return true
     end
     if first_confirmation then
+        local custom = event.backend == "custom-assault"
         local notified, notification_error = self:_notify(
-            "SIEGE LEAGUE - RAID STARTED",
-            bounties.profile(event.profileId).name .. ": A native invasion is confirmed. "
-                .. (event.fanoutDispatched and "All requested base calls have already been submitted; no duplicate fanout will run."
+            custom and "SIEGE LEAGUE - CUSTOM ASSAULT STARTED" or "SIEGE LEAGUE - RAID STARTED",
+            bounties.profile(event.profileId).name .. (custom and ": Initialized PED-owned attackers are active. " or ": A native invasion is confirmed. ")
+                .. (custom and "All eligible bases share this assault; remaining attackers are dispatched in interleaved bounded batches."
+                    or event.fanoutDispatched and "All requested base calls have already been submitted; no duplicate fanout will run."
                     or "The remaining eligible online-guild bases will now be requested.")
                 .. " Move between bases and protect the defenders!"
         )
@@ -842,9 +1032,8 @@ function Director:_apply_credit_policy(event, record)
     end
 end
 
-function Director:on_composition_result(base_id, replaced_count, selected_count, composition_error, assignments)
-    local event = self:_active_event()
-    if not event or type(base_id) ~= "string" then
+function Director:_record_composition(event, base_id, replaced_count, selected_count, composition_error, assignments)
+    if not event or type(base_id) ~= "string" or not event.bases[base_id] then
         return false
     end
     local composition = event.compositions[base_id]
@@ -868,7 +1057,47 @@ function Director:on_composition_result(base_id, replaced_count, selected_count,
         event.bases[base_id].ranked = true
     end
     self:_mark_dirty()
-    return composition_error == nil
+    return true
+end
+
+function Director:on_composition_result(base_id, replaced_count, selected_count, composition_error, assignments)
+    return self:_record_composition(self:_active_event(), base_id, replaced_count, selected_count, composition_error, assignments)
+        and composition_error == nil
+end
+
+function Director:on_custom_assault_composition(base_id, assignments, reason, occurrence_id)
+    local event = self:_custom_event(occurrence_id)
+    if type(assignments) ~= "table" then return false end
+    return self:_record_composition(event, base_id, #assignments, #assignments, reason, assignments)
+end
+
+function Director:on_custom_assault_recovered_member(index, phase, occurrence_id)
+    local event = self:_custom_event(occurrence_id)
+    local member = event and event.customAssault and event.customAssault.members[tostring(index)]
+    if not member or not ({ dead = true, captured = true, missing = true, despawned = true, cancelled = true })[phase] then
+        return false, "custom recovery outcome has no matching member"
+    end
+    local unranked = phase ~= "dead" or member.engaged ~= true or member.cleanupRequested or member.reason == "escaped"
+    if unranked then
+        local composition = event.compositions[member.baseId]
+        if not composition or not composition.failed then
+            if not self:on_custom_assault_composition(member.baseId, {}, "custom assault recovered cleanup: " .. phase, occurrence_id) then
+                return false, "custom recovery composition could not be reconciled"
+            end
+        end
+    end
+    if member.targetId and self.scoreboard then
+        if unranked then self.scoreboard:mark_unranked(member.targetId, "recovered_custom_cleanup") end
+        local closed, close_error = self.scoreboard:close_target({
+            target_id = member.targetId, source_kind = "uncredited", reason = "recovered_" .. phase,
+        })
+        if not closed and close_error ~= "target_not_found" and close_error ~= "already_closed" then
+            return false, close_error
+        end
+    end
+    return self:on_custom_assault_record("custom_recovery_member_retired", {
+        index = member.index, baseId = member.baseId, phase = phase, reason = "recovered_cleanup",
+    }, occurrence_id)
 end
 
 function Director:on_invasion_timeout(base_id, group_id)
@@ -987,7 +1216,11 @@ end
 function Director:_fail_unconfirmed_start(reason)
     local event = self.state.event
     if not event or event.startConfirmedAt then return false, "start already confirmed" end
-    if type(self.bridge.capture_start_timeout) == "function" then
+    local custom = event.backend == "custom-assault"
+    if custom then
+        local cleaned, cleanup_error, pending = self:_close_custom_assault(reason or "initialization-timeout", "fail_start")
+        if not cleaned then return pending == true, cleanup_error end
+    elseif type(self.bridge.capture_start_timeout) == "function" then
         local captured, diagnostic = self.bridge:capture_start_timeout()
         if captured then
             event.startTimeoutDiagnostics = diagnostic
@@ -1003,7 +1236,9 @@ function Director:_fail_unconfirmed_start(reason)
     local now = self.clock()
     for _, base in pairs(event.bases) do
         if base.status == "pending" then
-            if base.dispatchStatus == "probe_call_returned" or base.dispatchStatus == "fanout_call_returned"
+            if custom then
+                base.status = "custom_start_missing"
+            elseif base.dispatchStatus == "probe_call_returned" or base.dispatchStatus == "fanout_call_returned"
                 or base.dispatchStatus == "lifecycle_confirmed" then
                 base.status = "native_start_missing"
             else
@@ -1044,7 +1279,8 @@ function Director:_fail_unconfirmed_start(reason)
     if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
     self:_notify(
         "SIEGE LEAGUE - START FAILED",
-        "Siege League start failed: " .. event.abortReason .. ". No Siege League results or rewards were created; inspect the native diagnostics before retrying."
+        "Siege League start failed: " .. event.abortReason .. ". No Siege League results or rewards were created; inspect the "
+            .. (custom and "custom assault" or "native") .. " diagnostics before retrying."
     )
     if event.requesterUid and event.startTimeoutDiagnostics then
         local diagnostic = event.startTimeoutDiagnostics
@@ -1181,7 +1417,8 @@ end
 function Director:resolve(reason)
     local allowed, quarantine_reason = native_start_guard(self.bridge)
     if not allowed then return false, quarantine_reason end
-    if self.state.status ~= "active" and self.state.status ~= "starting" and self.state.status ~= "recovery_required" then
+    if self.state.status ~= "active" and self.state.status ~= "starting" and self.state.status ~= "recovery_required"
+        and not (self.state.status == "resolving" and self.state.event and self.state.event.customCleanupComplete) then
         return false, "nothing to resolve"
     end
     local event = self.state.event
@@ -1196,6 +1433,8 @@ function Director:resolve(reason)
         self.state.status = "recovery_required"
         return false, "unable to persist resolve intent"
     end
+    local cleaned, cleanup_error, pending = self:_close_custom_assault(event.resolveReason, "resolve")
+    if not cleaned then return pending == true, cleanup_error end
 
     local rankings = self.scoreboard and self.scoreboard:rankings() or {}
     event.finalRankings = rankings
@@ -1244,6 +1483,8 @@ function Director:abort(reason)
     if not self.state.event or self.state.status == "idle" then
         return false, "nothing to abort"
     end
+    local cleaned, cleanup_error, pending = self:_close_custom_assault(reason or "operator", "abort")
+    if not cleaned then return pending == true, cleanup_error end
     if not self.state.event.startConfirmedAt then
         local scheduler_failed, scheduler_error = self.scheduler:fail_start(
             self.state.event.schedulerOccurrenceKey,
@@ -1269,7 +1510,9 @@ function Director:abort(reason)
     if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
     self:_notify(
         "SIEGE LEAGUE - SCORING STOPPED",
-        "Siege League scoring stopped. Native invasions were left to Palworld's normal lifecycle for safety."
+        self.state.event.backend == "custom-assault"
+            and "Custom assault scoring stopped; PED-owned attackers were cleaned up or released from ownership."
+            or "Siege League scoring stopped. Native invasions were left to Palworld's normal lifecycle for safety."
     )
     return true
 end
@@ -1280,6 +1523,8 @@ function Director:reset()
     if self.state.status ~= "completed" and self.state.status ~= "aborted" and self.state.status ~= "recovery_required" then
         return false, "reset is allowed only after completion, abort, or recovery-required state"
     end
+    local cleaned, cleanup_error = self:_close_custom_assault("reset", "reset")
+    if not cleaned then return false, cleanup_error end
     local active = self.bridge:active_invasion_count()
     if active > 0 then
         return false, "native invasion incidents are still active"
@@ -1720,6 +1965,22 @@ end
 
 function Director:tick()
     if not native_start_guard(self.bridge) then return end
+    local recovering_cleanup = self.state.event and self.state.event.customCleanupPending
+    if recovering_cleanup and self.custom_cleanup_occurrence == self.state.event.id then
+        local done = self:_close_custom_assault(recovering_cleanup.reason, recovering_cleanup.resume)
+        if done then
+            if recovering_cleanup.resume == "abort" then
+                self:abort(recovering_cleanup.reason)
+            elseif recovering_cleanup.resume == "resolve" then
+                self:resolve(recovering_cleanup.reason)
+            elseif recovering_cleanup.resume == "fail_start" then
+                self:_fail_unconfirmed_start(recovering_cleanup.reason)
+            elseif recovering_cleanup.resume == "reset" then
+                self:reset()
+            end
+        end
+        return
+    end
     local now = self.clock()
     if self.scheduler then self.scheduler:tick(now) end
     local event = self:_active_event()
@@ -1732,7 +1993,9 @@ function Director:tick()
             if not event then return end
         end
         if not event.startConfirmedAt and now >= event.startConfirmationDeadline then
-            self:_fail_unconfirmed_start("no correlated native invasion lifecycle confirmed before start discovery timeout")
+            self:_fail_unconfirmed_start(event.backend == "custom-assault"
+                and "no initialized custom attackers confirmed before the start deadline"
+                or "no correlated native invasion lifecycle confirmed before start discovery timeout")
             event = nil
         elseif event.startConfirmedAt and not event.fanoutDispatched then
             self:_dispatch_confirmed_fanout()
@@ -1751,7 +2014,7 @@ function Director:tick()
         elseif event.fanoutDispatched and (now >= discovery_deadline or all_bases_closed(event)) then
             local active_count = 0
             for _, base in pairs(event.bases) do
-                if base.status == "pending" then
+                if base.status == "pending" and event.backend ~= "custom-assault" then
                     base.status = "native_start_missing"
                     base.endedAt = now
                     self:_mark_dirty()

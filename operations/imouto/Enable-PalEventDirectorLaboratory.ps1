@@ -90,6 +90,16 @@ function Assert-PedConfigSchema3 {
     }
     Assert-IntegerRange $Config.runtime.pollIntervalMs 'runtime.pollIntervalMs' 250 5000
     Assert-IntegerRange $Config.runtime.checkpointIntervalSeconds 'runtime.checkpointIntervalSeconds' 1 300
+    if ($null -ne $Config.PSObject.Properties['customAssault']) {
+        Assert-IntegerRange $Config.customAssault.membersPerBase 'customAssault.membersPerBase' 1 8
+        Assert-IntegerRange $Config.customAssault.level 'customAssault.level' 1 65
+        Assert-IntegerRange $Config.customAssault.spawnRadiusCm 'customAssault.spawnRadiusCm' 500 12000
+        Assert-IntegerRange $Config.customAssault.spawnBatchSize 'customAssault.spawnBatchSize' 1 16
+        Assert-IntegerRange $Config.customAssault.pollBatchSize 'customAssault.pollBatchSize' 1 64
+        Assert-IntegerRange $Config.customAssault.lifetimeSeconds 'customAssault.lifetimeSeconds' 60 1800
+        Assert-IntegerRange $Config.customAssault.initializationSeconds 'customAssault.initializationSeconds' 5 120
+        Assert-IntegerRange $Config.customAssault.retargetSeconds 'customAssault.retargetSeconds' 2 30
+    }
     if ([string]$Config.runtime.logLevel -notin @('debug', 'info', 'warn', 'error')) { throw 'runtime.logLevel is invalid.' }
     $requiredCapabilities = @('observeCombat', 'observeInvasions', 'chatCommands', 'startAllInvasions', 'substituteBountyMembers', 'grantItems')
     foreach ($name in $requiredCapabilities) {
@@ -290,6 +300,10 @@ if (-not $PSCmdlet.ShouldProcess(
     Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -ErrorAction Stop
 
     $config.compatibility.requiredAdapter = $ExpectedAdapter
+    if ($null -eq $config.PSObject.Properties['customAssault']) {
+        $defaults = Get-Content -LiteralPath $DefaultConfigPath -Raw | ConvertFrom-Json
+        $config | Add-Member -NotePropertyName 'customAssault' -NotePropertyValue $defaults.customAssault
+    }
     $config.compatibility.allowedServerBuildIds = @($VerifiedBuildId)
     $config.compatibility.allowedUe4ssVersions = @($ExpectedUe4ssApiVersion)
     $config.siegeLeague.chatStartPolicy = $AuthorizationPolicy

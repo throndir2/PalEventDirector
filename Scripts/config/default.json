@@ -32,6 +32,16 @@
     "maxDamageRecords": 100000,
     "maxAnnouncementLength": 500
   },
+  "customAssault": {
+    "membersPerBase": 3,
+    "level": 30,
+    "spawnRadiusCm": 7000,
+    "spawnBatchSize": 8,
+    "pollBatchSize": 32,
+    "lifetimeSeconds": 900,
+    "initializationSeconds": 60,
+    "retargetSeconds": 5
+  },
   "siegeLeague": {
     "name": "Siege League",
     "defaultProfile": "all-bounty",

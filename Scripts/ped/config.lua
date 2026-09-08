@@ -37,6 +37,16 @@ function M.defaults()
             maxDamageRecords = 100000,
             maxAnnouncementLength = 500,
         },
+        customAssault = {
+            membersPerBase = 3,
+            level = 30,
+            spawnRadiusCm = 7000,
+            spawnBatchSize = 8,
+            pollBatchSize = 32,
+            lifetimeSeconds = 900,
+            initializationSeconds = 60,
+            retargetSeconds = 5,
+        },
         siegeLeague = {
             name = "Siege League",
             defaultProfile = "all-bounty",
@@ -196,6 +206,14 @@ function M.validate(config)
         require_integer(config.limits.maxPlayers, "limits.maxPlayers", 1, 1024)
         require_integer(config.limits.maxDamageRecords, "limits.maxDamageRecords", 100, 1000000)
         require_integer(config.limits.maxAnnouncementLength, "limits.maxAnnouncementLength", 40, 1000)
+        require_integer(config.customAssault.membersPerBase, "customAssault.membersPerBase", 1, 8)
+        require_integer(config.customAssault.level, "customAssault.level", 1, 65)
+        require_integer(config.customAssault.spawnRadiusCm, "customAssault.spawnRadiusCm", 500, 12000)
+        require_integer(config.customAssault.spawnBatchSize, "customAssault.spawnBatchSize", 1, 16)
+        require_integer(config.customAssault.pollBatchSize, "customAssault.pollBatchSize", 1, 64)
+        require_integer(config.customAssault.lifetimeSeconds, "customAssault.lifetimeSeconds", 60, 1800)
+        require_integer(config.customAssault.initializationSeconds, "customAssault.initializationSeconds", 5, 120)
+        require_integer(config.customAssault.retargetSeconds, "customAssault.retargetSeconds", 2, 30)
         require_boolean(config.siegeLeague.allowCrossBaseRoaming, "siegeLeague.allowCrossBaseRoaming")
         if not config.siegeLeague.allowCrossBaseRoaming then
             error("this release requires cross-base roaming; disable the event instead of changing its scoring contract")

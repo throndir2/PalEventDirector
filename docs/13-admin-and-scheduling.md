@@ -2,6 +2,8 @@
 
 > **Native-first admin testing:** authorized admin requests delegate gameplay policy to Palworld. Visitor/incident occupancy, native busy/pathfinding/cooldown, base availability/ignore and the invasion-enable setting are observations, not PED admin vetoes. Admin all-target starts submit every requested target once without waiting for the first base to accept. Runtime/call safety, exact targets, recovery and truthful outcomes remain enforced. PED does not delete incidents, dismiss NPCs or rewrite flags to manufacture acceptance.
 
+> **Simultaneous `all-bounty`:** this profile uses a custom PED-owned encounter backend. It creates no native invasion incident or `InvaderInfo`. Other profiles retain their native routing. Custom cleanup is restricted to exactly identified, still-unowned PED spawns; unrelated, native and captured entities are never removed by it.
+
 ## Scope and safety
 
 Alpha.3 is a laboratory-only release. Its mutation preflight rejects any mode other than `laboratory`, and every capability is disabled in the generated configuration. It never requires a client mod: players connect with normal vanilla clients and use ordinary Palworld chat and server notices.
@@ -16,7 +18,7 @@ Schema 3 intentionally has no migration from earlier alpha configurations or sta
 
 The command tables below describe the implemented alpha.3 behavior unless explicitly marked as required design. Direct testing follows [the laboratory runbook](15-preflight-crash-diagnostics.md). The admin-priority contract supersedes ordinary throttling/cooldown policy for authorized administrators as a design requirement; implementation must be completed before claiming those overrides work.
 
-The [guard inventory](15-preflight-crash-diagnostics.md#start-policy-guard-inventory-and-removal) groups 16 admission-policy checks: five previously exempted admins, and eleven newly removed as admin vetoes. Authentication, supported native calls, exact targets, bounded work, durable state, recovery and genuine lifecycle correlation remain. A new admin request may supersede current PED tracking after validating its targets; the old event/occurrence is terminalized durably without cancelling its native incidents. Failed validation or persistence retains old tracking. Recovery-required events cannot be superseded. A positive countdown supersedes old tracking only when due.
+The [guard inventory](15-preflight-crash-diagnostics.md#start-policy-guard-inventory-and-removal) groups 16 admission-policy checks: five previously exempted admins, and eleven newly removed as admin vetoes. Authentication, supported native calls, exact targets, bounded work, durable state, recovery and genuine lifecycle correlation remain. A new admin request may supersede current PED tracking after validating its targets; the old event/occurrence is terminalized durably without cancelling its native incidents. Custom attackers instead require scoped cleanup before replacement can begin. Asynchronous cleanup reports a pending outcome, not successful replacement. Failed validation or persistence retains old tracking. Recovery-required events cannot be superseded. A positive countdown supersedes old tracking only when due.
 
 ### Required admin behavior
 
@@ -30,12 +32,20 @@ A start is mandatory for the eligible target set; it is not a consent vote. At t
 
 1. snapshots every valid online player controller;
 2. resolves every online player UID to a native guild ID, failing the whole start if any lookup is uncertain;
-3. selects valid, identity-matched base models belonging to those online guilds; ordinary users and schedules additionally require available, idle observers;
+3. selects valid, identity-matched base models belonging to those online guilds; native-profile ordinary users and schedules additionally require available, idle observers;
 4. retains runtime/call compatibility, exact-target and bounded-resource checks; native gameplay state is diagnostic-only for admins;
 5. enrolls the same online-player snapshot in one server-wide leaderboard, regardless of guild; and
-6. submits each requested admin target once, or uses the existing probe-then-confirmed-fanout sequence for ordinary users and schedules. Explicit `test-native` experiments still have exactly one target.
+6. interleaves all custom-assault bases, submits each requested native admin target once, or uses the native probe-then-confirmed-fanout sequence for ordinary users and schedules. Explicit `test-native` experiments still have exactly one target.
 
 A guild with no online member at that boundary is not attacked. Every online player is enrolled even if that player's guild has no selected base. Players who join while the event is active are enrolled globally on the next poll and before their first accepted score record. An attribution that cannot be tied to an enrolled online player consumes the target's damage budget but receives no score or final hit.
+
+For `all-bounty`, native incident occupancy, invasion-enable policy and native observer cooldowns do not decide eligibility: those govern a different backend. The selected online-guild bases are prepared independently. Safe base-local geometry failures are reported instead of spawning at another base or silently widening position bounds. Successful bases receive interleaved NPC requests without a probe/completion dependency. Count times selected bases must fit `limits.maxTargets` before any spawn.
+
+Each custom actor has a durable spawn intent and, once initialized, an exact native instance/player-ID pair and immutable maximum-HP budget. Only that owned actor can earn event credit. The display uses `CUSTOM ASSAULT STARTED`, not a claim that Palworld accepted a native raid. Local players/workers are selected by base/guild/range; empty bases use bounded approach/holding and a stock building-attack primitive whose gameplay behavior still needs qualification, never an unbounded nearest-player chase.
+
+Capture-in-progress or temporary inactivity pauses participation without discarding ownership. Completed captures are released, never despawned by PED. Resolve, abort, start failure and supersession retain tracking until scoped cleanup is confirmed. Pending native despawns are observed without repeating the request; timeout or an uncertain identity requires recovery. Restart never automatically resumes custom spawning, combat, cleanup or reward settlement.
+
+PED also inspects the actual combat action and its module target, not just the target it requested. An unrelated/out-of-envelope target retires the owned attacker; unreadable combat scope pauses participation within the initialization bound. Building movement distinguishes failure, already-at-goal and accepted requests, and melee requires the stock facing/reach predicate. A failed local movement request cleans up that attacker without fabricating a base start or blocking another base. Recovered cleanup reconciles per-member ownership and scoring before results; an absent handle without independent completion evidence remains unresolved.
 
 The selected-base march API returns no success value; direct admission returns a Boolean. Logs and dispatch results distinguish the native method, a returned call, its return type and an actual Boolean false. Neither a void return nor Boolean true proves a raid. The adapter resolves the active manager from an online player's world and pins it for the occurrence. Before/after snapshots record native policy state without using it as an admin veto. Pre-existing incident identities stay private in memory and cannot be claimed or bounty-substituted as a new request's success.
 
@@ -206,9 +216,9 @@ There is no separate `start-now` alias and no command that force-stops an unknow
 
 ## Built-in profiles
 
-| ID | Native member transformation |
+| ID | Backend and composition |
 |---|---|
-| `all-bounty` | Replace every intercepted member and rotate the audited 34-ID bounty roster globally. |
+| `all-bounty` | Simultaneous PED-controlled base assaults. Rotate the audited 34-ID bounty roster across configured stock NPC spawns; no native incident or singleton raid controller. |
 | `patrol` | Use only one- and two-token bounty targets. |
 | `mixed` | Replace one member with a bounty captain and retain native escorts. |
 | `most-wanted` | Use two- through four-token targets. |
@@ -216,7 +226,7 @@ There is no separate `start-now` alias and no command that force-stops an unknow
 | `jackpot` | Use only four- or five-token targets. |
 | `native` | Preserve the native selected composition; baseline control. |
 
-Profiles never resize Palworld's native member array. A transformation failure leaves that base unranked.
+Native profiles never resize Palworld's native member array. A native transformation failure or incomplete custom composition leaves that base unranked.
 
 ## Complete configuration reference
 
@@ -227,6 +237,13 @@ Profiles never resize Palworld's native member array. A transformation failure l
 | `schemaVersion` | Must be integer `3`. |
 | `mode` | `laboratory` or `production`; alpha.3 invasion preflight permits only `laboratory`. |
 | `compatibility.requiredAdapter` | Must exactly match the runtime adapter, currently `palworld-build-25080279-lab`. |
+| `customAssault.membersPerBase` | 1-8; default 3 stock bounty NPCs per prepared base. |
+| `customAssault.level` | 1-65; default 30. Fixed custom level, not native worker-derived scaling. |
+| `customAssault.spawnRadiusCm` | 500-12000; default 7000, additionally constrained to the base's outer usable area and bounded native placement. |
+| `customAssault.spawnBatchSize` / `pollBatchSize` | Defaults 8 / 32; bound per-tick spawn and ownership-observation work. |
+| `customAssault.lifetimeSeconds` | 60-1800; default 900, followed by ownership-checked cleanup. |
+| `customAssault.initializationSeconds` | 5-120; default 60. Uncertain initialization/cleanup is retained for recovery, never retried blindly. |
+| `customAssault.retargetSeconds` | 2-30; default 5. Only base-local valid targets may be selected. |
 | `compatibility.allowedServerBuildIds` | Exact numeric Steam build IDs. Mutation requires at least one and also requires the process environment `PAL_EVENT_DIRECTOR_SERVER_BUILD_ID` to match. |
 | `compatibility.allowedUe4ssVersions` | Exact `major.minor.patch` values returned by `UE4SS.GetVersion()`. Mutation requires a non-empty exact-match list. Do not guess this value from an archive filename. |
 

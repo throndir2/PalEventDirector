@@ -34,6 +34,17 @@ local ERROR_SIGNATURES = {
     { text = "Native raid bootstrap scope is invalid", code = "raid-bootstrap-scope" },
     { text = "Native raid state did not initialize", code = "raid-bootstrap-initialization" },
     { text = "Native raid default start time is not immediately due", code = "raid-bootstrap-clock" },
+    { text = "Custom assault signature is unsupported", code = "custom-assault-signature" },
+    { text = "Custom assault scope is invalid", code = "custom-assault-scope" },
+    { text = "Custom assault ownership is unreadable", code = "custom-assault-ownership" },
+    { text = "Custom assault actor identity changed", code = "custom-assault-identity" },
+    { text = "Custom assault initialization is incomplete", code = "custom-assault-initialization" },
+    { text = "Custom assault native action failed", code = "custom-assault-action" },
+    { text = "Custom assault placement is unavailable", code = "custom-assault-placement" },
+    { text = "Custom assault despawn did not complete", code = "custom-assault-despawn" },
+    { text = "Custom assault recovery has an unidentified spawn outcome", code = "custom-assault-recovery" },
+    { text = "Custom assault recovery requires a live world context", code = "custom-assault-recovery-world" },
+    { text = "Custom assault recovery outcome could not be persisted", code = "custom-assault-recovery-persistence" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 local TARGET_FAILURES = {
@@ -49,6 +60,7 @@ local TARGET_FAILURES = {
     ["observer-id-mismatch"] = "The observer's TargetBaseCampID no longer matches the selected base.",
     ["model-id-mismatch"] = "The base model's GetId no longer matches the selected base.",
     ["raid-state-already-exists"] = "A native raid-state actor already exists. Initializing another would replace its ownership; no actor or incident was created.",
+    ["custom-placement-unavailable"] = "No bounded base-local spawn position was available; this base was not spawned into.",
 }
 
 local function failure_detail(value)

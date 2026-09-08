@@ -1,22 +1,32 @@
 # IMOUTO preflight crash diagnostics
 
+## Simultaneous custom assault boundary
+
+`all-bounty` is a simultaneous PED-controlled stock-NPC encounter, explicitly chosen instead of serial native raids. It does not call the native raid-state/Blueprint incident path. `SpawnNPCForServer` has an audited 88-byte frame with a 64-byte spawn struct and null delegate; its handle is only a pending request until the actual actor and controller are initialized. Stock base-local movement/combat and a bounded building-action primitive are used without a native incident, fabricated manager map or distant-player fallback.
+
+Spawn, initialization, engagement and cleanup intents are private journal transitions. Every operation is bounded and bracketed; native faults stop further calls. Exact instance/player IDs, expected character/world, current owner/capture state and original actor identity protect scoring/control/removal. Temporary capture and inactive states are not completed capture or disappearance. Native handle despawn must be observed detached with the original actor invalid/destroying; pending completion is retained and polled without repeating the request. A void return or inactive flag alone is not proof of cleanup.
+
+The compact movement/facing layouts are qualified read-only at startup: `PalMoveToLocation` is 48 bytes, the stock turning helper 24 bytes, and the cone predicate 32 bytes. Result `0` is a failed path request, not Lua-truthy success; results `1`/`2` are not proof of damage. The actual combat action/parent chain and module target are checked for scope. Generated-class loading requires both registry/load evidence and a valid class; no fabricated asset-data fallback is used.
+
+The native prototype and historical analysis below remain useful for `test-native` controls. No `all-bounty` result should be described as a confirmed native invasion.
+
 ## Current safety status
 
 **Diagnostic-only quarantine. Do not issue another siege start on revision `575a9f521977069dcfcb244994f6c017044e9604`.**
 
 That revision produced a dedicated-server native crash, not client desynchronization. The original `preflight-diagnostic-only` profile remains fully quarantined. The `laboratory-native-test` profile enables chat, combat/invasion observation, substitution, and ordinary invasion starts for testing. There is no mandatory stepped preflight. Native-all comparison remains unavailable. No diagnostic or restart automatically starts an event.
 
-The package version remains alpha.3 to preserve configuration and state schemas. The clean commit SHA, artifact hash, and attested delivery profile identify the package. Both profiles force recurring schedules and item delivery off. Installing the test profile is **not** evidence that an invasion has worked: acceptance requires a new matching native start callback or correlated executing enemy incident with live attackers.
+The package version remains alpha.3 to preserve configuration and state schemas. The clean commit SHA, artifact hash, and attested delivery profile identify the package. Both profiles force recurring schedules and item delivery off. Installing the test profile is **not** evidence that an encounter has worked. Native acceptance requires a new matching native start callback or correlated executing enemy incident with live attackers; custom acceptance requires initialized, still-owned attackers and AI setup for each reported base.
 
-In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. An authorized admin `!siege start native 0` or `!siege start all-bounty 0` submits the requested targets after authorization, compatibility, identity and persistence checks. Native visitor/incident occupancy, busy/pathfinding/cooldown, base availability/ignore and world invasion-enable state are logged but no longer veto the admin request. Ordinary users and schedules retain their policy checks.
+In-game status, profiles, schedule, score, and leaderboard commands are available after test-profile preparation. An authorized admin `!siege start native 0` or `!siege start all-bounty 0` submits the requested targets after authorization, compatibility, identity and persistence checks. For native profiles, visitor/incident occupancy, busy/pathfinding/cooldown, base availability/ignore and world invasion-enable state are logged but no longer veto the admin request; ordinary users and schedules retain those policy checks. The separate custom backend does not depend on native raid admission.
 
 ### Normal gameplay test loop
 
-Start the installed test profile, join, and issue the ordinary in-game command. The adapter automatically brackets roster resolution, world-manager resolution, the manager/option-subsystem calls, the invasion-enable flag read, base/incident/eligibility inspection, dispatch snapshots, and the actual march request with flushed before/after breadcrumbs. Labels are developer-authored; player IDs, addresses, settings, and returned objects are not recorded there.
+Start the installed test profile, join, and issue the ordinary in-game command. The adapter brackets roster/world/target resolution and the operations used by the selected backend with flushed before/after breadcrumbs. Native profiles inspect their native state and march requests; custom assaults bracket NPC-manager preparation, placement, spawning, identity/readiness inspection, local actions and cleanup. Labels are developer-authored; player IDs, addresses, settings, and returned objects are not recorded there.
 
 Ordinary eligibility rejections return an error normally. A native Lua error, missing recorder, or failed before/after write records a fixed error classification and disables further native starts for that process. There is no retry or fallback. Native fail-fast cannot be caught: preserve the last before-marker, private logs, and crash evidence, then stop/fix/redeploy/restart. Do not replay the interrupted event.
 
-Normal starts now use the public exact-base `StartInvaderMarchForBaseCamp(Guid)` entry point found in the downloaded Endless Siege 1.8.28 source. The private Boolean `RequestIncidentInvaderEnemy` helper remains an explicit `test-native admission` comparison, not the default admin trigger. No native timers/flags are changed, and there is no all-base/random fallback.
+Normal native-profile starts use the public exact-base `StartInvaderMarchForBaseCamp(Guid)` entry point found in the downloaded Endless Siege 1.8.28 source. This does not describe `all-bounty` custom spawning. The private Boolean `RequestIncidentInvaderEnemy` helper remains an explicit `test-native admission` comparison, not the default admin trigger. No native timers/flags are changed, and there is no all-base/random fallback.
 
 ### Native preparation and public march
 

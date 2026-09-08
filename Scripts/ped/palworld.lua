@@ -469,6 +469,10 @@ function Bridge:begin_event_discovery(profile_id, occurrence_id)
     self.pending_nearest_test = nil
     self.event_native_control = self.pending_native_control
     self.pending_native_control = nil
+    self.custom_targets, self.pending_custom_targets = self.pending_custom_targets, nil
+    self.custom_unavailable, self.pending_custom_unavailable = self.pending_custom_unavailable, nil
+    self.custom_occurrence_id = occurrence_id
+    self.custom_assault = nil
     self.event_manager_address = object_address(self.event_manager)
     self.event_world_address = object_address(self.event_world)
     if not self.event_manager_address or not self.event_world_address then
@@ -552,6 +556,17 @@ function Bridge:poll_invasion_progress()
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
     if not self.event_open or not self.director or not self.director.state.event then return true end
+    if self.custom_assault then
+        local observed, custom_error = self.custom_assault:poll()
+        if not observed then
+            local event = self.director.state.event
+            self.director.state.status, event.status = "recovery_required", "recovery_required"
+            event.recoveryReason = custom_error or "custom assault observation stopped"
+            self.director:_persist("custom_assault_interrupted", { reason = event.recoveryReason })
+            return false, event.recoveryReason
+        end
+        return true
+    end
     local now = self.clock()
     if now < (self.next_invasion_progress_at or 0) then return true end
     self.next_invasion_progress_at = now + 5
@@ -671,7 +686,12 @@ end
 
 function Bridge:end_event_tracking(preserve_pending)
     local pending_fields = { "pending_admin_override", "pending_nearest_test", "pending_native_control",
-        "pending_expected_bases", "pending_native_base_ids", "pending_base_guilds", "pending_roster", "pending_manager", "pending_world" }
+        "pending_expected_bases", "pending_native_base_ids", "pending_base_guilds", "pending_roster", "pending_manager", "pending_world",
+        "pending_custom_targets", "pending_custom_unavailable" }
+    if self:has_custom_assault_members() then
+        self.logger:error("Custom assault ownership retained because cleanup is incomplete")
+        return false, "custom assault cleanup must complete before tracking is discarded"
+    end
     local pending = {}
     if preserve_pending == true then
         for _, key in ipairs(pending_fields) do pending[key] = self[key] end
@@ -705,6 +725,10 @@ function Bridge:end_event_tracking(preserve_pending)
     self.fanout_dispatched = false
     self.dispatching_base_id = nil
     self.member_context = {}
+    self.custom_assault, self.custom_targets, self.pending_custom_targets = nil, nil, nil
+    self.custom_unavailable, self.pending_custom_unavailable = nil, nil
+    self.custom_occurrence_id = nil
+    if self.custom_engine then self.custom_engine:release_tracking() end
     self.profile_id = "native"
     self.bounty_selector = nil
     self.next_invasion_progress_at = nil
@@ -713,6 +737,7 @@ function Bridge:end_event_tracking(preserve_pending)
     if preserve_pending == true then
         for _, key in ipairs(pending_fields) do self[key] = pending[key] end
     end
+    return true
 end
 
 function Bridge:_static_find(path)
@@ -815,6 +840,7 @@ function Bridge:_world_invaders_enabled(world)
 end
 
 function Bridge:_manager_hook_scope(context)
+    if self.event_open and bounties.is_custom(self.profile_id) then return nil end
     local manager = unwrap(context)
     if not valid(manager) then return nil end
     local manager_world_ok, manager_world = call(manager, "GetWorld")
@@ -837,6 +863,7 @@ function Bridge:_manager_hook_scope(context)
 end
 
 function Bridge:_selection_hook_scope(context)
+    if self.event_open and bounties.is_custom(self.profile_id) then return nil end
     local incident = unwrap(context)
     if not valid(incident) then return nil end
     local world_ok, world = call(incident, "GetWorld")
@@ -1268,6 +1295,10 @@ function Bridge:_target_context(defender)
     if not valid(defender) then
         return nil, "invalid defender"
     end
+    if bounties.is_custom(self.profile_id) then
+        if not self.custom_assault then return nil, "custom assault ownership is unavailable" end
+        return self.custom_assault:target(defender)
+    end
     local utility = self:_utility()
     if not valid(utility) then
         return nil, "PalUtility unavailable"
@@ -1431,6 +1462,7 @@ function Bridge:_selection_base_id(incident)
 end
 
 function Bridge:_on_select_invaders(context, out_members)
+    if bounties.is_custom(self.profile_id) then return end
     local observed_base_id = self:_selection_base_id(context)
     if self.event_open or self.clock() <= self.native_all_diagnostic_until then
         self.logger:info("Native SelectInvaders observed", { base = util.mask_uid(observed_base_id), eventOpen = self.event_open })
@@ -1765,9 +1797,11 @@ function Bridge:register()
             self.qualify_raid_layout = false
             local qualified = self:_native_step("raid-bootstrap-layout", function()
                 NativeRaid.prepare(self, { valid = valid })
+                self:_custom_engine():qualify()
                 self.logger:info("Native raid bootstrap layout qualified", {
                     serverBuildId = require("ped.version").tested_server_build_id, mutation = false,
                 })
+                self.logger:info("Custom assault spawn and action layouts qualified", { mutation = false })
             end)
             if not qualified then return false end
         end
@@ -1931,6 +1965,8 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_roster = {}
     self.pending_manager = nil
     self.pending_world = nil
+    self.pending_custom_targets = nil
+    self.pending_custom_unavailable = nil
     self.pending_admin_override = type(control) == "table" and control.admin == true
     self.pending_nearest_test = nil
     self.pending_native_control = type(control) == "table"
@@ -1944,7 +1980,7 @@ function Bridge:preflight_start(profile_id, control)
     local resolved, manager, world, manager_error = self:_native_step("world-manager", function() return self:_resolve_world_manager(roster) end)
     if not resolved then return false, manager end
     if not manager then return false, manager_error end
-    if not self.pending_admin_override then
+    if not self.pending_admin_override and not bounties.is_custom(profile_id) then
         local settings_ok, invaders_enabled, settings_error =
             self:_native_step("world-invasion-settings", function() return self:_world_invaders_enabled(world) end)
         if not settings_ok then return false, invaders_enabled end
@@ -1966,10 +2002,12 @@ function Bridge:preflight_start(profile_id, control)
         if not self.config.capabilities.substituteBountyMembers then
             return false, "bounty substitution capability is disabled"
         end
-        local lookup_ok, selection_function = self:_native_step("selection-function", function() return self:_static_find(HOOKS.select_invaders) end)
-        if not lookup_ok then return false, selection_function end
-        if not valid(selection_function) then
-            return false, "SelectInvaders is unavailable for bounty substitution"
+        if not bounties.is_custom(profile_id) then
+            local lookup_ok, selection_function = self:_native_step("selection-function", function() return self:_static_find(HOOKS.select_invaders) end)
+            if not lookup_ok then return false, selection_function end
+            if not valid(selection_function) then
+                return false, "SelectInvaders is unavailable for bounty substitution"
+            end
         end
     end
     local selected_id
@@ -1987,7 +2025,8 @@ function Bridge:preflight_start(profile_id, control)
     end
     local eligible_ok, base_set, native_ids, base_guilds, resolved_roster, eligibility_error =
         self:_native_step("eligible-bases", function()
-            return self:_eligible_online_guild_bases(manager, roster, self.pending_admin_override, selected_id)
+            return self:_eligible_online_guild_bases(manager, roster,
+                self.pending_admin_override or bounties.is_custom(profile_id), selected_id)
         end)
     if not eligible_ok then return false, base_set end
     if not base_set then return false, eligibility_error end
@@ -2010,6 +2049,32 @@ function Bridge:preflight_start(profile_id, control)
     self.pending_roster = resolved_roster
     self.pending_manager = manager
     self.pending_world = world
+    if bounties.is_custom(profile_id) then
+        if #base_ids * self.config.customAssault.membersPerBase > self.config.limits.maxTargets then
+            return false, "custom assault target count exceeds limits.maxTargets; no actors were spawned"
+        end
+        local engine = self:_custom_engine()
+        local prepared, targets, unavailable = self:_native_step("custom-assault-preparation", function()
+            engine:prepare(world)
+            local result, failures = {}, {}
+            for _, id in ipairs(base_ids) do
+                local target, target_error = self:_resolve_dispatch_target(manager, id)
+                if not target then error(target_error, 0) end
+                local scope = engine:prepare_base(id, target, world, roster)
+                if scope.unavailable then
+                    failures[id] = scope.unavailable
+                else
+                    result[#result + 1] = { id = id, scope = scope }
+                end
+            end
+            return result, failures
+        end)
+        if not prepared then return false, targets end
+        if #targets == 0 then return false, "no eligible base has bounded spawn geometry; no actors were created" end
+        self.pending_custom_targets = targets
+        self.pending_custom_unavailable = unavailable
+        return true
+    end
     local test_route = self.pending_nearest_test and NativeExperiments.route(self.pending_nearest_test.route)
     local method = test_route and test_route.method or "StartInvaderMarchForBaseCamp"
     local owner = test_route and test_route.owner or "PalInvaderManager"
@@ -2779,9 +2844,101 @@ function Bridge:_dispatch_selected_base_core(base_id, dispatch_phase)
     }
 end
 
+function Bridge:_custom_engine()
+    if not self.custom_engine then
+        local Native = require("ped.custom_assault_native")
+        self.custom_engine = Native.new(self, {
+            valid = valid, property = property, unwrap = unwrap, same = same_object,
+            guid = guid_string, address = object_address, text = to_string, fname = fname_constructor,
+        })
+    end
+    return self.custom_engine
+end
+
+function Bridge:_start_custom_assault()
+    if not self.custom_targets or #self.custom_targets == 0 or not self.director then
+        return false, "custom assault preparation is unavailable"
+    end
+    local Assault = require("ped.custom_assault")
+    local occurrence_id = self.custom_occurrence_id
+    self.fanout_dispatched = true
+    self.custom_assault = Assault.new({
+        config = self.config.customAssault, maxTargets = self.config.limits.maxTargets,
+        clock = self.clock, engine = self:_custom_engine(), logger = self.logger,
+        callbacks = {
+            record = function(kind, data) return self.director:on_custom_assault_record(kind, data, occurrence_id) end,
+            composition = function(base_id, assignments, reason)
+                return self.director:on_custom_assault_composition(base_id, assignments, reason, occurrence_id)
+            end,
+            started = function(base_id, group_id)
+                if not self.director:_custom_event(occurrence_id) then return false end
+                local accepted = self.director:on_invasion_start(base_id, group_id)
+                if self.director.state.status == "recovery_required" then return false end
+                if accepted then self.owned_groups[group_id] = base_id end
+                return accepted
+            end,
+            finished = function(base_id, group_id, outcome)
+                return self.director:on_custom_assault_finished(base_id, group_id, outcome, occurrence_id)
+            end,
+            retired = function(target_id, reason)
+                if not self.director:_custom_event(occurrence_id) then return false end
+                if self.director.scoreboard then
+                    if reason == "captured" then self.director:on_target_unranked(target_id, "captured_custom_attacker") end
+                    local closed, close_reason = self.director.scoreboard:close_target({
+                        target_id = target_id, source_kind = "uncredited", reason = reason,
+                    })
+                    if not closed and close_reason ~= "target_not_found" and close_reason ~= "already_closed" then
+                        self.logger:warn("Custom assault score target could not be closed", { reason = close_reason })
+                        return false
+                    end
+                    self.director:_mark_dirty()
+                end
+                return true
+            end,
+            progress = function(base_id, phase, alive, pending)
+                return self.director:on_custom_assault_progress(base_id, phase, alive, pending, occurrence_id)
+            end,
+        },
+    })
+    local started, result = self.custom_assault:start(self.custom_targets, self.profile_id, self.custom_occurrence_id)
+    if not started then return false, result end
+    local requests = {}
+    local ids = util.sorted_keys(self.expected_bases)
+    for index, id in ipairs(ids) do
+        local unavailable = self.custom_unavailable and self.custom_unavailable[id]
+        requests[#requests + 1] = {
+            baseId = id, phase = "custom", status = unavailable and "dispatch_precondition_failed" or "custom_spawn_queued",
+            targetIndex = index, targetCount = #ids, error = unavailable,
+            failureCode = unavailable and "custom-placement-unavailable" or nil,
+        }
+    end
+    return true, { custom = true, phase = "custom", requested = #self.custom_targets, requests = requests,
+        plannedMembers = result.memberCount }
+end
+
+function Bridge:has_custom_assault_members()
+    return (self.custom_assault ~= nil and self.custom_assault:has_live_members())
+        or (self.custom_engine ~= nil and self.custom_engine.recoveryPending == true)
+end
+
+function Bridge:close_custom_assault(reason, saved)
+    if self.custom_assault then
+        local ok, result = self.custom_assault:close(reason)
+        if not ok then return false, result end
+        return true, self.custom_assault.closed and "complete" or "pending"
+    end
+    if not saved or not saved.members then return true end
+    local event = self.director and self.director.state.event
+    if not event or event.customAssault ~= saved then return false, "custom recovery event identity is unavailable" end
+    return self:_custom_engine():cleanup_recovered(saved.members, function(index, phase)
+        return self.director:on_custom_assault_recovered_member(index, phase, event.id)
+    end)
+end
+
 function Bridge:start_all_invasions()
     local allowed, reason = self:native_start_guard()
     if not allowed then return false, reason end
+    if bounties.is_custom(self.profile_id) then return self:_start_custom_assault() end
     if not valid(self.event_manager) then
         return false, "pinned world invasion manager became unavailable before dispatch"
     end
