@@ -13,6 +13,7 @@ return function(test, equal, truthy)
         end
         function store:save_snapshot() return not f.fail_snapshot end
         local engine = {}
+        function engine:startup_catalog_entry(id) return true,{characterId=id,cdoAvailable=true} end
         function engine:startup_prepare(count)
             if f.not_ready then return true, nil end
             if f.prepare_fault then return false, "Native operation stopped [custom-assault-scope]" end
@@ -179,6 +180,16 @@ return function(test, equal, truthy)
         equal(f.runner.state.status, "failed")
         equal(f.runner.state.cleanupComplete, true)
         equal(f.spawns, 0)
+    end)
+
+    test("startup class catalog qualifies all entries without requesting a world or NPC", function()
+        local f = fixture("class-catalog")
+        f.not_ready = true
+        f:tick(35)
+        equal(f.runner.state.status,"passed")
+        equal(#f.runner.state.catalog,34)
+        equal(f.spawns,0)
+        equal(f.runner.state.mutationStarted,false)
     end)
 
     test("startup physical placement failure blocks before any NPC request", function()

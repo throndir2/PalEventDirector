@@ -39,6 +39,49 @@ local ROSTER = {
     { id = "BOSS_DarkTrader", name = "Ram", tokens = 5 },
 }
 
+local PAWN_CLASSES = {
+    BOSS_Hunter_Rifle = "Normal/BP_NPC_Hunter_Boss",
+    BOSS_Believer_CrossBow = "Normal/BP_NPC_Believer_BOSS",
+    BOSS_Ninja = "Normal/BP_NPC_Male_Ninja01_BOSS",
+    BOSS_Female_Soldier = "Normal/BP_NPC_Female_Soldier_BOSS",
+    BOSS_Male_Soldier = "Normal/BP_NPC_Male_Soldier_BOSS",
+    BOSS_Male_Soldier02 = "Normal/BP_NPC_Male_Soldier02_BOSS",
+    BOSS_Male_Soldier04 = "Normal/BP_NPC_Male_Soldier04_BOSS",
+    BOSS_Female_People02 = "Normal/BP_NPC_HumanNormal_Female_2_BOSS",
+    BOSS_Female_People03 = "Normal/BP_NPC_HumanNormal_Female_3_BOSS",
+    BOSS_Male_People = "Normal/BP_NPC_HumanNormal_Male_1_BOSS",
+    BOSS_Male_People2 = "Normal/BP_NPC_HumanNormal_Male_1_BOSS",
+    BOSS_Male_People03 = "Normal/BP_NPC_HumanNormal_Male_3_BOSS",
+    BOSS_Hunter_Fat_GatlingGun = "Fat/BP_NPC_HunterFat_Boss",
+    BOSS_Believer_Fat_GiantClub = "Fat/BP_NPC_BelieverFat_BOSS",
+    BOSS_FireCult_FlameThrower = "Normal/BP_NPC_FireCult_BOSS",
+    BOSS_Police_Rifle = "Normal/BP_NPC_Police_BOSS",
+    BOSS_Male_DesertPeople = "Normal/BP_NPC_Male_DesertPeople_BOSS",
+    BOSS_Female_DesertPeople = "Normal/BP_NPC_Female_DesertPeople_BOSS",
+    BOSS_Female_People = "Normal/BP_NPC_HumanNormal_BOSS",
+    BOSS_Female_Soldier03 = "Normal/BP_NPC_Female_Soldier03_BOSS",
+    BOSS_Hunter_Fat_GatlingGun_Quest_StrongOldMan = "Fat/BP_NPC_HunterFat_Boss",
+    BOSS_Male_Soldier03 = "Normal/BP_NPC_Male_Soldier03_BOSS",
+    BOSS_Female_Soldier04 = "Normal/BP_NPC_Female_Soldier04_BOSS",
+    BOSS_Male_People02 = "Normal/BP_NPC_HumanNormal_Male_2_BOSS",
+    BOSS_Male_NinjaElite = "Normal/BP_NPC_Male_NinjaElite01_BOSS",
+    BOSS_Scientist_LaserRifle = "Normal/BP_NPC_Male_Scientist_BOSS",
+    BOSS_Male_Trader01 = "Normal/BP_NPC_Male_Trader_BOSS",
+    BOSS_Viking = "Normal/BP_NPC_Viking_BOSS",
+    BOSS_VikingElite = "Normal/BP_NPC_VikingElite_BOSS",
+    BOSS_Female_Soldier02 = "Normal/BP_NPC_Female_Soldier02_BOSS",
+    BOSS_Police_old = "Normal/BP_NPC_Police_old_BOSS",
+    BOSS_Male_Trader02 = "Normal/BP_NPC_Male_Trader_2_BOSS",
+    BOSS_Male_Trader03 = "Normal/BP_NPC_Male_Trader_3_BOSS",
+    BOSS_DarkTrader = "Fat/BP_NPC_DarkTrader_BOSS",
+}
+
+function M.pawn_class(character_id)
+    local relative = PAWN_CLASSES[character_id]
+    if not relative then return nil end
+    return "/Game/Pal/Blueprint/Character/NPC/" .. relative .. "." .. relative:match("([^/]+)$") .. "_C"
+end
+
 local PROFILES = {
     native = {
         id = "native",

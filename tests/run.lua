@@ -663,6 +663,19 @@ test("all-bounty profile cycles the complete audited roster", function()
     equal(bounties.profile("kingpin").minimumTokens, 5)
 end)
 
+test("every audited bounty has its exact current-build pawn class", function()
+    local classes = {}
+    for _, bounty in ipairs(bounties.roster()) do
+        local class = bounties.pawn_class(bounty.id)
+        truthy(class and class:match("^/Game/Pal/Blueprint/Character/NPC/") and class:match("_C$"))
+        classes[class] = true
+    end
+    equal(util.count(classes), 32)
+    equal(bounties.pawn_class("unknown"), nil)
+    equal(bounties.pawn_class("BOSS_Hunter_Rifle"),
+        "/Game/Pal/Blueprint/Character/NPC/Normal/BP_NPC_Hunter_Boss.BP_NPC_Hunter_Boss_C")
+end)
+
 test("bridge replaces every selected member while preserving native level and companion", function()
     local previous_fname = _G.FName
     _G.FName = function(value) return value end

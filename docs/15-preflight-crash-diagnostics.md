@@ -14,6 +14,8 @@ NPC startup scenarios use that same bounded prewarm when their initial physical 
 
 `-StartupTest Engagement` follows verified movement with the existing base-local combat/structure behavior. It requires a real positive server damage callback from the owned NPC to a scoped character defender, not a successful action return. Incoming damage is recorded separately and does not pass the test. No player identity is fabricated and no reward/normal event state is modified; a base with no suitable character defender can legitimately block this case.
 
+`-StartupTest ClassCatalog` resolves the exact current-build pawn class and valid PalCharacter CDO for each of the 34 audited bounty IDs, one per tick, without requesting NPCs. These IDs resolve to 32 unique pawn classes; class/CDO availability does not by itself qualify spawning or combat for every entry.
+
 Cleanup requests are submitted for all bounded test members before waiting on any one of them. Each NPC/helper gets its own confirmation deadline measured from its own request; another actor's wait must not consume that budget. A request is never reissued while confirmation is pending. Reports distinguish observed cleanup from an explicitly certified old-world finalization.
 
 Blueprint class wrappers are not GC roots. Reacquire the exact class and its CDO immediately before each CDO floor query, and reacquire action classes before dispatch. The two-source crash on `122eea9` reached an invalid `InClass` ancestry check at Shipping RVA `0x3173098`, before CDO/physics access; stale lifetime is consistent with the dump, but the specific invalidation mechanism was not proven. Physical probes wait for the relevant streaming source to finish, then still require real floor/nav results.

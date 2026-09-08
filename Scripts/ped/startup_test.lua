@@ -4,11 +4,12 @@ local util = require("ped.util")
 local filesystem = require("ped.filesystem")
 local Store = require("ped.store")
 local Diagnostic = require("ped.preflight_diagnostic")
+local bounties = require("ped.bounties")
 
 local Test = {}
 Test.__index = Test
 
-local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1 }
+local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1, ["class-catalog"] = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -147,7 +148,8 @@ function Test.new(options)
         clock = options.clock or util.now_seconds, runtime = {}, cursor = 1, damageQueue = {},
         state = { schemaVersion = 1, runId = plan.runId, case = plan.case, sourceRevision = plan.sourceRevision,
             artifactSha256 = plan.artifactSha256,
-            status = "running", stage = "world", startedAt = (options.clock or util.now_seconds)(),
+            status = "running", stage = plan.case == "class-catalog" and "class-catalog" or "world",
+            startedAt = (options.clock or util.now_seconds)(),
             mutationStarted = false, cleanupComplete = false, members = {},
             spawned = 0, initialized = 0, moved = 0, cleaned = 0, simultaneous = false,
             helpers = {}, helpersCreated = 0, helpersCleaned = 0 },
@@ -258,7 +260,17 @@ function Test:_tick()
     if self.stopped or TERMINAL[self.state.status] then return end
     local now = self.clock()
     local stage = self.state.stage
-    if stage == "world" then
+    if stage == "class-catalog" then
+        self.catalog = self.catalog or bounties.roster()
+        self.state.catalog = self.state.catalog or {}
+        local member = self.catalog[self.cursor]
+        if not member then return self:_finish("passed", "catalog-classes-qualified") end
+        local ok, result = self.engine:startup_catalog_entry(member.id)
+        if not ok then return self:halt(result) end
+        self.state.catalog[#self.state.catalog + 1] = result
+        if not self:_save("startup_catalog_class_qualified") then return end
+        self.cursor = self.cursor + 1
+    elseif stage == "world" then
         local ok, result = self.engine:startup_prepare(CASES[self.state.case])
         if not ok then return self:halt(result) end
         if not result then

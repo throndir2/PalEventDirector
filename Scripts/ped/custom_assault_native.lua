@@ -1,5 +1,6 @@
 local Layout = require("ped.native_layout")
 local util = require("ped.util")
+local bounties = require("ped.bounties")
 
 local Native = {}
 Native.__index = Native
@@ -10,7 +11,7 @@ local OWNERSHIP = "Custom assault ownership is unreadable"
 local IDENTITY = "Custom assault actor identity changed"
 local INITIALIZATION = "Custom assault initialization is incomplete"
 local ACTION = "Custom assault native action failed"
-local STARTUP_PAWN = "/Game/Pal/Blueprint/Character/NPC/Normal/BP_NPC_Hunter_Boss.BP_NPC_Hunter_Boss_C"
+local STARTUP_PAWN = bounties.pawn_class("BOSS_Hunter_Rifle")
 local CLASSES = {
     travel = "/Game/Pal/Blueprint/Controller/AIAction/Visitor/BP_AIAction_Visitor_TravelToBaseCamp.BP_AIAction_Visitor_TravelToBaseCamp_C",
     encounter = "/Game/Pal/Blueprint/Controller/AIAction/NPC/BP_AIAction_NPC_Encount.BP_AIAction_NPC_Encount_C",
@@ -295,6 +296,17 @@ end
 
 function Native:startup_support(scopes)
     return require("ped.startup_support").new(self, scopes)
+end
+
+function Native:startup_catalog_entry(character_id)
+    return self.bridge:_native_step("startup-catalog-class", function()
+        local class_path = bounties.pawn_class(character_id)
+        if not class_path then error(SCOPE, 0) end
+        local class = self:_class(class_path)
+        local cdo = self:_call("startup-catalog-cdo", class, "GetCDO")
+        if not self.a.valid(cdo) or not cdo:IsA("/Script/Pal.PalCharacter") then error(SCOPE, 0) end
+        return { characterId = character_id, classPath = class_path, cdoAvailable = true }
+    end)
 end
 
 function Native:startup_trace(world, location)
