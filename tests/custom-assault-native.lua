@@ -443,14 +443,16 @@ return function(test, equal, truthy)
     end)
 
     test("custom combat setup targets an eligible local defender with the correct stock action", function()
-        fixture(function(engine, member, f, _, _, scope)
+        fixture(function(engine, member, f, _, actor, scope)
             local defender = f:defender_at(500)
             scope.players = { { controller = { IsValid = function() return true end, GetPawn = function() return defender end } } }
+            truthy(engine:startup_travel(scope,member))
             truthy(engine:engage(scope, member))
             equal(f.npc_target, defender)
             equal(f.action_class, engine.classes.encounter)
             equal(f.action_parameter.GeneralActor1, defender)
             equal(f.player_target, nil)
+            equal(actor:GetCharacterParameterComponent().bIsAttackNonCriminal, true)
         end)
     end)
 

@@ -8,7 +8,7 @@ local Diagnostic = require("ped.preflight_diagnostic")
 local Test = {}
 Test.__index = Test
 
-local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1 }
+local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -144,7 +144,7 @@ function Test.new(options)
     assert(type(plan.artifactSha256) == "string" and #plan.artifactSha256 == 64 and plan.artifactSha256:match("^%x+$"), "Startup test artifact is invalid")
     local self = setmetatable({
         engine = assert(options.engine), store = assert(options.store), logger = assert(options.logger),
-        clock = options.clock or util.now_seconds, runtime = {}, cursor = 1,
+        clock = options.clock or util.now_seconds, runtime = {}, cursor = 1, damageQueue = {},
         state = { schemaVersion = 1, runId = plan.runId, case = plan.case, sourceRevision = plan.sourceRevision,
             artifactSha256 = plan.artifactSha256,
             status = "running", stage = "world", startedAt = (options.clock or util.now_seconds)(),
@@ -155,6 +155,37 @@ function Test.new(options)
     assert(self.store.sequence == 0, "Startup test was already consumed; it cannot be replayed")
     self:_save("startup_test_started")
     return self
+end
+
+function Test:on_damage(attacker, defender, amount)
+    if self.stopped or self.state.stage ~= "engagement" or not util.is_integer(amount) or amount <= 0 then return end
+    if #self.damageQueue >= 64 then self.damageOverflow = true; return end
+    self.damageQueue[#self.damageQueue + 1] = {attacker=attacker,defender=defender,amount=amount}
+end
+
+function Test:_damage_witness()
+    local pending = self.damageQueue
+    self.damageQueue = {}
+    for _, event in ipairs(pending) do
+        for index, runtime in ipairs(self.runtime) do
+            local member = self.state.members[index]
+            if runtime.actor and member.phase == "alive" and not member.cleanupRequested then
+                if self.engine:sameActor(runtime.actor, event.attacker) then
+                    local ok, allowed = self.engine:startup_damage_target(self.scopes[index],event.defender)
+                    if not ok then return self:halt(allowed) end
+                    if allowed then
+                        self.state.dealtDamageEvents = (self.state.dealtDamageEvents or 0) + 1
+                        self.state.dealtDamage = (self.state.dealtDamage or 0) + event.amount
+                    end
+                end
+                if self.engine:sameActor(runtime.actor,event.defender) then
+                    self.state.receivedDamageEvents = (self.state.receivedDamageEvents or 0) + 1
+                end
+            end
+        end
+    end
+    if #pending > 0 then return self:_save("startup_damage_observed") end
+    return true
 end
 
 function Test:_save(kind)
@@ -328,7 +359,7 @@ function Test:_tick()
         if not self:_save("startup_spawn_returned") then return end
         self.cursor = self.cursor + 1
         return
-    elseif stage == "initialize" or stage == "movement" then
+    elseif stage == "initialize" or stage == "movement" or stage == "engagement" then
         local ready, arrived = 0, 0
         for index, member in ipairs(self.state.members) do
             local runtime = self.runtime[index]
@@ -344,6 +375,7 @@ function Test:_tick()
                 end
             end
             member.phase = observation.phase
+            if observation.actor then runtime.actor = observation.actor end
             member.waitingOn = observation.waitingOn
             member.scopeReason = observation.scopeReason
             member.distanceFromBase, member.heightFromBase = observation.distanceFromBase, observation.heightFromBase
@@ -375,6 +407,17 @@ function Test:_tick()
                             if not self:_save("startup_movement_observed") then return end
                         end
                     end
+                elseif stage == "engagement" and now >= (member.nextEngageAt or 0) then
+                    member.nextEngageAt = now + 5
+                    if not self:_save("startup_engagement_intent") then return end
+                    local engaged, result = self.engine:engage(self.scopes[index],plan)
+                    if not engaged then return self:halt(result) end
+                    member.behavior = self.engine:startup_behavior(member)
+                    if not self:_save("startup_engagement_returned") then return end
+                    if result == "unavailable" then
+                        self.state.failure = "engagement-unavailable"
+                        return self:_stage("cleanup")
+                    end
                 end
             elseif observation.phase == "dead" or observation.phase == "captured" or observation.phase == "missing"
                 or observation.phase == "escaped" then
@@ -385,7 +428,17 @@ function Test:_tick()
         if ready == #self.state.members then
             self.state.simultaneous = #self.state.members > 1
             if stage == "initialize" then return self:_stage(self.state.case == "spawn-cleanup" and "cleanup" or "movement") end
-            if arrived == #self.state.members then return self:_stage("cleanup") end
+            if stage == "movement" and arrived == #self.state.members then
+                return self:_stage(self.state.case == "engagement" and "engagement" or "cleanup")
+            end
+        end
+        if stage == "engagement" then
+            if self.damageOverflow then
+                self.state.failure = "damage-observation-overflow"
+                return self:_stage("cleanup")
+            end
+            if not self:_damage_witness() then return end
+            if (self.state.dealtDamageEvents or 0) > 0 then return self:_stage("cleanup") end
         end
         if now >= self.state.stageStartedAt + 60 then
             self.state.failure = stage .. "-timeout"

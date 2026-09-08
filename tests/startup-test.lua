@@ -2,7 +2,7 @@ return function(test, equal, truthy)
     local Startup = require("ped.startup_test")
     local util = require("ped.util")
     local function fixture(case)
-        local f = { now = 1000, records = {}, spawns = 0, despawns = 0, travels = 0, phases = {} }
+        local f = { now = 1000, records = {}, spawns = 0, despawns = 0, travels = 0, phases = {}, actors = {} }
         local store = { sequence = 0 }
         function store:append(kind, _, state)
             f.records[#f.records + 1] = kind
@@ -41,9 +41,15 @@ return function(test, equal, truthy)
             }
         end
         function engine:inspect(_, member)
+            f.actors[member.index]=f.actors[member.index] or {}
             return true, { phase = f.phases[member.index] or "alive", healthBudget = 1000, targetId = "private-target-" .. member.index,
+                actor=f.actors[member.index],
                 location = { X=f.arrived and 500 or 4000,Y=0,Z=0 } }
         end
+        function engine:engage() f.engages=(f.engages or 0)+1; return true,true end
+        function engine:startup_behavior() return "combat" end
+        function engine:sameActor(a,b) return a==b end
+        function engine:startup_damage_target(_, actor) return true,actor==f.legal_target end
         function engine:startup_travel()
             equal(f.records[#f.records], "startup_movement_intent")
             f.travels = f.travels + 1
@@ -223,6 +229,30 @@ return function(test, equal, truthy)
         equal(f.runner.state.status,"passed")
         equal(f.runner.state.cleaned,1)
         equal(f.runner.state.helpersCleaned,1)
+    end)
+
+    test("startup engagement requires a real positive damage callback to a scoped defender", function()
+        local f = fixture("engagement")
+        f:tick(6)
+        f.arrived=true
+        f:tick(3)
+        equal(f.runner.state.stage,"engagement")
+        truthy(f.engages>0)
+        equal(f.runner.state.dealtDamageEvents,nil)
+        f.runner:on_damage({},f.actors[1],10)
+        f:tick()
+        equal(f.runner.state.stage,"engagement")
+        equal(f.runner.state.receivedDamageEvents,1)
+        f.runner:on_damage(f.actors[1],{},100)
+        f:tick()
+        equal(f.runner.state.dealtDamageEvents,nil)
+        f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,100)
+        f:tick(3)
+        equal(f.runner.state.dealtDamageEvents,1)
+        equal(f.runner.state.dealtDamage,100)
+        equal(f.runner.state.status,"passed")
+        equal(f.despawns,1)
     end)
 
     test("streaming support validates bounded shape writes and destroys only its owned helper once", function()

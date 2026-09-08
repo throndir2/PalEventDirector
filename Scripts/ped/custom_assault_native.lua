@@ -339,6 +339,18 @@ function Native:startup_identity(member)
     return { instanceGuid = guid(record.id.InstanceId, false), playerGuid = guid(record.id.PlayerUId, true) }
 end
 
+function Native:startup_behavior(member)
+    local record = self.records[member_key(member)]
+    if not record then error(IDENTITY, 0) end
+    return record.mode
+end
+
+function Native:startup_damage_target(scope, actor)
+    return self.bridge:_native_step("startup-damage-target", function()
+        return self:_character_scope(actor, scope) == true
+    end)
+end
+
 function Native:prepare_base(base_id, target, world, players)
     if not self.a.valid(target.base) or not self.a.same(world, self.world) then error(SCOPE, 0) end
     local origin = vector(self.a.unwrap(target.base.Transform).Translation)
@@ -700,10 +712,11 @@ function Native:engage(scope, member)
         local actions = self:_call("ai-component", controller, "GetAIActionComponent")
         local blackboard = self:_call("ai-blackboard", controller, "GetMyPalBlackboard")
         if not self.a.valid(actions) or not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
-        if not record.configured then
+        if not record.hostileConfigured then
             state.component.bIsAttackNonCriminal = true
-            self:_configure_movement(record, state, scope)
+            record.hostileConfigured = true
         end
+        self:_configure_movement(record, state, scope)
         local defender = self:_choose_defender(scope)
         if defender then
             if not record.target or not self.a.same(record.target, defender) or record.mode ~= "combat" then

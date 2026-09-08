@@ -1372,6 +1372,11 @@ function Bridge:_target_context(defender)
 end
 
 function Bridge:_on_damage(damage_parameter)
+    if self.startup_test and not self.startup_test.stopped then
+        local damage = unwrap(damage_parameter)
+        self.startup_test:on_damage(property(damage, "Attacker"), property(damage, "Defender"),
+            as_integer(property(damage, "ActualDamage")))
+    end
     if self.config.diagnostics.traceHooks then
         self.logger:debug("Damage hook", { eventOpen = self.event_open })
     end

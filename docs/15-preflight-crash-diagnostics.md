@@ -12,6 +12,8 @@ The planar base sampler preserves the supplied Z and does not establish collisio
 
 NPC startup scenarios use that same bounded prewarm when their initial physical checks fail, retaining support until all test NPCs have been cleaned up. If prewarming never produces physical floor/nav readiness, the helpers are cleaned and no NPC is requested.
 
+`-StartupTest Engagement` follows verified movement with the existing base-local combat/structure behavior. It requires a real positive server damage callback from the owned NPC to a scoped character defender, not a successful action return. Incoming damage is recorded separately and does not pass the test. No player identity is fabricated and no reward/normal event state is modified; a base with no suitable character defender can legitimately block this case.
+
 Cleanup requests are submitted for all bounded test members before waiting on any one of them. Each NPC/helper gets its own confirmation deadline measured from its own request; another actor's wait must not consume that budget. A request is never reissued while confirmation is pending. Reports distinguish observed cleanup from an explicitly certified old-world finalization.
 
 Blueprint class wrappers are not GC roots. Reacquire the exact class and its CDO immediately before each CDO floor query, and reacquire action classes before dispatch. The two-source crash on `122eea9` reached an invalid `InClass` ancestry check at Shipping RVA `0x3173098`, before CDO/physics access; stale lifetime is consistent with the dump, but the specific invalidation mechanism was not proven. Physical probes wait for the relevant streaming source to finish, then still require real floor/nav results.
