@@ -8,7 +8,7 @@ param(
 
     [switch]$ValidateOnly,
 
-    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement')]
+    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm')]
     [string]$StartupTest = 'None',
 
     [Parameter(DontShow)]
@@ -259,6 +259,8 @@ function Read-StartupTestOutcome {
         ($state.status -notin @('passed','blocked') -or $state.cleaned -ne $state.spawned)) {
         throw 'Startup test cleanup outcome is inconsistent.'
     }
+    if ($state.cleanupComplete -and $null -ne $state.PSObject.Properties['helpersCreated'] -and
+        $state.helpersCreated -ne $state.helpersCleaned) { throw 'Startup support cleanup is incomplete.' }
     $state
 }
 $previousTestRunId = $null
@@ -305,7 +307,7 @@ try {
         $testDirectory = Join-Path $testRoot $testRunId
         Assert-StartupTestPath $testDirectory
         New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop | Out-Null
-        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement' }
+        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm' }
         $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
             artifactSha256=[string]$deployment.artifactSha256 }
         if ($previousTestRunId) { $plan['previousRunId'] = $previousTestRunId }

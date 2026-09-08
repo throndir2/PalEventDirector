@@ -8,7 +8,7 @@ local Diagnostic = require("ped.preflight_diagnostic")
 local Test = {}
 Test.__index = Test
 
-local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2 }
+local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -25,6 +25,7 @@ function Test.validate_state(state, run_id)
     if state.cleanupComplete and state.mutationStarted then
         assert((state.status == "passed" or state.status == "blocked") and state.cleaned == state.spawned,
             "Startup test cleanup outcome is inconsistent")
+        assert((state.helpersCreated or 0) == (state.helpersCleaned or 0), "Startup support cleanup is incomplete")
     end
     return state
 end
@@ -79,7 +80,8 @@ function Test.new(options)
             artifactSha256 = plan.artifactSha256,
             status = "running", stage = "world", startedAt = (options.clock or util.now_seconds)(),
             mutationStarted = false, cleanupComplete = false, members = {},
-            spawned = 0, initialized = 0, moved = 0, cleaned = 0, simultaneous = false },
+            spawned = 0, initialized = 0, moved = 0, cleaned = 0, simultaneous = false,
+            helpers = {}, helpersCreated = 0, helpersCleaned = 0 },
     }, Test)
     assert(self.store.sequence == 0, "Startup test was already consumed; it cannot be replayed")
     self:_save("startup_test_started")
@@ -133,6 +135,21 @@ function Test:_finish(status, code)
         moved = self.state.moved, cleaned = self.state.cleaned, simultaneous = self.state.simultaneous })
 end
 
+function Test:_plan_members()
+    for index, scope in ipairs(self.scopes) do
+        self.state.members[index] = { index = index, baseId = scope.baseId,
+            groupId = "startup:" .. self.state.runId, slot = 1, characterId = "BOSS_Hunter_Rifle",
+            level = 30, phase = "planned", spawnLocation = scope.positions and util.shallow_copy(scope.positions[1]) or nil,
+            baseOrigin = util.shallow_copy(scope.origin), leashRadius = scope.leashRadius }
+    end
+    return self:_stage("spawn")
+end
+
+function Test:_cleaned_npcs()
+    if self.state.helpersCreated > self.state.helpersCleaned then return self:_stage("support-cleanup") end
+    return self:_finish(self.state.failure and "blocked" or "passed", self.state.failure or "complete")
+end
+
 local function distance2(left, right)
     return (left.X - right.X) ^ 2 + (left.Y - right.Y) ^ 2
 end
@@ -150,16 +167,80 @@ function Test:_tick()
         end
         self.state.physical = result.physical
         self.state.availableBases = result.availableBases
-        if result.blockedCode then return self:_finish("blocked", result.blockedCode) end
+        if result.blockedCode then
+            if self.state.case ~= "prewarm" then return self:_finish("blocked", result.blockedCode) end
+            self.scopes = result.candidates
+            if type(self.scopes) ~= "table" or #self.scopes ~= CASES[self.state.case] then return self:_finish("blocked", result.blockedCode) end
+            self.support = self.engine:startup_support(self.scopes)
+            local prepared, available = self.support:prepare()
+            if not prepared then return self:halt(available) end
+            if not available then return self:_finish("blocked", "streaming-subsystem-unavailable") end
+            return self:_stage("support-spawn")
+        end
         self.scopes = result.scopes
         assert(type(self.scopes) == "table" and #self.scopes == CASES[self.state.case], "Startup test returned an invalid base count")
-        for index, scope in ipairs(self.scopes) do
-            self.state.members[index] = { index = index, baseId = scope.baseId,
-                groupId = "startup:" .. self.state.runId, slot = 1, characterId = "BOSS_Hunter_Rifle",
-                level = 30, phase = "planned", spawnLocation = scope.positions and util.shallow_copy(scope.positions[1]) or nil,
-                baseOrigin = util.shallow_copy(scope.origin), leashRadius = scope.leashRadius }
+        if self.state.case == "prewarm" then return self:_finish("passed", "physical-ready-without-support") end
+        return self:_plan_members()
+    elseif stage == "support-spawn" then
+        local index = self.cursor
+        if index > #self.scopes then return self:_stage("support-configure") end
+        self.state.mutationStarted = true
+        self.state.helpers[index] = { phase = "requested" }
+        if not self:_save("startup_support_intent") then return end
+        local ok, identity = self.support:begin(index)
+        if not ok then return self:halt(identity) end
+        self.state.helpers[index] = { phase = "deferred", identity = identity }
+        self.state.helpersCreated = self.state.helpersCreated + 1
+        if not self:_save("startup_support_created") then return end
+        self.cursor = index + 1
+    elseif stage == "support-configure" then
+        local index = self.cursor
+        if index > self.state.helpersCreated then return self:_stage("support-wait") end
+        if not self:_save("startup_support_configure_intent") then return end
+        local ok, result = self.support:finish(index)
+        if not ok then return self:halt(result) end
+        self.state.helpers[index].phase = "configured"
+        if not self:_save("startup_support_configured") then return end
+        self.cursor = index + 1
+    elseif stage == "support-wait" then
+        local ready = 0
+        for index, helper in ipairs(self.state.helpers) do
+            local ok, observation = self.support:poll(index)
+            if not ok then return self:halt(observation) end
+            helper.observation = observation
+            if observation.ready then ready = ready + 1 end
         end
-        return self:_stage("spawn")
+        if ready == self.state.helpersCreated then
+            self.state.physicalPrewarmPassed = true
+            return self:_stage("support-cleanup")
+        end
+        if now >= self.state.stageStartedAt + 120 then
+            self.state.failure = "physical-prewarm-timeout"
+            return self:_stage("support-cleanup")
+        end
+        if now >= (self.nextSupportCheckpoint or 0) then
+            self.nextSupportCheckpoint = now + 5
+            return self:_save("startup_support_observation")
+        end
+    elseif stage == "support-cleanup" then
+        for index, helper in ipairs(self.state.helpers) do
+            if not helper.cleaned then
+                if not helper.cleanupRequested then
+                    helper.cleanupRequested = true
+                    if not self:_save("startup_support_cleanup_intent") then return end
+                end
+                local ok, complete = self.support:close(index)
+                if not ok then return self:halt(complete) end
+                if complete then
+                    helper.cleaned = true
+                    self.state.helpersCleaned = self.state.helpersCleaned + 1
+                    if not self:_save("startup_support_cleaned") then return end
+                end
+                break
+            end
+        end
+        if self.state.helpersCleaned == self.state.helpersCreated then return self:_cleaned_npcs() end
+        if now >= self.state.stageStartedAt + 60 then return self:halt("Startup support cleanup did not complete") end
     elseif stage == "spawn" then
         local member = self.state.members[self.cursor]
         if not member then return self:_stage("initialize") end
@@ -272,7 +353,7 @@ function Test:_tick()
             end
         end
         if self.state.cleaned == #self.state.members then
-            return self:_finish(self.state.failure and "blocked" or "passed", self.state.failure or "complete")
+            return self:_cleaned_npcs()
         end
         if now >= self.state.stageStartedAt + 60 then return self:halt("Custom assault despawn did not complete") end
     else

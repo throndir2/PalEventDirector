@@ -46,6 +46,9 @@ local ERROR_SIGNATURES = {
     { text = "Custom assault recovery has an unidentified spawn outcome", code = "custom-assault-recovery" },
     { text = "Custom assault recovery requires a live world context", code = "custom-assault-recovery-world" },
     { text = "Custom assault recovery outcome could not be persisted", code = "custom-assault-recovery-persistence" },
+    { text = "Startup support signature is unsupported", code = "startup-support-signature" },
+    { text = "Startup support scope is invalid", code = "startup-support-scope" },
+    { text = "Startup support cleanup did not complete", code = "startup-support-cleanup" },
     { text = "[Lua::call_function]", code = "callback-error" },
 }
 local TARGET_FAILURES = {

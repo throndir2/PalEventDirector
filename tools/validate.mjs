@@ -39,6 +39,7 @@ const required = [
   'Scripts/ped/scoreboard.lua',
   'Scripts/ped/store.lua',
   'Scripts/ped/startup_test.lua',
+  'Scripts/ped/startup_support.lua',
   'Scripts/ped/util.lua',
   'Scripts/ped/version.lua',
   'docs/13-admin-and-scheduling.md',

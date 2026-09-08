@@ -16,7 +16,8 @@ return function(test, equal, truthy)
         function engine:startup_prepare(count)
             if f.not_ready then return true, nil end
             if f.prepare_fault then return false, "Native operation stopped [custom-assault-scope]" end
-            if f.physical_block then return true, {blockedCode="floor-or-navigation-unavailable",physical={floor=0}} end
+            if f.physical_block then return true, {blockedCode="floor-or-navigation-unavailable",physical={floor=0},
+                candidates={{baseId="private-base-1",origin={X=0,Y=0,Z=0}}}} end
             local scopes = {}
             for index = 1, count do scopes[index] = { baseId = "private-base-" .. index, origin = { X=0,Y=0,Z=0 } } end
             return true, { scopes = scopes, availableBases = 10 }
@@ -29,6 +30,15 @@ return function(test, equal, truthy)
         end
         function engine:startup_identity(member)
             return { instanceGuid = { A=member.index,B=0,C=0,D=0 }, playerGuid = { A=0,B=0,C=0,D=0 } }
+        end
+        function engine:startup_support()
+            return {
+                prepare=function() return true,true end,
+                begin=function() f.helpers=(f.helpers or 0)+1; return true,{actorAddress="private-address"} end,
+                finish=function() return true,true end,
+                poll=function() return true,{enabled=true,streamingComplete=true,ready=f.physical_ready==true} end,
+                close=function() f.helper_closes=(f.helper_closes or 0)+1; return true,not f.helper_pending end,
+            }
         end
         function engine:inspect(_, member)
             return true, { phase = f.phases[member.index] or "alive", healthBudget = 1000, targetId = "private-target-" .. member.index,
@@ -152,6 +162,86 @@ return function(test, equal, truthy)
         equal(f.runner.state.code,"floor-or-navigation-unavailable")
         equal(f.runner.state.mutationStarted,false)
         equal(f.spawns,0)
+    end)
+
+    test("startup prewarm does not mistake streaming completion for physical readiness", function()
+        local f = fixture("prewarm")
+        f.physical_block=true
+        f:tick(140)
+        equal(f.runner.state.status,"blocked")
+        equal(f.runner.state.code,"physical-prewarm-timeout")
+        equal(f.helpers,1)
+        equal(f.helper_closes,1)
+        equal(f.spawns,0)
+        equal(f.runner.state.cleanupComplete,true)
+    end)
+
+    test("startup prewarm finishes only after support cleanup is observed", function()
+        local f = fixture("prewarm")
+        f.physical_block, f.physical_ready, f.helper_pending = true,true,true
+        f:tick(12)
+        equal(f.runner.state.helpersCreated,1)
+        equal(f.runner.state.helpersCleaned,0)
+        equal(f.runner.state.cleanupComplete,false)
+        f.helper_pending=false
+        f:tick()
+        equal(f.runner.state.status,"passed")
+        equal(f.runner.state.physicalPrewarmPassed,true)
+        equal(f.runner.state.helpersCleaned,1)
+        equal(f.spawns,0)
+    end)
+
+    test("streaming support validates bounded shape writes and destroys only its owned helper once", function()
+        local Support = require("ped.startup_support")
+        local world, scope = {}, {origin={X=10,Y=20,Z=30},positions={{X=100,Y=200,Z=30}}}
+        scope.world=world
+        local destroyed, unregistered, cleared = 0,0,0
+        local actor = {
+            IsValid=function() return true end, IsA=function(_,name) return name=="/Script/Engine.TargetPoint" end,
+            GetFName=function() return {ToString=function() return "OwnedHelper" end} end,
+            GetWorld=function() return world end, K2_GetActorLocation=function() return scope.origin end,
+            K2_DestroyActor=function() destroyed=destroyed+1 end, IsActorBeingDestroyed=function() return destroyed>0 end,
+        }
+        local source = {IsValid=function() return true end,GetOwner=function() return actor end}
+        source._shapes = {Empty=function() cleared=cleared+1 end}
+        setmetatable(source,{
+            __index=function(self,key) if key=="Shapes" then return self._shapes end end,
+            __newindex=function(self,key,value)
+                if key=="Shapes" then
+                    equal(cleared,1); equal(#value,1)
+                    rawset(self,"_shapes",{
+                        GetArrayNum=function() return 1 end,
+                        [1]={Location={X=0,Y=0,Z=0},Rotation={Pitch=0,Yaw=0,Roll=0}},
+                    })
+                else rawset(self,key,value) end
+            end,
+        })
+        function source:DisableStreamingSource() self.enabled=false end
+        function source:EnableStreamingSource() self.enabled=true end
+        function source:IsStreamingSourceEnabled() return self.enabled end
+        actor.AddComponentByClass=function(_,_,manual,_,deferred) equal(manual,false); equal(deferred,true); return source end
+        actor.FinishAddComponent=function() equal(source.Shapes[1].Radius,12000); equal(source.Shapes[1].bUseGridLoadingRange,false) end
+        local nav = {RegisterNavigationInvoker=function(_,which,generation,removal)
+            equal(which,actor); equal(generation,10000); equal(removal,12000) end,
+            UnregisterNavigationInvoker=function(_,which) equal(which,actor); unregistered=unregistered+1 end}
+        local bridge={_native_step=function(_,_,fn) return pcall(fn) end}
+        local native={bridge=bridge,a={
+            valid=function(v) return type(v)=="table" and type(v.IsValid)=="function" and v:IsValid() end,
+            same=function(a,b) return a==b end,fname=function() return function(v) return v end end,
+        }}
+        function native:_call(_,owner,name,...) return owner[name](owner,...) end
+        local support = Support.new(native,{scope})
+        support.navigation=nav
+        support.sourceClass={}
+        support.bindings={library={FinishSpawningActor=function(_,which) return which end}}
+        support.records[1]={actor=actor,world=world,name="OwnedHelper",transform={}}
+        truthy(support:finish(1))
+        equal(source.Shapes[1].bIsSector,false)
+        truthy(support:close(1))
+        truthy(support:close(1))
+        equal(destroyed,1)
+        equal(unregistered,1)
+        equal(source.enabled,false)
     end)
 
     test("startup quarantine uses the checksummed journal rather than an altered snapshot", function()

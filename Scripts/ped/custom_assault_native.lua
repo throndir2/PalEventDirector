@@ -256,13 +256,14 @@ function Native:startup_prepare(count)
         if not self.a.valid(self.navigationLibrary) then error(SCOPE, 0) end
         self.physicsLibrary = self.bridge:_static_find("/Script/Pal.Default__PalPhysicsUtility")
         if not self.a.valid(self.physicsLibrary) then error(SCOPE, 0) end
-        local scopes = {}
+        local scopes, candidates = {}, {}
         local physical = { sampled = 0, floor = 0, centerFloor = 0, centerTrace = 0, spawnNav = 0, goalNav = 0 }
         for _, id in ipairs(ids) do
             local target, reason = self.bridge:_resolve_dispatch_target(manager, id)
             if not target then error(reason, 0) end
             local scope = self:prepare_base(id, target, world, {})
             if not scope.unavailable then
+                if #candidates < count then candidates[#candidates + 1] = scope end
                 physical.sampled = physical.sampled + 1
                 if self:startup_floor(world, scope.origin) then physical.centerFloor = physical.centerFloor + 1 end
                 if self:startup_trace(world, scope.origin) then physical.centerTrace = physical.centerTrace + 1 end
@@ -284,10 +285,14 @@ function Native:startup_prepare(count)
             if #scopes == count then break end
         end
         if #scopes ~= count then
-            return { blockedCode = "floor-or-navigation-unavailable", physical = physical, availableBases = #ids }
+            return { blockedCode = "floor-or-navigation-unavailable", physical = physical, availableBases = #ids, candidates = candidates }
         end
         return { scopes = scopes, physical = physical, availableBases = #ids }
     end)
+end
+
+function Native:startup_support(scopes)
+    return require("ped.startup_support").new(self, scopes)
 end
 
 function Native:startup_trace(world, location)
