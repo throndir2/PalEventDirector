@@ -148,9 +148,11 @@ function Test:_tick()
             if now >= self.state.startedAt + 120 then self:_finish("blocked", "world-or-bases-not-ready") end
             return
         end
+        self.state.physical = result.physical
+        self.state.availableBases = result.availableBases
+        if result.blockedCode then return self:_finish("blocked", result.blockedCode) end
         self.scopes = result.scopes
         assert(type(self.scopes) == "table" and #self.scopes == CASES[self.state.case], "Startup test returned an invalid base count")
-        self.state.availableBases = result.availableBases
         for index, scope in ipairs(self.scopes) do
             self.state.members[index] = { index = index, baseId = scope.baseId,
                 groupId = "startup:" .. self.state.runId, slot = 1, characterId = "BOSS_Hunter_Rifle",

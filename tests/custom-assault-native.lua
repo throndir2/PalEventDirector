@@ -560,4 +560,34 @@ return function(test, equal, truthy)
             equal(f.spawns, 1)
         end)
     end)
+
+    test("startup floor and navigation require positive bounded physical results", function()
+        fixture(function(engine, _, f)
+            local pawn = {IsValid=function() return true end}
+            engine.startupPawnClass = pawn
+            engine.utility.CanAdjustLocationToFloorFromCDO = function(_,world,class,point,up,out,short)
+                equal(world,engine.world); equal(class,pawn); equal(up,100); equal(short,true)
+                out.X,out.Y,out.Z=point.X,point.Y,point.Z+(f.floor_offset or 80)
+                return f.floor_missing ~= true
+            end
+            engine.navigationLibrary={IsValid=function() return true end,
+                K2_ProjectPointToNavigation=function(_,world,point,out,nav,filter,extent)
+                    equal(world,engine.world); equal(nav,nil); equal(filter,nil); equal(extent.Z,300)
+                    out.X,out.Y,out.Z=point.X+(f.nav_offset or 0),point.Y,point.Z
+                    return f.nav_missing ~= true
+                end}
+            local point={X=100,Y=200,Z=300}
+            equal(engine:startup_floor(engine.world,point).Z,380)
+            f.floor_missing=true
+            equal(engine:startup_floor(engine.world,point),nil)
+            f.floor_missing=false; f.floor_offset=-10000
+            equal(engine:startup_floor(engine.world,point),nil)
+            truthy(engine:startup_nav(engine.world,point))
+            f.nav_missing=true
+            equal(engine:startup_nav(engine.world,point),nil)
+            f.nav_missing=false; f.nav_offset=10000
+            equal(engine:startup_nav(engine.world,point),nil)
+            equal(f.spawns,1)
+        end)
+    end)
 end

@@ -148,6 +148,18 @@ function Native:qualify()
     })
     self:_signature("/Script/Pal.PalAIActionComponent:GetCurrentAction_BP", { ReturnValue = { "ObjectProperty", 0 } })
     self:_signature("/Script/Pal.PalAICombatModule:GetTargetActor", { ReturnValue = { "ObjectProperty", 0 } })
+    self:_signature("/Script/Pal.PalUtility:CanAdjustLocationToFloorFromCDO", {
+        WorldContext = { "ObjectProperty", 0 }, InClass = { "ClassProperty", 8 },
+        InLocation = { "StructProperty", 16 }, UpOffset = { "FloatProperty", 40 },
+        OutLocation = { "StructProperty", 48 }, ShortRayLength = { "BoolProperty", 72 },
+        ReturnValue = { "BoolProperty", 73 },
+    })
+    self:_signature("/Script/NavigationSystem.NavigationSystemV1:K2_ProjectPointToNavigation", {
+        WorldContextObject = { "ObjectProperty", 0 }, Point = { "StructProperty", 8 },
+        ProjectedLocation = { "StructProperty", 32 }, NavData = { "ObjectProperty", 56 },
+        FilterClass = { "ClassProperty", 64 }, QueryExtent = { "StructProperty", 72 },
+        ReturnValue = { "BoolProperty", 96 },
+    })
     self.qualified = true
     return true
 end
@@ -230,17 +242,62 @@ function Native:startup_prepare(count)
         if #ids > self.bridge.config.limits.maxBases then error(SCOPE, 0) end
         table.sort(ids)
         self:prepare(world)
+        self.startupPawnClass = self:_class("/Game/Pal/Blueprint/Character/NPC/Normal/BP_NPC_Hunter_Boss.BP_NPC_Hunter_Boss_C")
+        if not self.a.valid(self:_call("startup-pawn-cdo", self.startupPawnClass, "GetCDO")) then error(SCOPE, 0) end
+        self.navigationLibrary = self.bridge:_static_find("/Script/NavigationSystem.Default__NavigationSystemV1")
+        if not self.a.valid(self.navigationLibrary) then error(SCOPE, 0) end
         local scopes = {}
+        local physical = { sampled = 0, floor = 0, spawnNav = 0, goalNav = 0 }
         for _, id in ipairs(ids) do
             local target, reason = self.bridge:_resolve_dispatch_target(manager, id)
             if not target then error(reason, 0) end
             local scope = self:prepare_base(id, target, world, {})
-            if not scope.unavailable then scopes[#scopes + 1] = scope end
+            if not scope.unavailable then
+                physical.sampled = physical.sampled + 1
+                local floor = self:startup_floor(world, scope.positions[1])
+                if floor then
+                    physical.floor = physical.floor + 1
+                    local spawn_nav = self:startup_nav(world, floor)
+                    local goal_nav = self:startup_nav(world, scope.origin)
+                    if spawn_nav then physical.spawnNav = physical.spawnNav + 1 end
+                    if goal_nav then physical.goalNav = physical.goalNav + 1 end
+                    local corrected = spawn_nav and self:startup_floor(world, spawn_nav) or nil
+                    if corrected and goal_nav and distance_squared(corrected, scope.origin) <= scope.leashRadius ^ 2
+                        and math.abs(corrected.Z - scope.origin.Z) <= 3000 then
+                        scope.positions[1] = corrected
+                        scopes[#scopes + 1] = scope
+                    end
+                end
+            end
             if #scopes == count then break end
         end
-        if #scopes ~= count then error("Custom assault placement is unavailable", 0) end
-        return { scopes = scopes, availableBases = #ids }
+        if #scopes ~= count then
+            return { blockedCode = "floor-or-navigation-unavailable", physical = physical, availableBases = #ids }
+        end
+        return { scopes = scopes, physical = physical, availableBases = #ids }
     end)
+end
+
+function Native:startup_floor(world, location)
+    local output = {}
+    local ok = self:_call("startup-floor", self.utility, "CanAdjustLocationToFloorFromCDO",
+        world, self.startupPawnClass, vector(location), 100, output, true)
+    if type(ok) ~= "boolean" then error(SCOPE, 0) end
+    if not ok then return nil end
+    local point = vector(output)
+    if distance_squared(point, location) > 500 ^ 2 then return nil end
+    return point
+end
+
+function Native:startup_nav(world, location)
+    local output = {}
+    local ok = self:_call("startup-nav", self.navigationLibrary, "K2_ProjectPointToNavigation",
+        world, vector(location), output, nil, nil, { X = 300, Y = 300, Z = 300 })
+    if type(ok) ~= "boolean" then error(SCOPE, 0) end
+    if not ok then return nil end
+    local point = vector(output)
+    if distance_squared(point, location) > 600 ^ 2 then return nil end
+    return point
 end
 
 function Native:startup_identity(member)

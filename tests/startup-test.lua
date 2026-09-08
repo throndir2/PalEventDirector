@@ -16,6 +16,7 @@ return function(test, equal, truthy)
         function engine:startup_prepare(count)
             if f.not_ready then return true, nil end
             if f.prepare_fault then return false, "Native operation stopped [custom-assault-scope]" end
+            if f.physical_block then return true, {blockedCode="floor-or-navigation-unavailable",physical={floor=0}} end
             local scopes = {}
             for index = 1, count do scopes[index] = { baseId = "private-base-" .. index, origin = { X=0,Y=0,Z=0 } } end
             return true, { scopes = scopes, availableBases = 10 }
@@ -141,6 +142,16 @@ return function(test, equal, truthy)
         equal(f.runner.state.status, "failed")
         equal(f.runner.state.cleanupComplete, true)
         equal(f.spawns, 0)
+    end)
+
+    test("startup physical placement failure blocks before any NPC request", function()
+        local f = fixture("movement")
+        f.physical_block = true
+        f:tick(4)
+        equal(f.runner.state.status,"blocked")
+        equal(f.runner.state.code,"floor-or-navigation-unavailable")
+        equal(f.runner.state.mutationStarted,false)
+        equal(f.spawns,0)
     end)
 
     test("startup quarantine uses the checksummed journal rather than an altered snapshot", function()
