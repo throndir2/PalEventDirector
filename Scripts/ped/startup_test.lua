@@ -137,6 +137,7 @@ function Test:_tick()
         if not ok then return self:halt(handle) end
         local identity = self.engine:startup_identity(member)
         member.instanceGuid, member.playerGuid = identity.instanceGuid, identity.playerGuid
+        member.handleAddress = identity.handleAddress
         member.phase = "pending"
         self.runtime[self.cursor] = { handle = handle }
         self.state.spawned = self.state.spawned + 1
@@ -151,7 +152,15 @@ function Test:_tick()
             plan.handle = runtime.handle
             local ok, observation = self.engine:inspect(runtime.handle, plan)
             if not ok then return self:halt(observation) end
+            if not member.instanceGuid then
+                local identity = self.engine:startup_identity(member)
+                if identity.instanceGuid then
+                    member.instanceGuid, member.playerGuid = identity.instanceGuid, identity.playerGuid
+                    if not self:_save("startup_identity_assigned") then return end
+                end
+            end
             member.phase = observation.phase
+            member.waitingOn = observation.waitingOn
             if observation.phase == "alive" then
                 ready = ready + 1
                 if not member.initialized then

@@ -283,6 +283,9 @@ function Assault:_read_member(member)
         guid = copy_guid(state.instanceGuid)
         if not guid then return self:_fail_member(member, "custom assault instance identity is invalid") end
     end
+    if member.instanceGuid and guid and not same_guid(guid, member.instanceGuid) then
+        return self:_fail_member(member, "custom assault member instance identity changed")
+    end
     if member.initialized then
         if (state.targetId ~= nil and state.targetId ~= member.targetId)
             or (guid and not same_guid(guid, member.instanceGuid)) then
@@ -309,6 +312,11 @@ function Assault:_read_member(member)
             and state.phase ~= "despawning" and not (member.cleanupRequested and state.phase == "dead") then
             return self:_fail_member(member, "custom assault initialized member lost player identity evidence")
         end
+    end
+    if state.phase == "pending" and guid and not member.instanceGuid then
+        member.instanceGuid, member.playerGuid = guid, player_guid
+        local recorded, reason = self:_record("custom_member_identity_assigned", evidence(member))
+        if not recorded then return self:_fail_member(member, reason) end
     end
     if member.initialized and state.phase == "dead" and state.targetId == member.targetId
         and state.characterId == member.plan.characterId and guid then

@@ -52,9 +52,9 @@ local function same_guid(left, right)
     return true
 end
 
-local function full_id(value)
-    if value == nil then error(IDENTITY, 0) end
-    return { PlayerUId = guid(value.PlayerUId, true), InstanceId = guid(value.InstanceId, false), DebugName = "" }
+local function full_id(value, allow_pending)
+    if value == nil then error("Custom assault individual ID return is absent", 0) end
+    return { PlayerUId = guid(value.PlayerUId, true), InstanceId = guid(value.InstanceId, allow_pending == true), DebugName = "" }
 end
 
 local function same_id(left, right)
@@ -246,6 +246,7 @@ end
 function Native:startup_identity(member)
     local record = self.records[member_key(member)]
     if not record then error(IDENTITY, 0) end
+    if not record.id then return { handleAddress = self.a.address and self.a.address(record.handle) or nil } end
     return { instanceGuid = guid(record.id.InstanceId, false), playerGuid = guid(record.id.PlayerUId, true) }
 end
 
@@ -306,8 +307,7 @@ function Native:spawn(scope, member)
             Level = member.level, Location = vector(position), Yaw = angle,
         }, nil)
         if not self.a.valid(handle) then error(INITIALIZATION, 0) end
-        local id = full_id(self:_call("spawn-id", handle, "GetIndividualID"))
-        self.records[member_key(member)] = { id = id, world = scope.world, characterId = member.characterId,
+        self.records[member_key(member)] = { world = scope.world, characterId = member.characterId,
             handle = handle, scope = scope }
         return handle
     end)
@@ -351,13 +351,26 @@ function Native:_owned_state(handle, member)
     local record = self.records[member_key(member)]
     if not record then error(IDENTITY, 0) end
     if record.despawnRequested then return { phase = self:_despawn_status(record) } end
-    local current = self:_call("reacquire-handle", self.characterManager, "GetIndividualHandle", record.id)
+    local current
+    if record.id then
+        current = self:_call("reacquire-handle", self.characterManager, "GetIndividualHandle", record.id)
+    else
+        if not self.a.same(handle, record.handle) then error(IDENTITY, 0) end
+        current = record.handle
+    end
     if not self.a.valid(current) then
         if record.initialized then return self:_absent_state(record) end
         current = handle
     end
     if not self.a.valid(current) then return self:_absent_state(record) end
-    local id = full_id(self:_call("member-id", current, "GetIndividualID"))
+    local id = full_id(self:_call("member-id", current, "GetIndividualID"), record.id == nil)
+    if not record.id then
+        if is_zero(id.InstanceId) then return { phase = "pending" } end
+        record.id = id
+        current = self:_call("reacquire-assigned-handle", self.characterManager, "GetIndividualHandle", id)
+        if not self.a.valid(current) then return { phase = "pending" } end
+        if not self.a.same(current, record.handle) then error(IDENTITY, 0) end
+    end
     local parameter = self:_call("member-parameter", current, "TryGetIndividualParameter")
     local actor = self:_call("member-actor", current, "TryGetIndividualActor")
     if not self.a.valid(parameter) then
@@ -437,7 +450,16 @@ function Native:_owned_state(handle, member)
 end
 
 function Native:inspect(handle, member)
-    return self.bridge:_native_step("custom-inspect", function() return self:_owned_state(handle, member) end)
+    return self.bridge:_native_step("custom-inspect", function()
+        local state = self:_owned_state(handle, member)
+        local record = self.records[member_key(member)]
+        if state.phase == "pending" then state.waitingOn = record and record.id and "actor-readiness" or "individual-id" end
+        if record and record.id and state.phase == "pending" then
+            state.instanceGuid, state.playerGuid = guid(record.id.InstanceId, false), guid(record.id.PlayerUId, true)
+            state.characterId = member.characterId
+        end
+        return state
+    end)
 end
 
 function Native:actorKey(actor)

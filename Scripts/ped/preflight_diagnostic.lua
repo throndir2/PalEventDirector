@@ -38,6 +38,7 @@ local ERROR_SIGNATURES = {
     { text = "Custom assault scope is invalid", code = "custom-assault-scope" },
     { text = "Custom assault ownership is unreadable", code = "custom-assault-ownership" },
     { text = "Custom assault actor identity changed", code = "custom-assault-identity" },
+    { text = "Custom assault individual ID return is absent", code = "custom-assault-id-return" },
     { text = "Custom assault initialization is incomplete", code = "custom-assault-initialization" },
     { text = "Custom assault native action failed", code = "custom-assault-action" },
     { text = "Custom assault placement is unavailable", code = "custom-assault-placement" },

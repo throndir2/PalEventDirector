@@ -351,6 +351,8 @@ return function(test, equal, truthy)
             equal(director.state.event.bases["base-a"].status, "pending")
             equal(director.state.event.bases["base-b"].status, "active")
             equal(director.state.event.confirmedBaseCount, 1)
+            equal(director.state.event.customAssault.members["1"].instanceGuid.A, 1)
+            equal(director.state.event.customAssault.members["1"].healthBudget, nil)
         end, true)
     end)
 

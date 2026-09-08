@@ -77,7 +77,10 @@ return function(test, equal, truthy)
             bIsPalActiveActor = true,
         })
         local handle = object({
-            GetIndividualID = function() return identity end,
+            GetIndividualID = function()
+                if f.id_pending then return {PlayerUId=util.deep_copy(zero),InstanceId=util.deep_copy(zero)} end
+                return identity
+            end,
             TryGetIndividualParameter = function() return parameter end,
             TryGetIndividualActor = function()
                 if f.missing or f.actor_missing then return nil end
@@ -534,6 +537,27 @@ return function(test, equal, truthy)
                 equal(f.calls[index] == "custom-parameter-component", false)
                 equal(f.calls[index] == "custom-capture-processing", false)
             end
+        end)
+    end)
+
+    test("NPC handles may acquire their individual ID after the spawn call returns", function()
+        fixture(function(engine, member, f)
+            f.id_pending = true
+            equal(engine:startup_identity(member).instanceGuid, nil)
+            local ok, state = engine:inspect(member.handle, member)
+            truthy(ok, state)
+            equal(state.phase, "pending")
+            equal(f.reacquired, nil)
+            equal(f.spawns, 1)
+            f.id_pending = false
+            ok, state = engine:inspect(member.handle, member)
+            truthy(ok, state)
+            equal(state.phase, "alive")
+            equal(engine:startup_identity(member).instanceGuid.A, 1)
+            equal(f.spawns, 1)
+            f.id_pending = true
+            equal(engine:inspect(member.handle, member), false)
+            equal(f.spawns, 1)
         end)
     end)
 end

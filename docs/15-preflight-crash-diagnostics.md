@@ -8,6 +8,8 @@ While the server is stopped, use the installed launcher with `-ValidateOnly -Sta
 
 Each launch creates a fresh private `Pal\Saved\PalEventDirector\startup-tests\<run-id>` directory containing its source-pinned plan, checksummed journal and snapshot. The snapshot's payload reports `running`, `passed`, `blocked` or `failed`, the current stage, observed counts and cleanup completeness. Normal event state, including interrupted request16, is separate and is not replayed or cleared.
 
+Native character creation has three separate milestones: a returned handle, an assigned nonzero individual ID, then an initialized actor. On the dedicated path the handle's ID can initially be zero while a creation continuation is queued. Retain that original handle and poll boundedly; do not treat a pending ID as a failed spawn or issue another spawn. Persist the full ID as soon as assigned, before actor readiness. A missing ID return structure is a different binding failure, not a valid pending ID.
+
 A fault ends that run. Uncertain spawned entities block another mutation test and ordinary native starts. A failed/interrupted test without mutations cannot be retried on the same artifact; investigate and deploy a corrected attested build. These server-side scenarios do not yet establish player attribution, captures, loot pickup or client replication.
 
 ## Simultaneous custom assault boundary
