@@ -8,6 +8,9 @@ param(
 
     [switch]$ValidateOnly,
 
+    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement')]
+    [string]$StartupTest = 'None',
+
     [Parameter(DontShow)]
     [string]$ServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer',
 
@@ -203,6 +206,76 @@ $launch = [ordered]@{
     NativePreflightRequired = $false
     Ue4ssTag = $ExpectedRuntimeTag
     Ue4ssApiVersion = $ExpectedRuntimeApi
+    StartupTest = $StartupTest
+}
+$testRoot = Join-Path $DataDirectory 'startup-tests'
+$activeTestPath = Join-Path $testRoot 'active.json'
+function Assert-StartupTestPath {
+    param([string]$Path)
+    $current = [IO.Path]::GetFullPath($Path)
+    if (-not $current.StartsWith($ServerRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Startup test state must remain inside the dedicated server.'
+    }
+    while ($current.Length -ge $ServerRoot.Length) {
+        if (Test-Path -LiteralPath $current) {
+            if ((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'Startup test state may not use a reparse point.'
+            }
+        }
+        if ($current -ieq $ServerRoot) { break }
+        $current = Split-Path $current -Parent
+    }
+}
+Assert-StartupTestPath $activeTestPath
+function Get-StartupTestChecksum {
+    param([string]$Text)
+    [long]$hash = 5381
+    foreach ($value in [Text.Encoding]::UTF8.GetBytes($Text)) { $hash = ($hash * 33 + $value) % 2147483647 }
+    $hash.ToString('x8')
+}
+function Read-StartupTestOutcome {
+    param([string]$RunId)
+    $journal = Join-Path (Join-Path $testRoot $RunId) 'journal.ndjson'
+    Assert-StartupTestPath $journal
+    if (-not (Test-Path -LiteralPath $journal -PathType Leaf)) { throw 'A previous startup test has no durable outcome; investigate before rearming.' }
+    $chain = '00000000'; $sequence = 0; $state = $null
+    foreach ($line in Get-Content -LiteralPath $journal) {
+        if ($line -eq '') { continue }
+        $match = [regex]::Match($line, '^\{"checksum":"(?<hash>[0-9a-f]{8})",(?<rest>.*)\}$')
+        if (-not $match.Success) { throw 'Startup test journal encoding is invalid.' }
+        $raw = '{' + $match.Groups['rest'].Value + '}'
+        if ((Get-StartupTestChecksum ($chain + $raw)) -cne $match.Groups['hash'].Value) { throw 'Startup test journal checksum mismatch.' }
+        $record = $line | ConvertFrom-Json
+        if ($record.schemaVersion -ne 1 -or $record.sequence -ne ($sequence + 1) -or $record.previousChecksum -cne $chain) {
+            throw 'Startup test journal chain mismatch.'
+        }
+        $chain = $record.checksum; $sequence = $record.sequence; $state = $record.state
+    }
+    if ($null -eq $state -or $state.schemaVersion -ne 1 -or $state.runId -cne $RunId -or
+        $state.status -notin @('running','passed','blocked','failed') -or
+        $state.mutationStarted -isnot [bool] -or $state.cleanupComplete -isnot [bool] -or
+        [string]$state.artifactSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Startup test outcome schema is invalid.' }
+    if ($state.cleanupComplete -and $state.mutationStarted -and
+        ($state.status -notin @('passed','blocked') -or $state.cleaned -ne $state.spawned)) {
+        throw 'Startup test cleanup outcome is inconsistent.'
+    }
+    $state
+}
+$previousTestRunId = $null
+if ($StartupTest -ne 'None') {
+    if ($deployment.deliveryProfile -ne 'laboratory-native-test') { throw 'Startup mutation tests require the laboratory test profile.' }
+    if (Test-Path -LiteralPath $activeTestPath -PathType Leaf) {
+        $activeTest = Get-Content -LiteralPath $activeTestPath -Raw | ConvertFrom-Json
+        if ([string]$activeTest.runId -notmatch '^[a-z0-9-]{1,80}$') { throw 'Previous startup test identity is invalid.' }
+        $previousTestRunId = [string]$activeTest.runId
+        $previousTest = Read-StartupTestOutcome $previousTestRunId
+        if ($previousTest.mutationStarted -and -not $previousTest.cleanupComplete) {
+            throw 'A previous startup test retains uncertain spawned entities; no new mutation test may start.'
+        }
+        if ($previousTest.status -in @('failed', 'running') -and $previousTest.artifactSha256 -eq $deployment.artifactSha256) {
+            throw 'Do not retry the failed/interrupted startup test on the same artifact.'
+        }
+    }
 }
 if ($ValidateOnly) {
     [pscustomobject]$launch
@@ -214,11 +287,32 @@ $previousBuildId = $env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID
 $previousDataDirectory = $env:PAL_EVENT_DIRECTOR_DATA_DIR
 $previousRuntimeTag = $env:PAL_EVENT_DIRECTOR_UE4SS_TAG
 $previousRuntimeApi = $env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION
+$previousStartupTest = $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN
+$previousSourceRevision = $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION
+$previousArtifactHash = $env:PAL_EVENT_DIRECTOR_ARTIFACT_SHA256
 try {
     $env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = $VerifiedBuildId
     $env:PAL_EVENT_DIRECTOR_DATA_DIR = $DataDirectory
     $env:PAL_EVENT_DIRECTOR_UE4SS_TAG = $ExpectedRuntimeTag
     $env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = $ExpectedRuntimeApi
+    $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION = [string]$deployment.sourceRevision
+    $env:PAL_EVENT_DIRECTOR_ARTIFACT_SHA256 = [string]$deployment.artifactSha256
+    $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN = $null
+    if ($StartupTest -ne 'None') {
+        $testRunId = [DateTime]::UtcNow.ToString('yyyyMMdd-HHmmss') + '-' + [Guid]::NewGuid().ToString('N')
+        $testDirectory = Join-Path $testRoot $testRunId
+        Assert-StartupTestPath $testDirectory
+        New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop | Out-Null
+        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement' }
+        $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
+            artifactSha256=[string]$deployment.artifactSha256 }
+        if ($previousTestRunId) { $plan['previousRunId'] = $previousTestRunId }
+        [IO.File]::WriteAllText((Join-Path $testDirectory 'plan.json'), ($plan | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+        [IO.File]::WriteAllText($activeTestPath, (@{ runId=$testRunId } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+        $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN = $testRunId
+        $launch['StartupTestRunId'] = $testRunId
+        $launch['StartupTestDirectory'] = $testDirectory
+    }
     if ($SyntheticChildScript) {
         $process = Start-Process -FilePath 'powershell.exe' `
             -WorkingDirectory $ServerRoot `
@@ -236,6 +330,9 @@ try {
     $env:PAL_EVENT_DIRECTOR_DATA_DIR = $previousDataDirectory
     $env:PAL_EVENT_DIRECTOR_UE4SS_TAG = $previousRuntimeTag
     $env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = $previousRuntimeApi
+    $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN = $previousStartupTest
+    $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION = $previousSourceRevision
+    $env:PAL_EVENT_DIRECTOR_ARTIFACT_SHA256 = $previousArtifactHash
 }
 
 $launch['ProcessId'] = $process.Id

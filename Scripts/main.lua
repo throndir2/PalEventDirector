@@ -56,6 +56,7 @@ local function boot()
         qualify_raid_layout = version.delivery_profile == "laboratory-native-test" and config.capabilities.startAllInvasions })
     local director = Director.new({ config = config, store = store, bridge = bridge, logger = logger })
     bridge:attach_director(director)
+    require("ped.startup_test").attach(bridge, data_directory)
     local registered, registration_error = bridge:register()
     if not registered then
         error(registration_error)

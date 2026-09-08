@@ -67,6 +67,16 @@ function New-LauncherFixture {
     [pscustomobject]@{ ServerRoot = $serverRoot; Launcher = $installedLauncher }
 }
 
+function Write-StartupTestFixtureOutcome {
+    param([string]$Path, [object]$State)
+    $raw = @{ schemaVersion=1; sequence=1; previousChecksum='00000000'; kind='startup_test_finished'; state=$State } | ConvertTo-Json -Depth 8 -Compress
+    [long]$hash = 5381
+    foreach ($value in [Text.Encoding]::UTF8.GetBytes('00000000' + $raw)) { $hash = ($hash * 33 + $value) % 2147483647 }
+    $line = '{"checksum":"' + $hash.ToString('x8') + '",' + $raw.Substring(1)
+    [IO.File]::WriteAllText((Join-Path (Split-Path $Path -Parent) 'journal.ndjson'), $line + "`n", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($Path, (@{payload=$State} | ConvertTo-Json -Depth 8))
+}
+
 try {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $InstallerFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -159,6 +169,8 @@ try {
     dataDirectory = `$env:PAL_EVENT_DIRECTOR_DATA_DIR
     runtimeTag = `$env:PAL_EVENT_DIRECTOR_UE4SS_TAG
     runtimeApi = `$env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION
+    startupTestRun = `$env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN
+    sourceRevision = `$env:PAL_EVENT_DIRECTOR_SOURCE_REVISION
 }
 [IO.File]::WriteAllText('$($capturePath.Replace("'", "''"))', (`$record | ConvertTo-Json))
 "@)
@@ -166,11 +178,15 @@ try {
     $previousDataDirectory = $env:PAL_EVENT_DIRECTOR_DATA_DIR
     $previousRuntimeTag = $env:PAL_EVENT_DIRECTOR_UE4SS_TAG
     $previousRuntimeApi = $env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION
+    $previousStartupTest = $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN
+    $previousSourceRevision = $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION
     try {
         $env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID = 'parent-build'
         $env:PAL_EVENT_DIRECTOR_DATA_DIR = 'parent-data'
         $env:PAL_EVENT_DIRECTOR_UE4SS_TAG = 'parent-tag'
         $env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = 'parent-api'
+        $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN = 'parent-test'
+        $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION = 'parent-source'
         $started = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript
         if ($started.Started -ne $true -or -not (Test-Path $capturePath)) { throw 'Synthetic child did not run.' }
         $captured = Get-Content $capturePath -Raw | ConvertFrom-Json
@@ -179,6 +195,46 @@ try {
             $captured.dataDirectory -ne (Join-Path $matching.ServerRoot 'Pal\Saved\PalEventDirector')) {
             throw 'Required launch variables did not reach the child process.'
         }
+        if ($captured.startupTestRun -or $captured.sourceRevision -ne '1111111111111111111111111111111111111111') {
+            throw 'Normal launch inherited a startup test or omitted source provenance.'
+        }
+        if ($env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN -ne 'parent-test' -or $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION -ne 'parent-source') {
+            throw 'Launcher did not restore startup-test environment variables.'
+        }
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest SpawnCleanup -ValidateOnly | Out-Null
+        $testRoot = Join-Path $matching.ServerRoot 'Pal\Saved\PalEventDirector\startup-tests'
+        if (Test-Path $testRoot) { throw 'ValidateOnly armed a mutation test.' }
+        $testLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest SpawnCleanup
+        $testCapture = Get-Content $capturePath -Raw | ConvertFrom-Json
+        $testPlan = Get-Content (Join-Path $testLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
+        if ($testCapture.startupTestRun -ne $testLaunch.StartupTestRunId -or $testPlan.case -ne 'spawn-cleanup' -or
+            $testPlan.sourceRevision -ne $testCapture.sourceRevision) { throw 'Explicit startup test provenance did not reach the child.' }
+        $testStatePath = Join-Path $testLaunch.StartupTestDirectory 'snapshot.json'
+        $testState = @{ payload = @{ schemaVersion=1; runId=$testLaunch.StartupTestRunId; case='spawn-cleanup'; status='failed'; mutationStarted=$true;
+            cleanupComplete=$false; sourceRevision=$testPlan.sourceRevision; artifactSha256=$testPlan.artifactSha256;
+            spawned=1; cleaned=0; initialized=0; moved=0 } }
+        Write-StartupTestFixtureOutcome $testStatePath $testState.payload
+        [IO.File]::WriteAllText($testStatePath, '{"payload":{"cleanupComplete":true,"mutationStarted":false,"status":"passed"}}')
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest SpawnCleanup -ValidateOnly | Out-Null
+            throw 'Uncertain startup entities unexpectedly allowed another test.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'retains uncertain spawned entities') { throw }
+        }
+        $testState.payload.mutationStarted = $false
+        $testState.payload.spawned = 0
+        $testState.payload.cleanupComplete = $true
+        $testState.payload.sourceRevision = '3333333333333333333333333333333333333333'
+        Write-StartupTestFixtureOutcome $testStatePath $testState.payload
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest SpawnCleanup -ValidateOnly | Out-Null
+            throw 'Failed startup test was retried on the same artifact.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'Do not retry') { throw }
+        }
+        $testState.payload.status = 'passed'
+        Write-StartupTestFixtureOutcome $testStatePath $testState.payload
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest Movement -ValidateOnly | Out-Null
         if ($env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID -ne 'parent-build' -or $env:PAL_EVENT_DIRECTOR_DATA_DIR -ne 'parent-data') {
             throw 'Launcher did not restore the parent process environment.'
         }
@@ -190,6 +246,8 @@ try {
         $env:PAL_EVENT_DIRECTOR_DATA_DIR = $previousDataDirectory
         $env:PAL_EVENT_DIRECTOR_UE4SS_TAG = $previousRuntimeTag
         $env:PAL_EVENT_DIRECTOR_UE4SS_API_VERSION = $previousRuntimeApi
+        $env:PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN = $previousStartupTest
+        $env:PAL_EVENT_DIRECTOR_SOURCE_REVISION = $previousSourceRevision
     }
 
     Write-Output 'PASS IMOUTO launcher rejects absent/mismatched IDs and passes verified variables only to the child process'

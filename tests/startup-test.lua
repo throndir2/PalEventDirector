@@ -1,0 +1,175 @@
+return function(test, equal, truthy)
+    local Startup = require("ped.startup_test")
+    local util = require("ped.util")
+    local function fixture(case)
+        local f = { now = 1000, records = {}, spawns = 0, despawns = 0, travels = 0, phases = {} }
+        local store = { sequence = 0 }
+        function store:append(kind, _, state)
+            f.records[#f.records + 1] = kind
+            if f.fail_record == kind then return false end
+            self.sequence = self.sequence + 1
+            f.saved = util.deep_copy(state)
+            return true
+        end
+        function store:save_snapshot() return not f.fail_snapshot end
+        local engine = {}
+        function engine:startup_prepare(count)
+            if f.not_ready then return true, nil end
+            if f.prepare_fault then return false, "Native operation stopped [custom-assault-scope]" end
+            local scopes = {}
+            for index = 1, count do scopes[index] = { baseId = "private-base-" .. index, origin = { X=0,Y=0,Z=0 } } end
+            return true, { scopes = scopes, availableBases = 10 }
+        end
+        function engine:spawn(_, member)
+            equal(f.records[#f.records], "startup_spawn_intent")
+            f.spawns = f.spawns + 1
+            if f.spawn_fault then return false, "Native operation stopped [custom-assault-initialization]" end
+            return true, { index = member.index }
+        end
+        function engine:startup_identity(member)
+            return { instanceGuid = { A=member.index,B=0,C=0,D=0 }, playerGuid = { A=0,B=0,C=0,D=0 } }
+        end
+        function engine:inspect(_, member)
+            return true, { phase = f.phases[member.index] or "alive", healthBudget = 1000, targetId = "private-target-" .. member.index,
+                location = { X=f.arrived and 500 or 4000,Y=0,Z=0 } }
+        end
+        function engine:startup_travel()
+            equal(f.records[#f.records], "startup_movement_intent")
+            f.travels = f.travels + 1
+            return true
+        end
+        function engine:despawn(_, member)
+            equal(f.records[#f.records], "startup_cleanup_intent")
+            f.despawns = f.despawns + 1
+            f.phases[member.index] = f.pending_cleanup and "despawning" or "missing"
+            return true, f.pending_cleanup and "pending" or "despawned"
+        end
+        f.runner = Startup.new({ plan = { schemaVersion=1, runId="fixture-run", case=case or "spawn-cleanup",
+            sourceRevision=string.rep("1",40), artifactSha256=string.rep("2",64) }, store=store, engine=engine, clock=function() return f.now end,
+            logger={ info=function() end, error=function() end } })
+        function f:tick(count)
+            for _ = 1, count or 1 do self.runner:tick(); self.now = self.now + 1 end
+        end
+        return f
+    end
+
+    test("startup test waits for a world without requiring a player or spawning early", function()
+        local f = fixture()
+        f.not_ready = true
+        f:tick(10)
+        equal(f.spawns, 0)
+        equal(f.runner.state.stage, "world")
+        f.now = 1120
+        f:tick()
+        equal(f.runner.state.status, "blocked")
+        equal(f.runner.state.cleanupComplete, true)
+    end)
+
+    test("startup spawn smoke requires initialized actors and confirmed cleanup", function()
+        local f = fixture()
+        f:tick(8)
+        equal(f.runner.state.status, "passed")
+        equal(f.spawns, 1)
+        equal(f.despawns, 1)
+        equal(f.runner.state.initialized, 1)
+        equal(f.runner.state.cleanupComplete, true)
+        local calls = #f.records
+        f:tick(5)
+        equal(#f.records, calls)
+    end)
+
+    test("startup movement does not pass merely because an action returned", function()
+        local f = fixture("movement")
+        f:tick(6)
+        equal(f.travels, 1)
+        equal(f.runner.state.status, "running")
+        equal(f.runner.state.moved, 0)
+        f.arrived = true
+        f:tick(3)
+        equal(f.runner.state.status, "passed")
+        equal(f.runner.state.moved, 1)
+    end)
+
+    test("startup multi-base qualification observes both actors before cleanup", function()
+        local f = fixture("two-base-movement")
+        f:tick(7)
+        equal(f.spawns, 2)
+        equal(f.runner.state.initialized, 2)
+        equal(f.runner.state.simultaneous, true)
+        equal(f.travels, 2)
+        f.arrived = true
+        f:tick(4)
+        equal(f.runner.state.status, "passed")
+        equal(f.despawns, 2)
+    end)
+
+    test("startup cleanup polls pending work without issuing another despawn", function()
+        local f = fixture()
+        f.pending_cleanup = true
+        f:tick(9)
+        equal(f.despawns, 1)
+        equal(f.runner.state.cleanupComplete, false)
+        f.phases[1] = "missing"
+        f:tick()
+        equal(f.runner.state.status, "passed")
+        equal(f.despawns, 1)
+    end)
+
+    test("startup faults preserve uncertain spawn intent and never retry", function()
+        local f = fixture()
+        f.spawn_fault = true
+        f:tick(8)
+        equal(f.runner.state.status, "failed")
+        equal(f.runner.state.cleanupComplete, false)
+        equal(f.spawns, 1)
+        equal(f.despawns, 0)
+        equal(f.runner.state.code, "custom-assault-initialization")
+    end)
+
+    test("startup durability failure prevents the corresponding native call", function()
+        local f = fixture()
+        f.fail_record = "startup_spawn_intent"
+        f:tick(5)
+        equal(f.spawns, 0)
+        equal(f.runner.state.status, "failed")
+    end)
+
+    test("startup class failure is terminal without claiming an entity was spawned", function()
+        local f = fixture()
+        f.prepare_fault = true
+        f:tick(5)
+        equal(f.runner.state.status, "failed")
+        equal(f.runner.state.cleanupComplete, true)
+        equal(f.spawns, 0)
+    end)
+
+    test("startup quarantine uses the checksummed journal rather than an altered snapshot", function()
+        local Store, json, path = require("ped.store"), require("ped.json"), require("ped.path")
+        local files = {}
+        local fs = {
+            ensure_directory=function() return true end,
+            exists=function(name) return files[name] ~= nil end,
+            read=function(name) return files[name] end,
+            write=function(name, text) files[name]=text; return true end,
+            append=function(name, text) files[name]=(files[name] or "")..text; return true end,
+            remove=function(name) files[name]=nil; return true end,
+            rename=function(a,b) files[b]=files[a]; files[a]=nil; return true end,
+        }
+        local root = "private-test-data"
+        local directory = path.join(root, "startup-tests", "fixture-run")
+        local logger = {info=function() end,warn=function() end,error=function() end}
+        local store = Store.new(directory, logger, fs)
+        local state = { schemaVersion=1,runId="fixture-run",case="spawn-cleanup",artifactSha256=string.rep("2",64),
+            status="running",mutationStarted=true,cleanupComplete=false,spawned=1,initialized=0,cleaned=0,moved=0 }
+        truthy(store:append("startup_spawn_intent", {}, state))
+        truthy(store:save_snapshot(state))
+        local altered = json.decode(files[store.snapshot_path])
+        altered.payload.cleanupComplete, altered.payload.mutationStarted = true, false
+        files[store.snapshot_path] = json.encode(altered)
+        files[path.join(root,"startup-tests","active.json")] = json.encode({runId="fixture-run"})
+        local bridge = {logger=logger}
+        Startup.attach(bridge, root, {filesystem=fs,getenv=function() return nil end})
+        truthy(bridge.startup_quarantine)
+        equal(Startup.read_state(directory,"fixture-run",logger,fs).cleanupComplete,false)
+    end)
+end

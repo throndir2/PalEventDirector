@@ -1,5 +1,15 @@
 # IMOUTO preflight crash diagnostics
 
+## Headless startup qualification
+
+The installed launcher accepts an explicit laboratory-only `-StartupTest` scenario. Normal launches default to `None` and clear inherited test-run environment variables. No chat command, logged-in player, fake admin identity or normal event start is used. The harness obtains the dedicated world from a non-default game instance, waits up to 120 seconds for saved base models, then runs bounded game-thread operations.
+
+While the server is stopped, use the installed launcher with `-ValidateOnly -StartupTest SpawnCleanup`, then launch with `-StartupTest SpawnCleanup`. Available scenarios are `SpawnCleanup`, `Movement` and `TwoBaseMovement`. They use one stock level-30 bounty NPC per selected base, not a native invasion. Movement requires observed travel toward the base and arrival within the stock action's approach radius, not just a returned action handle. Cleanup requires verified termination of each exactly owned actor.
+
+Each launch creates a fresh private `Pal\Saved\PalEventDirector\startup-tests\<run-id>` directory containing its source-pinned plan, checksummed journal and snapshot. The snapshot's payload reports `running`, `passed`, `blocked` or `failed`, the current stage, observed counts and cleanup completeness. Normal event state, including interrupted request16, is separate and is not replayed or cleared.
+
+A fault ends that run. Uncertain spawned entities block another mutation test and ordinary native starts. A failed/interrupted test without mutations cannot be retried on the same artifact; investigate and deploy a corrected attested build. These server-side scenarios do not yet establish player attribution, captures, loot pickup or client replication.
+
 ## Simultaneous custom assault boundary
 
 `all-bounty` is a simultaneous PED-controlled stock-NPC encounter, explicitly chosen instead of serial native raids. It does not call the native raid-state/Blueprint incident path. `SpawnNPCForServer` has an audited 88-byte frame with a 64-byte spawn struct and null delegate; its handle is only a pending request until the actual actor and controller are initialized. Stock base-local movement/combat and a bounded building-action primitive are used without a native incident, fabricated manager map or distant-player fallback.

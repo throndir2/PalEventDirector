@@ -391,6 +391,10 @@ function Bridge:native_start_guard()
     if not self.config.capabilities.startAllInvasions then return false, "capabilities.startAllInvasions is disabled." end
     if not self.registered or not self.periodic_active then return false, "Laboratory hooks and polling are not ready." end
     if self.native_fault then return false, self.native_fault end
+    if self.startup_quarantine then return false, self.startup_quarantine end
+    if self.startup_test and (not self.startup_test.stopped or not self.startup_test.state.cleanupComplete) then
+        return false, "Startup qualification owns the laboratory mutation scope."
+    end
     return true
 end
 
@@ -1803,8 +1807,12 @@ function Bridge:register()
                 })
                 self.logger:info("Custom assault spawn and action layouts qualified", { mutation = false })
             end)
-            if not qualified then return false end
+            if not qualified then
+                if self.startup_test then self.startup_test:halt(self.native_fault) end
+                return false
+            end
         end
+        if self.startup_test then self.startup_test:tick() end
         if self.director then
             local ok, tick_error = xpcall(function() self.director:tick() end, debug.traceback)
             if not ok then

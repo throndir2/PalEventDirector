@@ -186,9 +186,67 @@ function Native:prepare(world)
         class = class:GetSuperStruct()
     end
     if not generic then error(SCOPE, 0) end
-    for key, path in pairs(CLASSES) do self.classes[key] = self:_class(path) end
+    for _, key in ipairs(util.sorted_keys(CLASSES)) do
+        local loaded, class = self.bridge:_native_step("custom-class-" .. key, function() return self:_class(CLASSES[key]) end)
+        if not loaded then error(class, 0) end
+        self.classes[key] = class
+    end
     self.classes.invoker = self:_class("/Script/Pal.PalNavigationInvokerComponent")
     return true
+end
+
+function Native:startup_prepare(count)
+    return self.bridge:_native_step("startup-world-and-bases", function()
+        local find = rawget(_G, "FindAllOf")
+        if type(find) ~= "function" then error(SCOPE, 0) end
+        local instances = find("PalGameInstance") or {}
+        if #instances > 8 then error(SCOPE, 0) end
+        local world
+        for _, instance in ipairs(instances) do
+            if self.a.valid(instance) and not instance:GetFName():ToString():match("^Default__") then
+                local candidate = self:_call("headless-world", instance, "GetWorld")
+                if self.a.valid(candidate) then
+                    if not candidate:IsA("/Script/Engine.World") or (world and not self.a.same(world, candidate)) then error(SCOPE, 0) end
+                    world = candidate
+                end
+            end
+        end
+        if not world then return nil end
+        local utility = self.bridge:_utility()
+        if not self.a.valid(utility) then return nil end
+        local manager = self:_call("headless-base-registry", utility, "GetInvaderManager", world)
+        if not self.a.valid(manager) then return nil end
+        if not self.a.same(self:_call("headless-registry-world", manager, "GetWorld"), world) then error(SCOPE, 0) end
+        local observers = self.a.unwrap(manager.Observers)
+        if observers == nil then return nil end
+        local ids = {}
+        observers:ForEach(function(key)
+            local id = self.a.guid(key)
+            if id then ids[#ids + 1] = id end
+            if #ids > self.bridge.config.limits.maxBases then return true end
+            return nil
+        end)
+        if #ids < count then return nil end
+        if #ids > self.bridge.config.limits.maxBases then error(SCOPE, 0) end
+        table.sort(ids)
+        self:prepare(world)
+        local scopes = {}
+        for _, id in ipairs(ids) do
+            local target, reason = self.bridge:_resolve_dispatch_target(manager, id)
+            if not target then error(reason, 0) end
+            local scope = self:prepare_base(id, target, world, {})
+            if not scope.unavailable then scopes[#scopes + 1] = scope end
+            if #scopes == count then break end
+        end
+        if #scopes ~= count then error("Custom assault placement is unavailable", 0) end
+        return { scopes = scopes, availableBases = #ids }
+    end)
+end
+
+function Native:startup_identity(member)
+    local record = self.records[member_key(member)]
+    if not record then error(IDENTITY, 0) end
+    return { instanceGuid = guid(record.id.InstanceId, false), playerGuid = guid(record.id.PlayerUId, true) }
 end
 
 function Native:prepare_base(base_id, target, world, players)
@@ -487,6 +545,33 @@ function Native:_behavior(record, member, mode, target)
     record.target, record.mode = target, mode
 end
 
+function Native:_configure_movement(record, state, scope)
+    if record.configured then return end
+    local blackboard = self:_call("ai-blackboard", state.controller, "GetMyPalBlackboard")
+    if not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
+    blackboard.SpawnerLocation_BB, blackboard.SpawnedPosition_BB = vector(scope.origin), vector(state.location)
+    blackboard.ReturnTerritoryRadius_BB, blackboard.Disable_ReturnTerritory_WildPal = scope.leashRadius, false
+    local adjusted = self:_call("adjust-floor", self.utility, "AdjustActorToFloor", state.actor, 1000, false, false, false)
+    if not self.a.same(adjusted, state.actor) then error(INITIALIZATION, 0) end
+    local invoker = self:_call("nav-invoker", state.actor, "GetComponentByClass", self.classes.invoker)
+    if not self.a.valid(invoker) then error(INITIALIZATION, 0) end
+    self:_call("activate-nav", invoker, "ActivateInvoker")
+    self:_call("walking-mode", self.utility, "ChangeDefaultLandMovementModeForWalking", state.actor)
+    record.configured = true
+end
+
+function Native:startup_travel(scope, member)
+    return self.bridge:_native_step("startup-travel", function()
+        local state = self:_owned_state(member.handle, member)
+        if state.phase ~= "alive" then error(INITIALIZATION, 0) end
+        self:_configure_movement(self.records[member_key(member)], state, scope)
+        local actions = self:_call("startup-ai-component", state.controller, "GetAIActionComponent")
+        if not self.a.valid(actions) then error(INITIALIZATION, 0) end
+        self:_set_action(actions, self.classes.travel, scope.origin, nil)
+        return true
+    end)
+end
+
 function Native:engage(scope, member)
     return self.bridge:_native_step("custom-engage", function()
         local state = self:_owned_state(member.handle, member)
@@ -497,15 +582,7 @@ function Native:engage(scope, member)
         if not self.a.valid(actions) or not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
         if not record.configured then
             state.component.bIsAttackNonCriminal = true
-            blackboard.SpawnerLocation_BB, blackboard.SpawnedPosition_BB = vector(scope.origin), vector(state.location)
-            blackboard.ReturnTerritoryRadius_BB, blackboard.Disable_ReturnTerritory_WildPal = scope.leashRadius, false
-            local adjusted = self:_call("adjust-floor", self.utility, "AdjustActorToFloor", actor, 1000, false, false, false)
-            if not self.a.same(adjusted, actor) then error(INITIALIZATION, 0) end
-            local invoker = self:_call("nav-invoker", actor, "GetComponentByClass", self.classes.invoker)
-            if not self.a.valid(invoker) then error(INITIALIZATION, 0) end
-            self:_call("activate-nav", invoker, "ActivateInvoker")
-            self:_call("walking-mode", self.utility, "ChangeDefaultLandMovementModeForWalking", actor)
-            record.configured = true
+            self:_configure_movement(record, state, scope)
         end
         local defender = self:_choose_defender(scope)
         if defender then
