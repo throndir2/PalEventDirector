@@ -377,6 +377,26 @@ function Native:startup_damage_target(scope, actor)
     end)
 end
 
+function Native:_weapon_readiness(controller)
+    local weapon = self.a.unwrap(controller.WeaponHandle)
+    if not self.a.valid(weapon) then return nil end
+    local ready = self:_call("weapon-ready", weapon, "IsEndInitialize")
+    if type(ready) ~= "boolean" then error(SCOPE, 0) end
+    return weapon, ready
+end
+
+function Native:_shot_radius(weapon)
+    local radius = self:_call("shot-radius", weapon, "GetSphereCastRadius")
+    if not finite(radius) or radius < 0 or radius > 1000 then error(SCOPE, 0) end
+    return radius
+end
+
+function Native:_line_of_sight(actor, target, radius)
+    local visible = self:_call("shot-line-of-sight", self.utility, "LineTraceToTarget_ForAIAttack", actor, target, radius)
+    if type(visible) ~= "boolean" then error(SCOPE, 0) end
+    return visible
+end
+
 function Native:startup_combat_observation(scope, member)
     return self.bridge:_native_step("startup-combat-observation", function()
         local state = self:_owned_state(member.handle, member)
@@ -392,16 +412,14 @@ function Native:startup_combat_observation(scope, member)
         result.healthRatio = self:_call("startup-health-ratio", state.component, "GetHPRate")
         if not finite(result.healthRatio) then error(SCOPE, 0) end
         local record = self.records[member_key(member)]
+        result.defenderSelection = record.defenderSelection and util.shallow_copy(record.defenderSelection) or nil
         if self.a.valid(record.target) then
             local target_location = vector(self:_call("startup-target-distance", record.target, "K2_GetActorLocation"))
             result.targetDistanceCm = math.sqrt(distance_squared(state.location, target_location))
         end
-        local weapon = self.a.unwrap(state.controller.WeaponHandle)
+        local weapon, ready = self:_weapon_readiness(state.controller)
         result.weaponHandle = self.a.valid(weapon)
-        if result.weaponHandle then
-            result.weaponReady = self:_call("startup-weapon-ready", weapon, "IsEndInitialize")
-            if type(result.weaponReady) ~= "boolean" then error(SCOPE, 0) end
-        end
+        result.weaponReady = ready
         if self.a.valid(action) and action:IsA(CLASSES.combat) then
             result.stopTick = action.IsStopTick
             local machine = self.a.unwrap(action.StateMachine)
@@ -423,11 +441,7 @@ function Native:startup_combat_observation(scope, member)
                 if not util.is_integer(result.remainingBullets) or result.remainingBullets < 0
                     or type(result.magazineEmpty) ~= "boolean" then error(SCOPE, 0) end
                 if result.actualTarget and self:_character_scope(target,scope) == true then
-                    local radius = self:_call("startup-shot-radius", weapon, "GetSphereCastRadius")
-                    if not finite(radius) or radius < 0 or radius > 1000 then error(SCOPE, 0) end
-                    result.lineOfSight = self:_call("startup-shot-line-of-sight", self.utility,
-                        "LineTraceToTarget_ForAIAttack",state.actor,target,radius)
-                    if type(result.lineOfSight) ~= "boolean" then error(SCOPE, 0) end
+                    result.lineOfSight = self:_line_of_sight(state.actor, target, self:_shot_radius(weapon))
                 end
             end
         end
@@ -729,7 +743,33 @@ function Native:_combat_targets_scoped(actions, scope)
     return not self.a.valid(action) and not uncertain and true or nil
 end
 
-function Native:_choose_defender(scope)
+function Native:_choose_defender(scope, state, record)
+    local weapon, ready = self:_weapon_readiness(state.controller)
+    local radius = ready and self:_shot_radius(weapon) or nil
+    local observation = { eligible = 0, visibilityChecks = 0 }
+    local fallback, current = nil, record.target
+    local function consider(actor)
+        if not self:_defender(actor, scope) then return nil end
+        observation.eligible = observation.eligible + 1
+        fallback = fallback or actor
+        if radius == nil then return actor end
+        observation.visibilityChecks = observation.visibilityChecks + 1
+        if self:_line_of_sight(state.actor, actor, radius) then
+            observation.visible = true
+            return actor
+        end
+        observation.visible = false
+        return nil
+    end
+    local function select(actor)
+        observation.retained = actor ~= nil and self.a.same(actor, current)
+        record.defenderSelection = observation
+        return actor
+    end
+    if self.a.valid(current) then
+        local chosen = consider(current)
+        if chosen then return select(chosen) end
+    end
     local workers = self.a.unwrap(scope.base.WorkerDirector)
     if self.a.valid(workers) then
         local slots = {}
@@ -741,7 +781,10 @@ function Native:_choose_defender(scope)
                 local handle = self:_call("worker-handle", slot, "GetHandle")
                 if self.a.valid(handle) then
                     local actor = self:_call("worker-actor", handle, "TryGetIndividualActor")
-                    if self:_defender(actor, scope) then return actor end
+                    if not self.a.same(actor, current) then
+                        local chosen = consider(actor)
+                        if chosen then return select(chosen) end
+                    end
                 end
             end
         end
@@ -750,10 +793,13 @@ function Native:_choose_defender(scope)
         local controller = scope.players[index].controller
         if self.a.valid(controller) then
             local actor = self:_call("player-defender", controller, "GetPawn")
-            if self:_defender(actor, scope) then return actor end
+            if not self.a.same(actor, current) then
+                local chosen = consider(actor)
+                if chosen then return select(chosen) end
+            end
         end
     end
-    return nil
+    return select(fallback)
 end
 
 function Native:_action_class(key)
@@ -816,7 +862,7 @@ function Native:engage(scope, member)
             record.hostileConfigured = true
         end
         self:_configure_movement(record, state, scope)
-        local defender = self:_choose_defender(scope)
+        local defender = self:_choose_defender(scope, state, record)
         if defender then
             if not record.target or not self.a.same(record.target, defender) or record.mode ~= "combat" then
                 local battle = self:_call("battle-manager", self.utility, "GetBattleManager", scope.world)

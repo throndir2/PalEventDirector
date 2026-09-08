@@ -159,6 +159,7 @@ return function(test, equal, truthy)
             characterId = "BOSS_Hunter_Rifle", level = 30 }
         function f:building_at(x, foreign_base)
             self.building = object({
+                IsA = function() return false end,
                 GetBaseCampIdBelongTo = function() return { A = foreign_base and 77 or 9, B = 0, C = 0, D = 0 } end,
                 K2_GetActorLocation = function() return { X = x, Y = 0, Z = 0 } end,
             })
@@ -182,6 +183,33 @@ return function(test, equal, truthy)
                 TargetActor = target,
                 CombatModule = not without_module and object({ GetTargetActor = function() return module_target end }) or nil,
             })
+        end
+        function f:workers(...)
+            local actors = { ... }
+            scope.base.WorkerDirector = object({
+                GetCharacterHandleSlots = function(_, slots)
+                    for index, worker in ipairs(actors) do
+                        slots[index] = object({ GetHandle = function()
+                            return object({ TryGetIndividualActor = function() return worker end })
+                        end })
+                    end
+                end,
+            })
+        end
+        function f:weapon(ready)
+            controller.WeaponHandle = object({
+                IsEndInitialize = function() return ready end,
+                GetSphereCastRadius = function()
+                    truthy(ready, "unready weapon radius was queried")
+                    return 5
+                end,
+            })
+            engine.utility.LineTraceToTarget_ForAIAttack = function(_, attacker, target, radius)
+                equal(attacker, actor); equal(radius, 5)
+                self.visibilityChecks = (self.visibilityChecks or 0) + 1
+                if self.visibilityFailure then error("fixture visibility failure") end
+                return target.visible == true
+            end
         end
         local ok, result = engine:spawn(scope, member)
         truthy(ok, result)
@@ -454,6 +482,68 @@ return function(test, equal, truthy)
             equal(f.player_target, nil)
             equal(actor:GetCharacterParameterComponent().bIsAttackNonCriminal, true)
             equal(f.terminated, 1)
+        end)
+    end)
+
+    test("custom combat prefers a visible scoped defender over an occluded first worker", function()
+        fixture(function(engine, member, f, _, _, scope)
+            local hidden, visible = f:defender_at(200), f:defender_at(500)
+            visible.visible = true
+            f:workers(hidden, visible)
+            f:weapon(true)
+            truthy(engine:engage(scope, member))
+            equal(f.npc_target, visible)
+            equal(f.visibilityChecks, 2)
+            local record = engine.records[member.groupId .. ":" .. member.index]
+            equal(record.defenderSelection.eligible, 2)
+            equal(record.defenderSelection.visible, true)
+            truthy(engine:engage(scope, member))
+            equal(f.visibilityChecks, 3)
+            equal(f.terminated, 1)
+            equal(record.defenderSelection.retained, true)
+        end)
+    end)
+
+    test("custom combat never traces an unscoped defender and retains an occluded target without thrashing", function()
+        fixture(function(engine, member, f, _, _, scope)
+            local remote, hidden = f:defender_at(5000), f:defender_at(200)
+            remote.visible = true
+            f:workers(remote, hidden)
+            f:weapon(true)
+            truthy(engine:engage(scope, member))
+            equal(f.npc_target, hidden)
+            equal(f.visibilityChecks, 1)
+            truthy(engine:engage(scope, member))
+            equal(f.visibilityChecks, 2)
+            equal(f.terminated, 1)
+            local record = engine.records[member.groupId .. ":" .. member.index]
+            equal(record.defenderSelection.visible, false)
+            equal(record.defenderSelection.retained, true)
+        end)
+    end)
+
+    test("custom combat can start weapon setup without calling visibility on an unready handle", function()
+        fixture(function(engine, member, f, _, _, scope)
+            local defender = f:defender_at(200)
+            f:workers(defender)
+            f:weapon(false)
+            truthy(engine:engage(scope, member))
+            equal(f.npc_target, defender)
+            equal(f.visibilityChecks, nil)
+            local record = engine.records[member.groupId .. ":" .. member.index]
+            equal(record.defenderSelection.visible, nil)
+            equal(record.defenderSelection.visibilityChecks, 0)
+        end)
+    end)
+
+    test("custom combat stops at a visibility boundary error rather than choosing a fallback", function()
+        fixture(function(engine, member, f, _, _, scope)
+            f:workers(f:defender_at(200))
+            f:weapon(true)
+            f.visibilityFailure = true
+            equal(engine:engage(scope, member), false)
+            equal(f.npc_target, nil)
+            equal(f.terminated, nil)
         end)
     end)
 
