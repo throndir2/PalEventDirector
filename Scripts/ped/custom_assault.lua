@@ -76,7 +76,7 @@ function Assault.new(options)
     assert(positive_integer(options.maxTargets), "custom assault maxTargets must be a positive integer")
     local engine, callbacks = assert(options.engine, "custom assault engine is required"),
         assert(options.callbacks, "custom assault callbacks are required")
-    for _, name in ipairs({ "spawn", "inspect", "engage", "despawn", "actorKey", "sameActor" }) do
+    for _, name in ipairs({ "prepare_spawn", "spawn", "inspect", "engage", "despawn", "actorKey", "sameActor" }) do
         assert(type(engine[name]) == "function", "custom assault engine." .. name .. " is required")
     end
     for _, name in ipairs({ "record", "composition", "started", "finished", "retired", "progress" }) do
@@ -496,7 +496,20 @@ function Assault:_cleanup_member(member, phase, reason, now)
 end
 
 function Assault:_spawn(member, now)
-    local ok, err = self:_record("custom_spawn_intent", copy_plan(member))
+    local ok, err = self:_record("custom_placement_intent", copy_plan(member))
+    if not ok then return self:_fail_member(member, err) end
+    local placement
+    ok, placement = self:_engine("prepare_spawn", member.base.scope, self:_engine_plan(member))
+    if not ok then return self:_fail_member(member, placement) end
+    if type(placement) ~= "table" or type(placement.ready) ~= "boolean" then
+        return self:_fail_member(member, "custom assault placement returned invalid evidence")
+    end
+    local data = copy_plan(member)
+    data.ready, data.reason = placement.ready, placement.reason
+    ok, err = self:_record("custom_placement_observed", data)
+    if not ok then return self:_fail_member(member, err) end
+    if not placement.ready then return self:_retire(member, "cancelled", "placement_unavailable") end
+    ok, err = self:_record("custom_spawn_intent", copy_plan(member))
     if not ok then return self:_fail_member(member, err) end
     member.phase, member.requestedAt, member.spawnRequested = "pending", now, true
     self.requested[#self.requested + 1] = member

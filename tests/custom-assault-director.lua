@@ -48,6 +48,9 @@ return function(test, equal, truthy)
         if use_core then
             config.customAssault.membersPerBase, config.customAssault.spawnBatchSize = 2, 2
             local engine = {}
+            function engine:prepare_spawn(scope)
+                return true,{ready=scope.baseId ~= state.unavailable_placement,reason="floor-unavailable"}
+            end
             function engine:spawn(scope, plan)
                 equal(scope.baseId, plan.baseId)
                 local handle = { index = plan.index, actor = { key = "custom-target-" .. plan.index } }
@@ -432,5 +435,21 @@ return function(test, equal, truthy)
             equal(director.state.event.confirmedBaseCount, 1)
             equal(director.state.status, "active")
         end, true)
+    end)
+
+    test("physical placement failure reaches the real director without spawning or blocking another base", function()
+        fixture(function(director, _, state)
+            state.unavailable_placement="base-a"
+            director:tick()
+            director:tick()
+            equal(#state.spawns,2)
+            equal(state.spawns[1],"base-b"); equal(state.spawns[2],"base-b")
+            equal(director.state.event.customAssault.members["1"].spawnRequested,nil)
+            equal(director.state.event.customAssault.members["3"].spawnRequested,nil)
+            equal(director.state.event.bases["base-a"].status,"custom_start_failed")
+            equal(director.state.event.bases["base-b"].status,"active")
+            equal(director.state.event.confirmedBaseCount,1)
+            equal(state.despawns,0)
+        end,true)
     end)
 end

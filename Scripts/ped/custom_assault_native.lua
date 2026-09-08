@@ -73,11 +73,11 @@ local function member_key(member)
 end
 
 function Native.new(bridge, access)
-    return setmetatable({ bridge = bridge, a = access, records = {}, classes = {} }, Native)
+    return setmetatable({ bridge = bridge, a = access, records = {}, classes = {}, placements = {} }, Native)
 end
 
 function Native:release_tracking()
-    self.records = {}
+    self.records, self.placements = {}, {}
     self.recoveryPending, self.recoveryStartedAt = nil, nil
     self.recoveryCursor, self.recoveryCompleted = nil, nil
 end
@@ -251,6 +251,9 @@ function Native:prepare(world)
         self.classes[key] = class
     end
     self.classes.invoker = self:_class("/Script/Pal.PalNavigationInvokerComponent")
+    self.navigationLibrary = self.bridge:_static_find("/Script/NavigationSystem.Default__NavigationSystemV1")
+    self.physicsLibrary = self.bridge:_static_find("/Script/Pal.Default__PalPhysicsUtility")
+    if not self.a.valid(self.navigationLibrary) or not self.a.valid(self.physicsLibrary) then error(SCOPE, 0) end
     return true
 end
 
@@ -291,10 +294,6 @@ function Native:startup_prepare(count)
         self:prepare(world)
         self.startupPawnClass = self:_class(STARTUP_PAWN)
         if not self.a.valid(self:_call("startup-pawn-cdo", self.startupPawnClass, "GetCDO")) then error(SCOPE, 0) end
-        self.navigationLibrary = self.bridge:_static_find("/Script/NavigationSystem.Default__NavigationSystemV1")
-        if not self.a.valid(self.navigationLibrary) then error(SCOPE, 0) end
-        self.physicsLibrary = self.bridge:_static_find("/Script/Pal.Default__PalPhysicsUtility")
-        if not self.a.valid(self.physicsLibrary) then error(SCOPE, 0) end
         local scopes, candidates = {}, {}
         local physical = { sampled = 0, floor = 0, centerFloor = 0, centerTrace = 0, spawnNav = 0, goalNav = 0 }
         for _, id in ipairs(ids) do
@@ -355,9 +354,14 @@ function Native:startup_trace(world, location)
     return found
 end
 
-function Native:startup_floor(world, location)
+function Native:startup_floor(world, location, character_id)
     -- Lua references do not keep Blueprint classes/CDOs alive across streaming and GC.
-    local pawn_class = self:_class(STARTUP_PAWN)
+    local class_path = STARTUP_PAWN
+    if character_id ~= nil then
+        class_path = bounties.pawn_class(character_id)
+        if not class_path then error(SCOPE, 0) end
+    end
+    local pawn_class = self:_class(class_path)
     local cdo = self:_call("startup-floor-cdo", pawn_class, "GetCDO")
     if not self.a.valid(cdo) then error(SCOPE, 0) end
     local output = {}
@@ -592,13 +596,53 @@ function Native:prepare_base(base_id, target, world, players)
     return scope
 end
 
+function Native:_spawn_position(scope, member)
+    if not self.a.valid(scope.base) or not self.a.same(scope.world, self.world)
+        or self.a.guid(self:_call("spawn-base-id", scope.base, "GetId")) ~= member.baseId then error(SCOPE, 0) end
+    if self.a.guid(self:_call("spawn-base-guild", scope.base, "GetGroupIdBelongTo")) ~= scope.guildId then error(SCOPE, 0) end
+    local position = scope.positions[member.slot]
+    if not position or scope.unavailable then error("Custom assault placement is unavailable", 0) end
+    return vector(position)
+end
+
+function Native:prepare_spawn(scope, member)
+    return self.bridge:_native_step("custom-spawn-placement", function()
+        local key = member_key(member)
+        self.placements[key] = nil
+        if self.records[key] then error(IDENTITY, 0) end
+        local position = self:_spawn_position(scope, member)
+        local floor = self:startup_floor(scope.world, position, member.characterId)
+        if not floor then return { ready = false, reason = "floor-unavailable" } end
+        local nav = self:startup_nav(scope.world, floor)
+        if not nav or not self:startup_nav(scope.world, scope.origin) then
+            return { ready = false, reason = "navigation-unavailable" }
+        end
+        local corrected = self:startup_floor(scope.world, nav, member.characterId)
+        if not corrected then return { ready = false, reason = "projected-floor-unavailable" } end
+        if distance_squared(corrected, scope.origin) > scope.leashRadius ^ 2
+            or math.abs(corrected.Z - scope.origin.Z) > 3000 then
+            return { ready = false, reason = "placement-outside-envelope" }
+        end
+        for slot, previous in ipairs(scope.positions) do
+            if slot ~= member.slot and distance_squared(corrected, previous) < 250 ^ 2 then
+                return { ready = false, reason = "placement-overlap" }
+            end
+        end
+        scope.positions[member.slot] = corrected
+        self.placements[key] = { scope = scope, characterId = member.characterId, level = member.level,
+            slot = member.slot, position = vector(corrected) }
+        return { ready = true, position = vector(corrected) }
+    end)
+end
+
 function Native:spawn(scope, member)
     return self.bridge:_native_step("custom-spawn", function()
-        if not self.a.valid(scope.base) or not self.a.same(scope.world, self.world)
-            or self.a.guid(self:_call("spawn-base-id", scope.base, "GetId")) ~= member.baseId then error(SCOPE, 0) end
-        if self.a.guid(self:_call("spawn-base-guild", scope.base, "GetGroupIdBelongTo")) ~= scope.guildId then error(SCOPE, 0) end
-        local position = scope.positions[member.slot]
-        if not position or scope.unavailable then error("Custom assault placement is unavailable", 0) end
+        local key, position = member_key(member), self:_spawn_position(scope, member)
+        local placement = self.placements[key]
+        if self.records[key] or not placement or placement.scope ~= scope or placement.characterId ~= member.characterId
+            or placement.level ~= member.level or placement.slot ~= member.slot
+            or distance_squared(placement.position, position) ~= 0 then error(SCOPE, 0) end
+        self.placements[key] = nil
         local constructor = self.a.fname()
         if not constructor then error("FName constructor unavailable", 0) end
         local angle = math.deg(math.atan(scope.origin.Y - position.Y, scope.origin.X - position.X))
@@ -607,7 +651,7 @@ function Native:spawn(scope, member)
             Level = member.level, Location = vector(position), Yaw = angle,
         }, nil)
         if not self.a.valid(handle) then error(INITIALIZATION, 0) end
-        self.records[member_key(member)] = { world = scope.world, characterId = member.characterId,
+        self.records[key] = { world = scope.world, characterId = member.characterId,
             handle = handle, scope = scope }
         return handle
     end)

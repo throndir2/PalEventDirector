@@ -23,6 +23,9 @@ return function(test, equal, truthy)
             for index = 1, count do scopes[index] = { baseId = "private-base-" .. index, origin = { X=0,Y=0,Z=0 } } end
             return true, { scopes = scopes, availableBases = 10 }
         end
+        function engine:prepare_spawn(_, member)
+            return true,{ready=member.index ~= f.unavailablePlacement,reason="floor-unavailable"}
+        end
         function engine:spawn(_, member)
             equal(f.records[#f.records], "startup_spawn_intent")
             f.spawns = f.spawns + 1
@@ -30,6 +33,7 @@ return function(test, equal, truthy)
             return true, { index = member.index }
         end
         function engine:startup_identity(member)
+            if f.id_pending then return {} end
             return { instanceGuid = { A=member.index,B=0,C=0,D=0 }, playerGuid = { A=0,B=0,C=0,D=0 } }
         end
         function engine:startup_support()
@@ -99,6 +103,34 @@ return function(test, equal, truthy)
         local calls = #f.records
         f:tick(5)
         equal(#f.records, calls)
+    end)
+
+    test("startup placement loss cleans prior owned actors and never despawns unrequested plans", function()
+        local f=fixture("two-base-movement")
+        f.unavailablePlacement=2
+        f:tick(8)
+        equal(f.runner.state.status,"blocked")
+        equal(f.runner.state.code,"spawn-physical-unavailable")
+        equal(f.spawns,1); equal(f.despawns,1)
+        equal(f.runner.state.cleaned,1)
+        equal(f.runner.state.members[2].skipped,true)
+        equal(f.runner.state.members[2].spawnRequested,nil)
+        equal(f.runner.state.cleanupComplete,true)
+    end)
+
+    test("startup placement loss waits for a prior pending identity before requesting owned cleanup", function()
+        local f=fixture("two-base-movement")
+        f.unavailablePlacement, f.id_pending, f.phases[1] = 2, true, "pending"
+        f:tick(5)
+        equal(f.spawns,1); equal(f.despawns,0)
+        equal(f.runner.state.members[1].cleanupRequested,nil)
+        equal(f.runner.state.members[1].instanceGuid,nil)
+        f.id_pending, f.phases[1] = false,"alive"
+        f:tick()
+        equal(f.despawns,1)
+        equal(f.runner.state.members[1].instanceGuid.A,1)
+        equal(f.runner.state.status,"blocked")
+        equal(f.runner.state.cleanupComplete,true)
     end)
 
     test("startup movement does not pass merely because an action returned", function()

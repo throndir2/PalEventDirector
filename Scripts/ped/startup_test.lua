@@ -252,6 +252,16 @@ function Test:_cleaned_npcs()
     return self:_finish(self.state.failure and "blocked" or "passed", self.state.failure or "complete")
 end
 
+function Test:_update_identity(member)
+    if member.instanceGuid then return true end
+    local identity = self.engine:startup_identity(member)
+    if identity.instanceGuid then
+        member.instanceGuid, member.playerGuid = identity.instanceGuid, identity.playerGuid
+        return self:_save("startup_identity_assigned")
+    end
+    return true
+end
+
 local function distance2(left, right)
     return (left.X - right.X) ^ 2 + (left.Y - right.Y) ^ 2
 end
@@ -357,6 +367,17 @@ function Test:_tick()
     elseif stage == "spawn" then
         local member = self.state.members[self.cursor]
         if not member then return self:_stage("initialize") end
+        local prepared, placement = self.engine:prepare_spawn(self.scopes[self.cursor], member)
+        if not prepared then return self:halt(placement) end
+        if type(placement) ~= "table" or type(placement.ready) ~= "boolean" then
+            return self:halt("Custom assault placement is unavailable")
+        end
+        if not placement.ready then
+            self.state.failure = "spawn-physical-unavailable"
+            member.placementReason = placement.reason
+            return self:_stage("cleanup")
+        end
+        if placement.position then member.spawnLocation = util.shallow_copy(placement.position) end
         member.phase, member.spawnRequested = "requested", true
         self.state.mutationStarted = true
         if not self:_save("startup_spawn_intent") then return end
@@ -379,13 +400,7 @@ function Test:_tick()
             plan.handle = runtime.handle
             local ok, observation = self.engine:inspect(runtime.handle, plan)
             if not ok then return self:halt(observation) end
-            if not member.instanceGuid then
-                local identity = self.engine:startup_identity(member)
-                if identity.instanceGuid then
-                    member.instanceGuid, member.playerGuid = identity.instanceGuid, identity.playerGuid
-                    if not self:_save("startup_identity_assigned") then return end
-                end
-            end
+            if not self:_update_identity(member) then return end
             member.phase = observation.phase
             if observation.actor then runtime.actor = observation.actor end
             member.waitingOn = observation.waitingOn
@@ -478,7 +493,10 @@ function Test:_tick()
         return
     elseif stage == "cleanup" then
         for index, member in ipairs(self.state.members) do
-            if not member.cleaned then
+            if not member.spawnRequested and not member.skipped then
+                member.skipped, member.phase = true, "not-spawned"
+                if not self:_save("startup_member_skipped") then return end
+            elseif member.spawnRequested and not member.cleaned then
                 local runtime = self.runtime[index]
                 local plan = util.shallow_copy(member)
                 plan.handle = runtime and runtime.handle
@@ -490,13 +508,27 @@ function Test:_tick()
                         if outcome == "missing" then outcome = "despawned" end
                     end
                 else
-                    member.cleanupRequested = true
-                    member.cleanupRequestedAt = now
-                    if not self:_save("startup_cleanup_intent") then return end
-                    ok, outcome = self.engine:despawn(self.scopes[index], plan)
+                    local inspected, state = self.engine:inspect(plan.handle, plan)
+                    if not inspected then return self:halt(state) end
+                    if not self:_update_identity(member) then return end
+                    if state.phase == "pending" then
+                        if not member.cleanupWaitingAt then
+                            member.cleanupWaitingAt = now
+                            if not self:_save("startup_cleanup_awaiting_identity") then return end
+                        end
+                        ok, outcome = true, "initializing"
+                    else
+                        member.cleanupRequested = true
+                        member.cleanupRequestedAt = now
+                        plan.instanceGuid, plan.playerGuid = member.instanceGuid, member.playerGuid
+                        if not self:_save("startup_cleanup_intent") then return end
+                        ok, outcome = self.engine:despawn(self.scopes[index], plan)
+                    end
                 end
                 if not ok then return self:halt(outcome) end
-                if outcome == "despawned" or outcome == "captured" or outcome == "dead" or outcome == "missing" then
+                if outcome == "initializing" then
+                    if now >= member.cleanupWaitingAt + 60 then return self:halt("Custom assault initialization is incomplete") end
+                elseif outcome == "despawned" or outcome == "captured" or outcome == "dead" or outcome == "missing" then
                     member.cleaned, member.phase = true, outcome
                     self.state.cleaned = self.state.cleaned + 1
                     if outcome ~= "despawned" then self.state.failure = self.state.failure or "cleanup-" .. outcome end
@@ -508,7 +540,7 @@ function Test:_tick()
                 end
             end
         end
-        if self.state.cleaned == #self.state.members then
+        if self.state.cleaned == self.state.spawned then
             return self:_cleaned_npcs()
         end
     else

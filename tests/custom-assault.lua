@@ -49,6 +49,10 @@ return function(test, equal, truthy)
             return f.failEngine[name] == f.counts[name]
         end
         local engine = {}
+        function engine:prepare_spawn(scope, plan)
+            if called("prepare_spawn", plan.index) then return false, "bounded placement failure" end
+            return true, {ready=scope.ordinal ~= f.unavailablePlacement,reason="floor-unavailable"}
+        end
         function engine:spawn(scope, plan)
             local failed = called("spawn", plan.index)
             truthy(not f.handles[plan.index], "a member was spawned twice")
@@ -288,6 +292,23 @@ return function(test, equal, truthy)
             equal(f.assault:start(f.targets, profile, occurrence), false, variant)
             equal(#f.calls, 0); equal(#f.records, 0)
         end
+    end)
+
+    test("custom assault skips unsupported physical placement without a spawn intent or first-base gate", function()
+        local f = fixture({immediate=true})
+        f.unavailablePlacement=1
+        truthy(f:start())
+        truthy(f.assault:poll())
+        equal(f:count("spawn"),3)
+        equal(#f.starts,1)
+        equal(f.starts[1].id,"private-base-2")
+        equal(f.assault.bases[1].failed,true)
+        for _,record in ipairs(f.records) do
+            if record.kind=="custom_spawn_intent" then equal(record.data.baseId,"private-base-2") end
+        end
+        truthy(f.assault:close("cancelled"))
+        equal(f:count("despawn"),3)
+        equal(f.assault:has_live_members(),false)
     end)
 
     test("custom assault waits for valid actor evidence and journals initialization before engagement", function()

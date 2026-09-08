@@ -211,6 +211,8 @@ return function(test, equal, truthy)
                 return target.visible == true
             end
         end
+        engine.placements[member.groupId..":"..member.index] = {scope=scope,characterId=member.characterId,
+            level=member.level,slot=member.slot,position=util.shallow_copy(scope.positions[member.slot])}
         local ok, result = engine:spawn(scope, member)
         truthy(ok, result)
         member.handle = result
@@ -793,6 +795,63 @@ return function(test, equal, truthy)
             equal(result.pendingInputZ,120); equal(result.lastInputZ,-80); equal(result.updatedRoot,true)
             actor.CharacterMovement.GetOwner=function() return {} end
             equal(pcall(engine._movement_observation,engine,state),false)
+        end)
+    end)
+
+    test("native spawns require exact class-specific floor and navigation approval and consume it once", function()
+        fixture(function(engine, member, f, _, _, scope)
+            local plan=util.shallow_copy(member)
+            plan.index=2
+            local floor_calls=0
+            engine.startup_floor=function(_,world,point,character_id)
+                equal(world,scope.world); equal(character_id,plan.characterId)
+                floor_calls=floor_calls+1
+                if f.floor_missing then return nil end
+                return util.shallow_copy(point)
+            end
+            engine.startup_nav=function(_,world,point)
+                equal(world,scope.world)
+                if f.nav_missing then return nil end
+                return util.shallow_copy(point)
+            end
+            equal(engine:spawn(scope,plan),false)
+            f.floor_missing=true
+            local ok,result=engine:prepare_spawn(scope,plan)
+            truthy(ok,result); equal(result.ready,false)
+            equal(engine:spawn(scope,plan),false)
+            equal(f.spawns,1)
+            f.floor_missing=false; f.nav_missing=true
+            ok,result=engine:prepare_spawn(scope,plan)
+            truthy(ok,result); equal(result.reason,"navigation-unavailable")
+            f.nav_missing=false
+            ok,result=engine:prepare_spawn(scope,plan)
+            truthy(ok,result); equal(result.ready,true)
+            scope.positions[1].X=scope.positions[1].X+10
+            equal(engine:spawn(scope,plan),false)
+            truthy(engine:prepare_spawn(scope,plan))
+            truthy(engine:spawn(scope,plan))
+            equal(engine:spawn(scope,plan),false)
+            equal(f.spawns,2)
+            truthy(floor_calls>=5)
+        end)
+    end)
+
+    test("floor qualification resolves the planned pawn class and never falls back for an unknown bounty", function()
+        fixture(function(engine)
+            local expected=require("ped.bounties").pawn_class("BOSS_Ninja")
+            local class={IsValid=function() return true end,GetCDO=function() return {IsValid=function() return true end} end}
+            local lookups=0
+            engine._class=function(_,class_path)
+                equal(class_path,expected); lookups=lookups+1; return class
+            end
+            engine.utility.CanAdjustLocationToFloorFromCDO=function(_,_,pawn,point,_,out)
+                equal(pawn,class)
+                out.X,out.Y,out.Z=point.X,point.Y,point.Z
+                return true
+            end
+            truthy(engine:startup_floor(engine.world,{X=0,Y=0,Z=0},"BOSS_Ninja"))
+            equal(pcall(engine.startup_floor,engine,engine.world,{X=0,Y=0,Z=0},"not-a-bounty"),false)
+            equal(lookups,1)
         end)
     end)
 
