@@ -547,6 +547,31 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("custom combat replaces a completed action instead of trusting a stale requested mode", function()
+        fixture(function(engine, member, f, _, _, scope)
+            local defender = f:defender_at(200)
+            defender.visible = true
+            f:workers(defender)
+            f:weapon(true)
+            truthy(engine:engage(scope, member))
+            equal(f.terminated, 1)
+            f.now = 1001
+            truthy(engine:engage(scope, member))
+            equal(f.terminated, 1, "queued action was retried before its grace period")
+            f.current_action = f:combat_action(defender, defender)
+            f.now = 1005
+            truthy(engine:engage(scope, member))
+            equal(f.terminated, 1, "a running combat action was restarted")
+            f.current_action = nil
+            f.now = 1010
+            truthy(engine:engage(scope, member))
+            equal(f.terminated, 2)
+            f.now = 1011
+            truthy(engine:engage(scope, member))
+            equal(f.terminated, 2)
+        end)
+    end)
+
     test("combat scope follows parent actions and checks the module target instead of the chosen-plan target", function()
         fixture(function(engine, member, f)
             local local_target, remote_target = f:defender_at(500), f:defender_at(5000)

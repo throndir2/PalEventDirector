@@ -413,6 +413,7 @@ function Native:startup_combat_observation(scope, member)
         if not finite(result.healthRatio) then error(SCOPE, 0) end
         local record = self.records[member_key(member)]
         result.defenderSelection = record.defenderSelection and util.shallow_copy(record.defenderSelection) or nil
+        result.encounterRequests = record.encounterRequests or 0
         if self.a.valid(record.target) then
             local target_location = vector(self:_call("startup-target-distance", record.target, "K2_GetActorLocation"))
             result.targetDistanceCm = math.sqrt(distance_squared(state.location, target_location))
@@ -864,7 +865,12 @@ function Native:engage(scope, member)
         self:_configure_movement(record, state, scope)
         local defender = self:_choose_defender(scope, state, record)
         if defender then
-            if not record.target or not self.a.same(record.target, defender) or record.mode ~= "combat" then
+            local now = self.bridge.clock()
+            if not finite(now) then error(SCOPE, 0) end
+            local current = self:_call("combat-action-status", actions, "GetCurrentAction_BP")
+            local ended = not self.a.valid(current) and record.lastEncounterAt
+                and now >= record.lastEncounterAt + self.bridge.config.customAssault.retargetSeconds
+            if not record.target or not self.a.same(record.target, defender) or record.mode ~= "combat" or ended then
                 local battle = self:_call("battle-manager", self.utility, "GetBattleManager", scope.world)
                 if not self.a.valid(battle) then error(SCOPE, 0) end
                 local player = self:_call("defender-kind", battle, "TargetIsPlayerOrPlayersOtomoPal", defender)
@@ -873,6 +879,8 @@ function Native:engage(scope, member)
                 self:_call("stop-movement", controller, "StopMovement")
                 self:_call("stop-travel-for-combat", actions, "TerminateCurrentActionByClass", self:_action_class("travel"))
                 self:_set_action(actions, "encounter", scope.origin, defender)
+                record.lastEncounterAt = now
+                record.encounterRequests = (record.encounterRequests or 0) + 1
                 self:_behavior(record, member, "combat", defender)
             end
             return true
