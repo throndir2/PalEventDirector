@@ -255,8 +255,10 @@ function Read-StartupTestOutcome {
         $state.status -notin @('running','passed','blocked','failed') -or
         $state.mutationStarted -isnot [bool] -or $state.cleanupComplete -isnot [bool] -or
         [string]$state.artifactSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Startup test outcome schema is invalid.' }
+    $finalizedNpcs = 0
+    if ($null -ne $state.PSObject.Properties['npcsFinalized']) { $finalizedNpcs = $state.npcsFinalized }
     if ($state.cleanupComplete -and $state.mutationStarted -and
-        ($state.status -notin @('passed','blocked') -or $state.cleaned -ne $state.spawned)) {
+        ($state.status -notin @('passed','blocked') -or ($state.cleaned + $finalizedNpcs) -ne $state.spawned)) {
         throw 'Startup test cleanup outcome is inconsistent.'
     }
     $finalizedHelpers = 0

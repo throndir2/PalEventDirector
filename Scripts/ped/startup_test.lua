@@ -22,8 +22,10 @@ function Test.validate_state(state, run_id)
     end
     assert(state.cleaned <= state.spawned and state.initialized <= state.spawned
         and (state.mutationStarted or state.spawned == 0), "Startup test ownership counts are inconsistent")
+    assert(util.is_integer(state.npcsFinalized or 0) and (state.npcsFinalized or 0) >= 0
+        and state.cleaned + (state.npcsFinalized or 0) <= state.spawned, "Startup NPC finalization counts are invalid")
     if state.cleanupComplete and state.mutationStarted then
-        assert((state.status == "passed" or state.status == "blocked") and state.cleaned == state.spawned,
+        assert((state.status == "passed" or state.status == "blocked") and state.cleaned + (state.npcsFinalized or 0) == state.spawned,
             "Startup test cleanup outcome is inconsistent")
         assert((state.helpersCreated or 0) == (state.helpersCleaned or 0) + (state.helpersFinalized or 0), "Startup support cleanup is incomplete")
     end
@@ -91,6 +93,45 @@ function Test.finalize_support_only(store, evidence)
     state.finalization = util.deep_copy(evidence)
     state.finalization.disposition = "noncharacter-support-world-ended"
     local ok, reason = store:append("startup_support_runtime_finalized", {disposition=state.finalization.disposition}, state)
+    if not ok then return false, reason end
+    return store:save_snapshot(state)
+end
+
+function Test.finalize_pending_cleanup(store, evidence)
+    local last = store.records[#store.records]
+    local previous = last and last.state
+    assert(previous, "No pending cleanup state is available")
+    Test.validate_state(previous, previous.runId)
+    assert(previous.sourceRevision == "e4c8cc8dcc7ff3bbd8c5eff93168d5b756170cf3"
+        and previous.artifactSha256 == "0f24085e4719a967e45ffcf665c0a8b55ca982c66673537e80ff85454a37640f"
+        and previous.case == "two-base-movement" and previous.status == "failed" and previous.stage == "cleanup"
+        and previous.code == "custom-assault-despawn" and previous.spawned == 2 and previous.initialized == 2
+        and previous.moved == 2 and previous.helpersCreated == 2 and not previous.cleanupComplete,
+        "This cleanup timeout is outside the audited finalization scope")
+    assert(#previous.members == 2, "Pending cleanup member count differs")
+    for _, member in ipairs(previous.members) do
+        assert(member.characterId == "BOSS_Hunter_Rifle" and member.level == 30 and member.cleanupRequested == true
+            and member.instanceGuid and member.playerGuid, "Pending cleanup lacks exact identity or intent")
+        local nonzero = false
+        for _, key in ipairs({"A","B","C","D"}) do
+            assert(util.is_integer(member.instanceGuid[key]) and member.playerGuid[key] == 0, "Pending cleanup identity is invalid")
+            nonzero = nonzero or member.instanceGuid[key] ~= 0
+        end
+        assert(nonzero, "Pending cleanup instance identity is empty")
+    end
+    assert(type(evidence) == "table" and evidence.processExitVerified == true and evidence.runId == previous.runId
+        and evidence.certificateSha256 == "47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f"
+        and evidence.serverExecutableSha256 == "61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02"
+        and evidence.serverPakSha256 == "2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe",
+        "Verified process exit and pinned runtime-finalization evidence are required")
+    local state = util.deep_copy(previous)
+    state.status, state.code, state.cleanupComplete = "blocked", "pending-cleanup-runtime-finalized", true
+    state.failedArtifactSha256 = previous.artifactSha256
+    state.npcsFinalized = previous.spawned - previous.cleaned
+    state.helpersFinalized = previous.helpersCreated - previous.helpersCleaned
+    state.finalization = util.deep_copy(evidence)
+    state.finalization.disposition = "pending-cleanup-world-ended; ownership-transfers-preserved"
+    local ok, reason = store:append("startup_pending_cleanup_runtime_finalized", {disposition=state.finalization.disposition}, state)
     if not ok then return false, reason end
     return store:save_snapshot(state)
 end
@@ -255,6 +296,7 @@ function Test:_tick()
             if not helper.cleaned then
                 if not helper.cleanupRequested then
                     helper.cleanupRequested = true
+                    helper.cleanupRequestedAt = now
                     if not self:_save("startup_support_cleanup_intent") then return end
                 end
                 local ok, complete = self.support:close(index)
@@ -263,12 +305,12 @@ function Test:_tick()
                     helper.cleaned = true
                     self.state.helpersCleaned = self.state.helpersCleaned + 1
                     if not self:_save("startup_support_cleaned") then return end
+                elseif now >= helper.cleanupRequestedAt + 60 then
+                    return self:halt("Startup support cleanup did not complete")
                 end
-                break
             end
         end
         if self.state.helpersCleaned == self.state.helpersCreated then return self:_cleaned_npcs() end
-        if now >= self.state.stageStartedAt + 60 then return self:halt("Startup support cleanup did not complete") end
     elseif stage == "spawn" then
         local member = self.state.members[self.cursor]
         if not member then return self:_stage("initialize") end
@@ -365,6 +407,7 @@ function Test:_tick()
                     end
                 else
                     member.cleanupRequested = true
+                    member.cleanupRequestedAt = now
                     if not self:_save("startup_cleanup_intent") then return end
                     ok, outcome = self.engine:despawn(self.scopes[index], plan)
                 end
@@ -376,14 +419,14 @@ function Test:_tick()
                     if not self:_save("startup_cleanup_completed") then return end
                 elseif outcome ~= "pending" and outcome ~= "despawning" then
                     return self:halt("Startup test cleanup is unresolved")
+                elseif now >= member.cleanupRequestedAt + 60 then
+                    return self:halt("Custom assault despawn did not complete")
                 end
-                break
             end
         end
         if self.state.cleaned == #self.state.members then
             return self:_cleaned_npcs()
         end
-        if now >= self.state.stageStartedAt + 60 then return self:halt("Custom assault despawn did not complete") end
     else
         return self:halt("Startup test stage is invalid")
     end

@@ -12,6 +12,8 @@ The planar base sampler preserves the supplied Z and does not establish collisio
 
 NPC startup scenarios use that same bounded prewarm when their initial physical checks fail, retaining support until all test NPCs have been cleaned up. If prewarming never produces physical floor/nav readiness, the helpers are cleaned and no NPC is requested.
 
+Cleanup requests are submitted for all bounded test members before waiting on any one of them. Each NPC/helper gets its own confirmation deadline measured from its own request; another actor's wait must not consume that budget. A request is never reissued while confirmation is pending. Reports distinguish observed cleanup from an explicitly certified old-world finalization.
+
 Blueprint class wrappers are not GC roots. Reacquire the exact class and its CDO immediately before each CDO floor query, and reacquire action classes before dispatch. The two-source crash on `122eea9` reached an invalid `InClass` ancestry check at Shipping RVA `0x3173098`, before CDO/physics access; stale lifetime is consistent with the dump, but the specific invalidation mechanism was not proven. Physical probes wait for the relevant streaming source to finish, then still require real floor/nav results.
 
 Each launch creates a fresh private `Pal\Saved\PalEventDirector\startup-tests\<run-id>` directory containing its source-pinned plan, checksummed journal and snapshot. The snapshot's payload reports `running`, `passed`, `blocked` or `failed`, the current stage, observed counts and cleanup completeness. Normal event state, including interrupted request16, is separate and is not replayed or cleared.

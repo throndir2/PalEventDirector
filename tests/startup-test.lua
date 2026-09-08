@@ -126,6 +126,26 @@ return function(test, equal, truthy)
         equal(f.despawns, 1)
     end)
 
+    test("startup cleanup dispatches both requests before awaiting either actor", function()
+        local f = fixture("two-base-movement")
+        f.pending_cleanup=true
+        f:tick(7)
+        f.arrived=true
+        f:tick(3)
+        equal(f.despawns,2)
+        local members=f.runner.state.members
+        equal(members[1].cleanupRequestedAt,members[2].cleanupRequestedAt)
+        f.phases[1]="missing"
+        f.now=members[2].cleanupRequestedAt+40
+        f:tick()
+        equal(f.runner.state.cleaned,1)
+        equal(f.runner.state.status,"running")
+        f.phases[2]="missing"
+        f:tick()
+        equal(f.runner.state.status,"passed")
+        equal(f.despawns,2)
+    end)
+
     test("startup faults preserve uncertain spawn intent and never retry", function()
         local f = fixture()
         f.spawn_fault = true
@@ -347,5 +367,27 @@ return function(test, equal, truthy)
         equal(state.cleanupComplete,false)
         store.records[1].kind="startup_spawn_intent"
         equal(pcall(Startup.finalize_support_only,store,proof),false)
+    end)
+
+    test("pending cleanup finalization distinguishes observed cleanup from world teardown", function()
+        local state={schemaVersion=1,runId="pending-run",case="two-base-movement",status="failed",stage="cleanup",
+            code="custom-assault-despawn",sourceRevision="e4c8cc8dcc7ff3bbd8c5eff93168d5b756170cf3",
+            artifactSha256="0f24085e4719a967e45ffcf665c0a8b55ca982c66673537e80ff85454a37640f",
+            mutationStarted=true,cleanupComplete=false,spawned=2,initialized=2,moved=2,cleaned=1,
+            helpersCreated=2,helpersCleaned=0,members={}}
+        for i=1,2 do state.members[i]={characterId="BOSS_Hunter_Rifle",level=30,cleanupRequested=true,
+            instanceGuid={A=i,B=0,C=0,D=0},playerGuid={A=0,B=0,C=0,D=0}} end
+        local proof={runId="pending-run",processExitVerified=true,
+            certificateSha256="47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f",
+            serverExecutableSha256="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02",
+            serverPakSha256="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"}
+        local written
+        local store={records={{state=state}},append=function(_,_,_,value) written=value; return true end,
+            save_snapshot=function() return true end}
+        truthy(Startup.finalize_pending_cleanup(store,proof))
+        equal(written.cleaned,1); equal(written.npcsFinalized,1); equal(written.helpersFinalized,2)
+        equal(written.status,"blocked"); truthy(Startup.validate_state(written,"pending-run"))
+        proof.processExitVerified=false
+        equal(pcall(Startup.finalize_pending_cleanup,store,proof),false)
     end)
 end
