@@ -151,6 +151,19 @@ function Native:qualify()
     self:_signature("/Script/Pal.PalAIActionComponent:GetCurrentAction_BP", { ReturnValue = { "ObjectProperty", 0 } })
     self:_signature("/Script/Pal.PalAICombatModule:GetTargetActor", { ReturnValue = { "ObjectProperty", 0 } })
     self:_signature("/Script/Pal.PalCharacterParameterComponent:GetHPRate", { ReturnValue = { "FloatProperty", 0 } })
+    for _, method in ipairs({"IsEndInitialize","IsMagazineEmpty"}) do
+        self:_signature("/Script/Pal.PalNPCAIWeaponHandle:" .. method, { ReturnValue={"BoolProperty",0} })
+    end
+    self:_signature("/Script/Pal.PalNPCAIWeaponHandle:GetRemainingBullet", {ReturnValue={"IntProperty",0}})
+    self:_signature("/Script/Pal.PalNPCAIWeaponHandle:GetSphereCastRadius", {ReturnValue={"FloatProperty",0}})
+    self:_signature("/Script/Pal.PalStateMachine:GetCurrentState", {ReturnValue={"ObjectProperty",0}})
+    self:_signature("/Script/Pal.PalUtility:LineTraceToTarget_ForAIAttack", {
+        SelfActor={"ObjectProperty",0},Target={"ObjectProperty",8},Radius={"FloatProperty",16},ReturnValue={"BoolProperty",20},
+    })
+    self:_signature("/Script/Pal.PalShooterComponent:GetHasWeapon", {ReturnValue={"ObjectProperty",0}})
+    for _, method in ipairs({"CanShoot","IsShooting","IsReloading","IsAiming","IsRequestAiming","IsPlayShootingAnimation"}) do
+        self:_signature("/Script/Pal.PalShooterComponent:" .. method, {ReturnValue={"BoolProperty",0}})
+    end
     self:_signature("/Script/Pal.PalUtility:CanAdjustLocationToFloorFromCDO", {
         WorldContext = { "ObjectProperty", 0 }, InClass = { "ClassProperty", 8 },
         InLocation = { "StructProperty", 16 }, UpOffset = { "FloatProperty", 40 },
@@ -382,6 +395,56 @@ function Native:startup_combat_observation(scope, member)
         if self.a.valid(record.target) then
             local target_location = vector(self:_call("startup-target-distance", record.target, "K2_GetActorLocation"))
             result.targetDistanceCm = math.sqrt(distance_squared(state.location, target_location))
+        end
+        local weapon = self.a.unwrap(state.controller.WeaponHandle)
+        result.weaponHandle = self.a.valid(weapon)
+        if result.weaponHandle then
+            result.weaponReady = self:_call("startup-weapon-ready", weapon, "IsEndInitialize")
+            if type(result.weaponReady) ~= "boolean" then error(SCOPE, 0) end
+        end
+        if self.a.valid(action) and action:IsA(CLASSES.combat) then
+            result.stopTick = action.IsStopTick
+            local machine = self.a.unwrap(action.StateMachine)
+            result.stateMachine = self.a.valid(machine)
+            if result.stateMachine then
+                local current = self:_call("startup-gun-state", machine, "GetCurrentState")
+                if self.a.valid(current) then
+                    local name = current:GetClass():GetFName():ToString()
+                    if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
+                    result.gunState = name
+                end
+            end
+            local target = self.a.unwrap(action.TargetActor)
+            result.actualTarget = self.a.valid(target)
+            result.requestedTargetMatches = result.actualTarget and self.a.same(target,record.target)
+            if result.weaponReady then
+                result.remainingBullets = self:_call("startup-ammo", weapon, "GetRemainingBullet")
+                result.magazineEmpty = self:_call("startup-magazine-empty", weapon, "IsMagazineEmpty")
+                if not util.is_integer(result.remainingBullets) or result.remainingBullets < 0
+                    or type(result.magazineEmpty) ~= "boolean" then error(SCOPE, 0) end
+                if result.actualTarget and self:_character_scope(target,scope) == true then
+                    local radius = self:_call("startup-shot-radius", weapon, "GetSphereCastRadius")
+                    if not finite(radius) or radius < 0 or radius > 1000 then error(SCOPE, 0) end
+                    result.lineOfSight = self:_call("startup-shot-line-of-sight", self.utility,
+                        "LineTraceToTarget_ForAIAttack",state.actor,target,radius)
+                    if type(result.lineOfSight) ~= "boolean" then error(SCOPE, 0) end
+                end
+            end
+        end
+        local shooterClass = self:_class("/Script/Pal.PalShooterComponent")
+        local shooter = self:_call("startup-shooter",state.actor,"GetComponentByClass",shooterClass)
+        result.shooter = self.a.valid(shooter)
+        if result.shooter then
+            result.equippedWeapon = self.a.valid(self:_call("startup-equipped-weapon",shooter,"GetHasWeapon"))
+            result.npcWeapon = self.a.valid(self.a.unwrap(shooter.NPCWeapon))
+            if result.weaponReady and result.equippedWeapon and result.npcWeapon then
+                for _, pair in ipairs({{"canShoot","CanShoot"},{"shooting","IsShooting"},{"reloading","IsReloading"},
+                    {"aiming","IsAiming"},{"requestAiming","IsRequestAiming"},{"shootAnimation","IsPlayShootingAnimation"}}) do
+                    local value = self:_call("startup-shooter-" .. pair[1]:lower(),shooter,pair[2])
+                    if type(value) ~= "boolean" then error(SCOPE,0) end
+                    result[pair[1]]=value
+                end
+            end
         end
         return result
     end)

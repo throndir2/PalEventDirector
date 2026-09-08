@@ -630,4 +630,29 @@ return function(test, equal, truthy)
             equal(lookups,2); equal(seen[1],1); equal(seen[2],2)
         end)
     end)
+
+    test("combat observation distinguishes missing weapon readiness from firing state", function()
+        fixture(function(engine,member,f,_,actor,scope)
+            local ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state)
+            state.component.GetHPRate=function() return 1 end
+            state.controller.WeaponHandle={IsValid=function() return true end,IsEndInitialize=function() return false end,
+                GetRemainingBullet=function() error("unready weapon was queried") end}
+            local action=f:combat_action(nil,nil)
+            action.GetClass=function() return {GetFName=function() return {ToString=function() return "BP_AIAction_NPC_Combat_Gun_C" end} end} end
+            action.IsStopTick=false
+            f.current_action=action
+            engine._class=function() return {} end
+            actor.GetComponentByClass=function() return {IsValid=function() return true end,GetHasWeapon=function() return nil end,
+                CanShoot=function() error("unready shooter was queried") end} end
+            local observed,result=engine:startup_combat_observation(scope,member)
+            truthy(observed,result)
+            equal(result.weaponHandle,true)
+            equal(result.weaponReady,false)
+            equal(result.equippedWeapon,false)
+            equal(result.remainingBullets,nil)
+            equal(result.canShoot,nil)
+            equal(result.currentAction,"BP_AIAction_NPC_Combat_Gun_C")
+        end)
+    end)
 end
