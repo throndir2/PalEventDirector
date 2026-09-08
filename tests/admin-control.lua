@@ -3,6 +3,7 @@ return function(test, equal, truthy, native_fname_constructor)
     local Director = require("ped.director")
     local Bridge = require("ped.palworld")
     local Scheduler = require("ped.scheduler")
+    local util = require("ped.util")
 
     local function command_fixture()
         local config = Config.defaults()
@@ -26,6 +27,153 @@ return function(test, equal, truthy, native_fname_constructor)
         })
         return director, replies, controls, writes, function(value) now = value end
     end
+
+    local function recovery_fixture(interrupted_before_return)
+        local config = Config.defaults()
+        for name in pairs(config.capabilities) do config.capabilities[name] = name ~= "grantItems" end
+        local f = { starts = 0, closes = 0, writes = {}, logs = {}, replies = {} }
+        local restored
+        local bridge = {
+            preflight_environment = function() return true end,
+            preflight_start = function() return true end,
+            begin_event_discovery = function()
+                return { "base-a" }, { { uid = "fixture-admin", name = "Operator" } }
+            end,
+            list_online_players = function() return { { uid = "fixture-admin", name = "Operator" } } end,
+            start_all_invasions = function(_, profile)
+                f.starts = f.starts + 1
+                return true, { custom = profile == "all-bounty", requested = 1, requests = {
+                    { baseId = "base-a", status = profile == "all-bounty" and "custom_spawn_queued" or "probe_call_returned" },
+                } }
+            end,
+            end_event_tracking = function() f.closes = f.closes + 1 end,
+            send_chat = function(_, message) f.replies[#f.replies + 1] = message; return true end,
+            announce = function() return true end,
+        }
+        local logger = {}
+        for _, level in ipairs({ "info", "warn", "error" }) do
+            logger[level] = function(_, message, fields) f.logs[#f.logs + 1] = { message = message, fields = fields } end
+        end
+        local options = {
+            config = config, bridge = bridge, logger = logger, clock = function() return 1000 end,
+            store = {
+                load_snapshot = function() return restored and util.deep_copy(restored) or nil end,
+                append = function(_, kind)
+                    f.writes[#f.writes + 1] = kind
+                    if kind == f.fail_kind then return false, "fixture persistence failure" end
+                    return true
+                end,
+                save_snapshot = function(_, snapshot) f.saved = util.deep_copy(snapshot); return true end,
+            },
+        }
+        local original = Director.new(options)
+        truthy(original:arm_start("test", "native", 0, true, { requesterUid = "fixture-admin" }))
+        restored = util.deep_copy(original:_snapshot())
+        local key = restored.director.event.schedulerOccurrenceKey
+        if interrupted_before_return then
+            restored.scheduler.occurrences[key].status = "starting"
+            restored.scheduler.occurrences[key].occurrenceId = nil
+        end
+        local director = Director.new(options)
+        f.starts, f.closes, f.writes, f.logs = 0, 0, {}, {}
+        f.key = key
+        f.admin = { uid = "fixture-admin", palworldAdminReadable = true, palworldAdmin = true }
+        equal(director.state.status, "recovery_required")
+        equal(director.scheduler.state.occurrences[key].status, "recovery_required")
+        return director, f
+    end
+
+    test("recovery abort settles an interrupted unconfirmed request without replay before a fresh start", function()
+        for _, alias in ipairs({ "!siege", "!ped" }) do
+            local director, f = recovery_fixture()
+            local old_id = director.state.event.id
+            director:tick()
+            equal(f.starts, 0)
+            truthy(director:handle_chat(f.admin, alias .. " abort"))
+            equal(director.state.status, "aborted")
+            equal(director.scheduler.state.occurrences[f.key].status, "failed")
+            equal(director.state.event.id, old_id)
+            equal(director.state.event.startConfirmedAt, nil)
+            equal(f.starts, 0)
+            equal(f.closes, 1)
+            director:tick()
+            equal(f.starts, 0)
+            truthy(director:handle_chat(f.admin, alias .. " start all-bounty 0"))
+            equal(f.starts, 1)
+            equal(director.state.event.requestNumber, 2)
+            truthy(director.state.event.id ~= old_id)
+            equal(director.scheduler.state.occurrences[f.key].status, "failed")
+        end
+    end)
+
+    test("recovery abort handles a start interrupted before its scheduler result was recorded", function()
+        local director, f = recovery_fixture(true)
+        truthy(director:abort("operator"))
+        equal(director.state.status, "aborted")
+        equal(director.scheduler.state.occurrences[f.key].status, "failed")
+        equal(f.starts, 0)
+    end)
+
+    test("recovery abort remains explicit and rejects a mismatched event identity", function()
+        local director, f = recovery_fixture()
+        equal(director.scheduler:fail_start(f.key, "ordinary timeout"), false)
+        equal(director.scheduler:confirm_start(f.key, director.state.event.id), false)
+        director:tick()
+        equal(f.starts, 0)
+        equal(director.scheduler.state.occurrences[f.key].status, "recovery_required")
+        director.scheduler.state.occurrences[f.key].occurrenceId = "unrelated-event"
+        equal(director:abort("operator"), false)
+        equal(director.state.status, "recovery_required")
+        equal(director.scheduler.state.occurrences[f.key].status, "recovery_required")
+        equal(f.closes, 0)
+    end)
+
+    test("recovery abort persistence failure retains recovery without closing tracking", function()
+        local director, f = recovery_fixture()
+        f.fail_kind = "schedule_start_failed"
+        equal(director:abort("operator"), false)
+        equal(director.state.status, "recovery_required")
+        equal(director.scheduler.state.occurrences[f.key].status, "recovery_required")
+        equal(f.closes, 0)
+        equal(f.starts, 0)
+        local logged = false
+        for _, entry in ipairs(f.logs) do
+            if entry.message == "Event abort could not settle scheduler" then logged = true end
+        end
+        truthy(logged)
+    end)
+
+    test("recovery abort can finish after event persistence fails without repeating scheduler settlement", function()
+        local director, f = recovery_fixture()
+        f.fail_kind = "event_aborted"
+        equal(director:abort("operator"), false)
+        equal(director.state.status, "recovery_required")
+        equal(director.scheduler.state.occurrences[f.key].status, "failed")
+        equal(f.closes, 0)
+        f.fail_kind = nil
+        truthy(director:abort("operator"))
+        equal(director.state.status, "aborted")
+        equal(f.closes, 1)
+        equal(f.starts, 0)
+        local settled = 0
+        for _, kind in ipairs(f.writes) do if kind == "schedule_start_failed" then settled = settled + 1 end end
+        equal(settled, 1)
+    end)
+
+    test("recovery start rejection is logged without command text or player identifiers", function()
+        local director, f = recovery_fixture()
+        truthy(director:handle_chat(f.admin, "!siege start all-bounty 0"))
+        equal(f.starts, 0)
+        local logged = false
+        for _, entry in ipairs(f.logs) do
+            if entry.message == "Chat start blocked by director state" then
+                logged = true
+                equal(entry.fields.status, "recovery_required")
+                equal(util.count(entry.fields), 1)
+            end
+        end
+        truthy(logged)
+    end)
 
     test("admin commands bypass ordinary chat and start throttles with trusted context", function()
         local director, replies, controls = command_fixture()

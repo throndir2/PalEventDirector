@@ -71,6 +71,8 @@ Countdown and lifecycle details use `UPalUtility.SendSystemAnnounce`. Query resu
 
 Warning, occurrence, event-intent, dispatch, and periodic checkpoint records carry a complete recoverable state in the checksummed journal. Score, roster, and ordinary lifecycle changes are marked dirty and enter that state at the configured checkpoint interval. An interrupted snapshot checkpoint can recover from a state-bearing journal tail. Restart during a native start or active event still enters a fail-closed recovery state because native side effects cannot be inferred safely.
 
+An authorized `abort` can close interrupted, unconfirmed tracking: it validates the event's scheduler linkage and durably marks that occurrence failed before closing the event. This is an explicit operator decision, not proof that native enemies never spawned. Normal confirmation/failure callbacks still cannot clear recovery, and no interrupted start is replayed. Abort settlement failures and recovery-blocked chat starts are logged without player identifiers.
+
 ## Scheduling
 
 Schedules use the Windows dedicated server's local clock. IMOUTO must remain on the intended local time zone for laboratory schedules. Alpha.3 supports `daily` and `weekly` recurrence.

@@ -1488,12 +1488,16 @@ function Director:abort(reason)
     if not self.state.event.startConfirmedAt then
         local scheduler_failed, scheduler_error = self.scheduler:fail_start(
             self.state.event.schedulerOccurrenceKey,
-            "operator aborted before native start confirmation"
+            "operator aborted before native start confirmation",
+            self.state.event.id
         )
         if not scheduler_failed then
             self.state.status = "recovery_required"
             self.state.event.status = "recovery_required"
             self.state.event.recoveryReason = "unable to settle scheduler during abort: " .. tostring(scheduler_error)
+            self.logger:error("Event abort could not settle scheduler", {
+                status = self.state.status, request = self.state.event.requestNumber or 0,
+            })
             return false, self.state.event.recoveryReason
         end
     end
@@ -1508,6 +1512,7 @@ function Director:abort(reason)
         return false, "abort persistence failed: " .. tostring(persist_error)
     end
     if self.bridge.end_event_tracking then self.bridge:end_event_tracking() end
+    self.logger:info("Event tracking aborted", { request = self.state.event.requestNumber or 0 })
     self:_notify(
         "SIEGE LEAGUE - SCORING STOPPED",
         self.state.event.backend == "custom-assault"
@@ -1737,6 +1742,7 @@ function Director:_handle_chat_start(principal, requested_profile, countdown_min
     end
     local can_start, state_error = self:_can_start(not ordinary_user)
     if not can_start then
+        self.logger:warn("Chat start blocked by director state", { status = self.state.status })
         self:_chat("Siege League start failed: " .. state_error, uid)
         return true
     end

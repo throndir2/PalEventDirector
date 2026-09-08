@@ -455,11 +455,17 @@ function Scheduler:confirm_start(key, occurrence_id, now)
     return true
 end
 
-function Scheduler:fail_start(key, reason)
+function Scheduler:fail_start(key, reason, aborted_occurrence_id)
     local occurrence = self.state.occurrences[key]
     if not occurrence then return false, "scheduler occurrence is missing" end
+    if aborted_occurrence_id ~= nil and (type(aborted_occurrence_id) ~= "string" or aborted_occurrence_id == ""
+        or (occurrence.occurrenceId ~= nil and occurrence.occurrenceId ~= aborted_occurrence_id)) then
+        return false, "scheduler occurrence does not match the aborted event"
+    end
     if occurrence.status == "failed" then return true end
-    if occurrence.status ~= "starting" and occurrence.status ~= "awaiting_confirmation" then
+    -- Only an explicit, scoped abort may settle interrupted tracking.
+    local recovering_abort = aborted_occurrence_id ~= nil and occurrence.status == "recovery_required"
+    if occurrence.status ~= "starting" and occurrence.status ~= "awaiting_confirmation" and not recovering_abort then
         return false, "scheduler occurrence is not awaiting confirmation"
     end
     occurrence.status = "failed"
