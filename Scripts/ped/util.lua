@@ -102,7 +102,7 @@ end
 -- A deterministic non-cryptographic hash used only for IDs/checksums/tie order.
 -- Keep every intermediate below 2^53 so Lua integer and JS-backed test VMs agree.
 function M.hash32(value)
-    local hash = 5381
+    local hash = 5381.0 -- Avoid 32-bit integer overflow in the test VM before the modulus.
     value = tostring(value or "")
     for index = 1, #value do
         hash = (hash * 33 + value:byte(index)) % 2147483647

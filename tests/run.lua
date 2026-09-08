@@ -65,6 +65,13 @@ local function authorized_start(director, source, profile)
     return director:start(source, profile, director.scheduler_start_token, key)
 end
 
+test("hash32 agrees with native-width arithmetic including UTF-8 input", function()
+    equal(util.hash32(""), "00001505")
+    equal(util.hash32("hello"), "0f9230fb")
+    equal(util.hash32('00000000{"kind":"startup_test_started","sequence":1}'), "561fa8cd")
+    equal(util.hash32("native-checksum-\226\152\131"), "6cfb7b6a")
+end)
+
 test("JSON round-trips objects, arrays, escapes, and unicode", function()
     local source = json.object({
         text = "line\nquote\"",
