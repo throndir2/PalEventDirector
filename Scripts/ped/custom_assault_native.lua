@@ -466,6 +466,10 @@ function Native:startup_combat_observation(scope, member, movement_only)
             if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
             result.currentAction = name
         end
+        if result.currentAction == "BP_AIAction_NPC_Combat_Gun_C" then
+            result.outerTimer, result.outerDeltaTime = action.Timer, action.tempDeltaTime
+            if not finite(result.outerTimer) or not finite(result.outerDeltaTime) then error(SCOPE, 0) end
+        end
         result.healthRatio = self:_call("startup-health-ratio", state.component, "GetHPRate")
         if not finite(result.healthRatio) then error(SCOPE, 0) end
         local record = self.records[member_key(member)]

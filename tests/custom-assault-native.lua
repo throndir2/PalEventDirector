@@ -180,6 +180,7 @@ return function(test, equal, truthy)
         function f:combat_action(target, module_target, without_module)
             return object({
                 IsA = function(_, path) return path == "/Script/AIModule.PawnAction" or path:find("NPC_CombatBase", 1, true) ~= nil end,
+                Timer = 1, tempDeltaTime = 0.25,
                 TargetActor = target,
                 CombatModule = not without_module and object({ GetTargetActor = function() return module_target end }) or nil,
             })
@@ -895,6 +896,7 @@ return function(test, equal, truthy)
             local observed,result=engine:startup_combat_observation(scope,member)
             truthy(observed,result)
             equal(result.fireState.Timer,-0.1); equal(result.fireState.ShootCount,0)
+            equal(result.outerTimer,1); equal(result.outerDeltaTime,0.25)
             equal(result.requestedTargetMatches,false); equal(result.actualTargetDistanceCm,200)
             equal(result.storedShooterMatches,true); equal(result.canShoot,true); equal(result.canAim,false)
             equal(result.rootFacing,true); equal(result.aimFacing,false)
