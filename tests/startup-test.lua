@@ -13,7 +13,12 @@ return function(test, equal, truthy)
             f.saved = util.deep_copy(state)
             return true
         end
-        function store:save_snapshot() return not f.fail_snapshot end
+        function store:save_snapshot()
+            f.snapshots=(f.snapshots or 0)+1
+            if f.throw_snapshot then error("fixture private snapshot exception") end
+            if f.fail_snapshot then return false,"Permission denied: private fixture path","snapshot-backup-rename" end
+            return true
+        end
         local engine = {}
         function engine:startup_catalog_entry(id) return true,{characterId=id,cdoAvailable=true} end
         function engine:startup_surface_survey()
@@ -389,6 +394,70 @@ return function(test, equal, truthy)
         f:tick(5)
         equal(f.spawns, 0)
         equal(f.runner.state.status, "failed")
+    end)
+
+    test("snapshot failure is journaled once without retrying snapshots or native work",function()
+        for _,kind in ipairs({"failure","exception","marker-failure"}) do
+            local f=fixture()
+            if kind=="exception" then f.throw_snapshot=true else f.fail_snapshot=true end
+            if kind=="marker-failure" then f.fail_record="startup_snapshot_failed" end
+            local snapshots=f.snapshots
+            f:tick()
+            truthy(f.runner.stopped); equal(f.runner.state.status,"failed"); equal(f.runner.state.code,"snapshot-write")
+            equal(f.records[#f.records],"startup_snapshot_failed")
+            equal(f.snapshots,snapshots+1); equal(f.spawns,0)
+            local evidence=f.runner.state.persistenceFailure
+            equal(evidence.phase,kind=="exception" and "snapshot-exception" or "snapshot-backup-rename")
+            equal(evidence.category,kind=="exception" and "exception" or "permission-or-sharing")
+            if kind~="marker-failure" then equal(f.saved.status,"failed"); equal(f.saved.code,"snapshot-write") end
+            local records=#f.records
+            f:tick(5)
+            equal(#f.records,records); equal(f.snapshots,snapshots+1); equal(f.spawns,0)
+        end
+    end)
+
+    test("snapshot-support finalization is exact append-only disposition, never NPC or cadence replay",function()
+        local run="20260909-214007-775097135892408489d264fb11408e6e"
+        local state={schemaVersion=1,runId=run,case=Cadence.CASE,experiment=Cadence.CONTRACT,
+            capturePolicy=Cadence.CAPTURE_POLICY,cadenceSeconds=0.1,
+            sourceRevision="2292fd0ebb2e369da393304ea35adaaec78753c7",
+            artifactSha256="ac15f8183e9b488e23441fcd06df0306ea50d3361b29eccfffafc26c66ee1ba6",
+            status="running",stage="support-configure",mutationStarted=true,cleanupComplete=false,
+            spawned=0,initialized=0,cleaned=0,moved=0,members={},
+            helpers={{phase="deferred"}},helpersCreated=1,helpersCleaned=0,
+            cadence={status="NOT_ACQUIRED",active=false},projectileObservation={creations={},hits={}}}
+        local kinds={"startup_test_started","startup_projectile_observer_ready","startup_test_stage",
+            "startup_support_intent","startup_support_created","startup_test_stage"}
+        local records={}
+        for index,kind in ipairs(kinds) do records[index]={sequence=index,kind=kind,state=state} end
+        local written
+        local store={records=records,append=function(_,kind,_,value)
+            equal(kind,"startup_snapshot_support_runtime_finalized"); written=value; return true
+        end,save_snapshot=function() return true end}
+        local proof={runId=run,processExitVerified=true,snapshotFailureLogged=true,snapshotSequence=5,
+            journalSha256="04b418e7282ca35df46e1d4c756d228219e1f55cd3011de95d1a76727ef64330",
+            snapshotSha256="77465ecb421f607be11717f6ee8d78853ee9ea580f01b1f70020e108ad7c73b4",
+            evidenceManifestSha256="8d5c0990a5f7b926426490aaf60743b2f0d013d80838cf2e172711378ca4e21b",
+            certificateSha256="47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f",
+            serverExecutableSha256="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02",
+            serverPakSha256="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"}
+        proof.processExitVerified=false
+        equal(pcall(Startup.finalize_snapshot_support_fault,store,proof),false); equal(written,nil)
+        proof.processExitVerified=true
+        records[4].kind="startup_spawn_intent"
+        equal(pcall(Startup.finalize_snapshot_support_fault,store,proof),false); equal(written,nil)
+        records[4].kind=kinds[4]
+        state.cadence.appliedObserved=true
+        equal(pcall(Startup.finalize_snapshot_support_fault,store,proof),false); equal(written,nil)
+        state.cadence.appliedObserved=nil
+        local hash=proof.snapshotSha256; proof.snapshotSha256=string.rep("0",64)
+        equal(pcall(Startup.finalize_snapshot_support_fault,store,proof),false); equal(written,nil)
+        proof.snapshotSha256=hash
+        truthy(Startup.finalize_snapshot_support_fault(store,proof))
+        equal(state.status,"running"); equal(written.status,"blocked")
+        equal(written.helpersFinalized,1); equal(written.helpersCleaned,0)
+        equal(written.failedArtifactSha256,state.artifactSha256); equal(written.failure,"snapshot-write")
+        truthy(Startup.validate_state(written,run))
     end)
 
     test("startup class failure is terminal without claiming an entity was spawned", function()

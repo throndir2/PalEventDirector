@@ -216,6 +216,50 @@ function Test.finalize_shape_support_fault(store,evidence)
     return store:save_snapshot(state)
 end
 
+function Test.finalize_snapshot_support_fault(store,evidence)
+    local last=store.records[#store.records]
+    local previous=last and last.state
+    assert(previous,"No startup support state is available")
+    Test.validate_state(previous,previous.runId)
+    assert(previous.runId=="20260909-214007-775097135892408489d264fb11408e6e"
+        and previous.sourceRevision=="2292fd0ebb2e369da393304ea35adaaec78753c7"
+        and previous.artifactSha256=="ac15f8183e9b488e23441fcd06df0306ea50d3361b29eccfffafc26c66ee1ba6"
+        and previous.case==Cadence.CASE and previous.status=="running" and previous.stage=="support-configure"
+        and previous.spawned==0 and previous.initialized==0 and previous.cleaned==0 and #previous.members==0
+        and previous.helpersCreated==1 and previous.helpersCleaned==0 and #previous.helpers==1
+        and previous.helpers[1].phase=="deferred" and previous.mutationStarted and not previous.cleanupComplete
+        and previous.cadence.status=="NOT_ACQUIRED" and previous.cadence.active==false
+        and not previous.cadence.appliedObserved
+        and #previous.projectileObservation.creations==0 and #previous.projectileObservation.hits==0,
+        "This failure is outside the audited snapshot-support finalization scope")
+    local kinds={"startup_test_started","startup_projectile_observer_ready","startup_test_stage",
+        "startup_support_intent","startup_support_created","startup_test_stage"}
+    assert(#store.records==#kinds and last.sequence==6,"Unexpected snapshot-support journal extent")
+    for index,kind in ipairs(kinds) do
+        assert(store.records[index].kind==kind and store.records[index].sequence==index,
+            "Unexpected work prevents snapshot-support finalization")
+    end
+    assert(type(evidence)=="table" and evidence.runId==previous.runId and evidence.processExitVerified==true
+        and evidence.snapshotFailureLogged==true and evidence.snapshotSequence==5
+        and evidence.journalSha256=="04b418e7282ca35df46e1d4c756d228219e1f55cd3011de95d1a76727ef64330"
+        and evidence.snapshotSha256=="77465ecb421f607be11717f6ee8d78853ee9ea580f01b1f70020e108ad7c73b4"
+        and evidence.evidenceManifestSha256=="8d5c0990a5f7b926426490aaf60743b2f0d013d80838cf2e172711378ca4e21b"
+        and evidence.certificateSha256=="47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f"
+        and evidence.serverExecutableSha256=="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02"
+        and evidence.serverPakSha256=="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe",
+        "Verified stopped-world and preserved snapshot-failure evidence are required")
+    local state=util.deep_copy(previous)
+    state.status,state.code,state.cleanupComplete="blocked","snapshot-support-runtime-finalized",true
+    state.failedArtifactSha256=previous.artifactSha256
+    state.helpersFinalized=1
+    state.failure="snapshot-write"
+    state.finalization=util.deep_copy(evidence)
+    state.finalization.disposition="deferred-noncharacter-world-ended; no-NPC-or-cadence-intent"
+    local ok,reason=store:append("startup_snapshot_support_runtime_finalized",{disposition=state.finalization.disposition},state)
+    if not ok then return false,reason end
+    return store:save_snapshot(state)
+end
+
 function Test.new(options)
     local plan = assert(options.plan)
     assert(plan.schemaVersion == 1 and CASES[plan.case], "Startup test plan is invalid")
@@ -314,13 +358,26 @@ function Test:_save(kind)
         self.logger:error("Startup test journal failed; native work stopped")
         return false
     end
-    local snapshot_called, saved = pcall(self.store.save_snapshot, self.store, self.state)
+    local snapshot_called, saved, snapshot_error, snapshot_phase = pcall(self.store.save_snapshot, self.store, self.state)
     if not snapshot_called or not saved then
         self.state.status, self.state.code = "failed", "snapshot-write"
+        local known_phases={["snapshot-temp-write"]=true,["snapshot-backup-rename"]=true,["snapshot-install-rename"]=true}
+        local phase=known_phases[snapshot_phase] and snapshot_phase or (snapshot_called and "snapshot-write" or "snapshot-exception")
+        local category=snapshot_called and "filesystem-error" or "exception"
+        if snapshot_called and type(snapshot_error)=="string" then
+            local message=snapshot_error:lower()
+            if message:find("permission denied",1,true) or message:find("sharing violation",1,true)
+                or message:find("being used by another process",1,true) then category="permission-or-sharing"
+            elseif message:find("disk full",1,true) or message:find("no space left",1,true) then category="storage-full" end
+        end
+        self.state.persistenceFailure={phase=phase,category=category}
         self.stopped, self.journalFailed = true, true
         self.state.cleanupComplete = not self.state.mutationStarted
         if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
-        self.logger:error("Startup test snapshot failed; native work stopped")
+        -- The preceding append succeeded. Record this distinct failure once without retrying the snapshot.
+        local recorded, appended=pcall(self.store.append,self.store,"startup_snapshot_failed",self.state.persistenceFailure,self.state)
+        if not recorded or not appended then self.logger:error("Startup snapshot failure marker could not be journaled; native work remains stopped") end
+        self.logger:error("Startup test snapshot failed; native work stopped",self.state.persistenceFailure)
         return false
     end
     return true

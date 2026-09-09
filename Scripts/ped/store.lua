@@ -108,14 +108,14 @@ function Store:save_snapshot(payload)
     local backup = self.snapshot_path .. ".bak"
     local ok, write_error = self.filesystem.write(temporary, json.encode(envelope) .. "\n")
     if not ok then
-        return false, write_error
+        return false, write_error, "snapshot-temp-write"
     end
     self.filesystem.remove(backup)
     if self.filesystem.exists(self.snapshot_path) then
         local renamed, rename_error = self.filesystem.rename(self.snapshot_path, backup)
         if not renamed then
             self.filesystem.remove(temporary)
-            return false, rename_error
+            return false, rename_error, "snapshot-backup-rename"
         end
     end
     local installed, install_error = self.filesystem.rename(temporary, self.snapshot_path)
@@ -123,7 +123,7 @@ function Store:save_snapshot(payload)
         if self.filesystem.exists(backup) then
             self.filesystem.rename(backup, self.snapshot_path)
         end
-        return false, install_error
+        return false, install_error, "snapshot-install-rename"
     end
     return true
 end
