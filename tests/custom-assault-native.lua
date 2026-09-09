@@ -242,6 +242,102 @@ return function(test, equal, truthy)
         callback(engine, member, f, parameter, actor, scope)
     end
 
+    local function support_fixture(callback)
+        fixture(function(engine,member,f,_,_,scope)
+            local function object(values)
+                values=values or {}
+                values.IsValid=function() return true end
+                return values
+            end
+            f.point={X=100,Y=0,Z=0}
+            f.startComponents,f.overlapOutputs,f.overlapCenters={},{},{}
+            f.supportSweeps,f.clearanceQueries,f.responseQueries=0,0,0
+            f.groundChannel=12
+            function f:component(kind,response)
+                local owner=object({IsA=function(_,path) return path=="/Script/Engine.Actor" end,
+                    GetWorld=function() error("shadowed actor world helper used") end,
+                    GetLevel=function() error("shadowed actor level helper used") end})
+                local component=object({owner=owner,world=scope.world,enabled=3,response=response,
+                    IsA=function(_,path)
+                        return path=="/Script/Engine.PrimitiveComponent"
+                            or (kind=="shape" and path=="/Script/Engine.ShapeComponent")
+                            or ((kind=="static" or kind=="instanced") and path=="/Script/Engine.StaticMeshComponent")
+                            or (kind=="instanced" and path=="/Script/Engine.InstancedStaticMeshComponent")
+                            or (kind=="skinned" and path=="/Script/Engine.SkinnedMeshComponent")
+                    end,
+                    GetOwner=function(self) return self.owner end,
+                    GetWorld=function(self) return self.world end,
+                    GetCollisionEnabled=function(self) return self.enabled end,
+                    GetCollisionResponseToChannel=function(self,channel)
+                        equal(channel,f.groundChannel)
+                        f.responseQueries=f.responseQueries+1
+                        return self.response
+                    end,
+                    GetWalkableSlopeOverride=function() return {WalkableSlopeBehavior=f.slopeBehavior or 0} end,
+                })
+                return component
+            end
+            local hit_component=f:component("static",2)
+            engine._placement_shape=function() return {radius=30,halfHeight=80,walkableZ=0.7} end
+            local previous_find=engine.bridge._static_find
+            local kismet=object({CapsuleOverlapComponents=function(_,world,point,radius,half,types,filter,ignored,output)
+                equal(world,scope.world); equal(radius,30); equal(half,80)
+                equal(point.X,f.point.X); equal(point.Y,f.point.Y); equal(point.Z,f.point.Z+5)
+                equal(#types,32); equal(getmetatable(types),nil)
+                for index=1,32 do equal(types[index],index-1) end
+                equal(filter,nil); equal(#ignored,0); equal(getmetatable(ignored),nil)
+                equal(#output,0); equal(getmetatable(output),nil)
+                for _,previous in ipairs(f.overlapOutputs) do truthy(previous~=output) end
+                f.overlapOutputs[#f.overlapOutputs+1]=output
+                f.overlapCenters[#f.overlapCenters+1]=util.shallow_copy(point)
+                if f.overlapFault then error("fixture overlap native fault") end
+                for key,value in pairs(f.startComponents) do output[key]=value end
+                if f.overlapReturn~=nil then return f.overlapReturn end
+                return #f.startComponents>0
+            end})
+            engine.bridge._static_find=function(self,path)
+                if path=="/Script/Engine.Default__KismetSystemLibrary" then return kismet end
+                return previous_find(self,path)
+            end
+            engine.utility.GetEngineCollisionChannelByPalTraceType=function(_,kind)
+                equal(kind,3)
+                return f.groundChannel
+            end
+            engine.physicsLibrary={CapsuleTraceSingleByPalTraceType=function(_,world,start,finish,radius,half,kind,complex,material,index,hit,draw)
+                equal(world,scope.world); equal(radius,30); equal(half,80); equal(kind,3)
+                equal(complex,false); equal(material,false); equal(index,false); equal(draw,0)
+                if finish.Z>start.Z then
+                    equal(start.Z,f.point.Z+2); equal(finish.Z,f.point.Z+4)
+                    f.clearanceQueries=f.clearanceQueries+1
+                    return f.clearanceBlocked==true
+                end
+                equal(start.Z,f.point.Z+5); equal(finish.Z,f.point.Z-5)
+                for _,axis in ipairs({"X","Y","Z"}) do equal(start[axis],f.overlapCenters[#f.overlapCenters][axis]) end
+                f.supportSweeps=f.supportSweeps+1
+                local shared_byte=f.hitByte or 1
+                hit.bBlockingHit,hit.bStartPenetrating=shared_byte~=0,shared_byte~=0
+                hit.ImpactNormal={X=0,Y=0,Z=f.normal or 1}
+                hit.Location=f.contact or util.shallow_copy(f.point)
+                hit.Component={Get=function() return not f.missingComponent and hit_component or nil end}
+                hit.ActorName="private-hit-name"
+                return f.sweepFound~=false
+            end}
+            function engine.bridge:_native_step(_,operation)
+                if self.native_fault then return false,self.native_fault end
+                local ok,result=pcall(operation)
+                if not ok then self.native_fault=result end
+                return ok,result
+            end
+            function f:probe(surface)
+                return engine.bridge:_native_step("fixture-support",function()
+                    if surface then return engine:_placement_surface(scope,member,self.point) end
+                    return engine:_placement_support(scope,member,self.point)
+                end)
+            end
+            callback(engine,f,scope)
+        end)
+    end
+
     test("custom NPC adapter preserves the nil delegate and uses full manager-resolved identity", function()
         fixture(function(engine, member, f)
             local ok, state = engine:inspect(member.handle, member)
@@ -1057,50 +1153,143 @@ return function(test, equal, truthy)
         end)
     end)
 
-    test("walkable support and a ground-channel clearance miss never fabricate dry full-capsule safety", function()
-        fixture(function(engine,member,f,_,_,scope)
-            engine._placement_shape=function() return {radius=30,halfHeight=80,walkableZ=0.7} end
-            local component={IsValid=function() return true end,IsA=function() return true end,
-                GetWalkableSlopeOverride=function() return {WalkableSlopeBehavior=0} end}
-            engine.physicsLibrary={CapsuleTraceSingleByPalTraceType=function(_,world,start,finish,radius,half,kind,complex,material,index,out,draw)
-                equal(world,scope.world); equal(radius,30); equal(half,80); equal(kind,3)
-                equal(complex,false); equal(material,false); equal(index,false); equal(draw,0)
-                if finish.Z>start.Z then
-                    f.clearanceQueries=(f.clearanceQueries or 0)+1
-                    return false
-                end
-                out.bBlockingHit,out.bStartPenetrating=not f.nonblocking,f.penetrating==true
-                out.ImpactNormal={X=0,Y=0,Z=f.normal or 1}
-                if not f.missingContact then out.Location=f.contact or {X=100,Y=0,Z=0} end
-                out.Component={Get=function() return component end}
-                out.ActorName="private-hit-name"
-                return true
-            end}
-            local point={X=100,Y=0,Z=0}
-            local result=engine:_placement_surface(scope,member,point)
-            equal(result.ready,false); equal(result.reason,"dry-clearance-unqualified")
-            f.penetrating=true
-            result=engine:_placement_surface(scope,member,point)
-            equal(result.reason,"support-penetrating")
-            equal(result.support.blockingHit,true); equal(result.support.startPenetrating,true)
-            equal(result.support.contactDelta.X,0); equal(result.support.impactNormal.Z,1)
+    test("copied hit byte one sets both flags but independent clear start and valid support can proceed",function()
+        support_fixture(function(_,f)
+            f.hitByte=1
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,true)
+            equal(result.support.copiedHitFlags.trust,"UNTRUSTED")
+            equal(result.support.copiedHitFlags.blockingHit,true); equal(result.support.copiedHitFlags.startPenetrating,true)
+            equal(result.support.startPenetrating,nil); equal(result.support.blockingHit,nil)
+            equal(result.support.startOverlap.classification,"CLEAR"); equal(result.support.startOverlap.components,0)
+            equal(result.support.startOffsetZ,5); equal(f.supportSweeps,1); equal(f.clearanceQueries,1)
+            equal(result.support.contactDelta.Z,0); equal(result.support.impactNormal.Z,1)
             equal(result.support.Component,nil); equal(result.support.ActorName,nil); equal(result.support.Location,nil)
-            equal(f.clearanceQueries,1)
-            f.missingContact=true
-            result=engine:_placement_support(scope,member,point)
-            equal(result.reason,"support-penetrating"); equal(result.support.contactDelta,nil)
-            f.missingContact=false; f.contact={X=100000,Y=200000,Z=300000}
-            result=engine:_placement_support(scope,member,point)
-            equal(result.reason,"support-penetrating"); equal(result.support.contactDelta,nil)
-            f.contact=nil; f.nonblocking=true; f.penetrating=false
-            result=engine:_placement_support(scope,member,point)
-            equal(result.reason,"support-penetrating")
-            equal(result.support.blockingHit,false); equal(result.support.startPenetrating,false)
-            equal(f.clearanceQueries,1)
-            f.nonblocking=false
-            f.penetrating=false; f.normal=0.2
-            equal(engine:_placement_surface(scope,member,point).reason,"support-not-walkable")
-            equal(f.spawns,1)
+            ok,result=f:probe(true)
+            truthy(ok,result); equal(result.ready,false); equal(result.reason,"dry-clearance-unqualified")
+            equal(#f.overlapOutputs,2); equal(f.spawns,1)
+            f.hitByte=0
+            ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,true)
+            equal(result.support.copiedHitFlags.blockingHit,false)
+        end)
+    end)
+
+    test("start overlaps use the actual ground trace response and never a pawn profile or packed flag",function()
+        support_fixture(function(_,f)
+            f.hitByte=0
+            f.startComponents={f:component("static",2)}
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,false); equal(result.reason,"support-penetrating")
+            equal(result.support.startOverlap.classification,"BLOCKED"); equal(result.support.startOverlap.blockers,1)
+            equal(result.support.copiedHitFlags,nil); equal(f.supportSweeps,0); equal(f.clearanceQueries,0)
+            equal(f.responseQueries,1)
+        end)
+        support_fixture(function(_,f)
+            f.startComponents={f:component("static",0),f:component("shape",1)}
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,true)
+            equal(result.support.startOverlap.blockers,0); equal(f.responseQueries,2)
+        end)
+    end)
+
+    test("start overlap fails closed on unknown multibody query state and response semantics",function()
+        for _,kind in ipairs({"instanced","skinned","unknown","disabled","response"}) do
+            support_fixture(function(_,f)
+                local component=f:component((kind=="disabled" or kind=="response") and "static" or kind,0)
+                if kind=="disabled" then component.enabled=2 end
+                if kind=="response" then component.response=3 end
+                f.startComponents={component}
+                local ok,result=f:probe()
+                truthy(ok,result); equal(result.ready,false); equal(result.reason,"support-start-overlap-unqualified")
+                equal(result.support.startOverlap.classification,"UNSUPPORTED")
+                equal(result.support.startOverlap.unqualifiedBodies,1); equal(f.supportSweeps,0)
+            end)
+        end
+    end)
+
+    test("start overlap rejects oversized malformed foreign and worldless results before a support sweep",function()
+        support_fixture(function(_,f)
+            for index=1,129 do f.startComponents[index]=f:component("static",0) end
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,false); equal(result.reason,"support-start-overlap-over-cap")
+            equal(result.support.startOverlap.components,129); equal(f.responseQueries,0); equal(f.supportSweeps,0)
+        end)
+        for _,kind in ipairs({"foreign-component","foreign-owner","worldless-owner","wrong-owner","sparse","boolean","channel"}) do
+            support_fixture(function(_,f)
+                local component=f:component("static",0)
+                f.startComponents={component}
+                local world={IsValid=function() return true end,IsA=function() return true end}
+                if kind=="foreign-component" then component.world=world end
+                if kind=="foreign-owner" or kind=="worldless-owner" then
+                    f.levels[component.owner]={IsValid=function() return true end,IsA=function() return true end,
+                        OwningWorld=kind=="foreign-owner" and world or nil}
+                end
+                if kind=="wrong-owner" then component.owner.IsA=function() return false end end
+                if kind=="sparse" then f.startComponents={[2]=component} end
+                if kind=="boolean" then f.overlapReturn=false end
+                if kind=="channel" then f.groundChannel=32 end
+                equal(f:probe(),false); equal(f.supportSweeps,0)
+                local calls=#f.calls
+                equal(f:probe(),false); equal(#f.calls,calls)
+            end)
+        end
+    end)
+
+    test("independent start clearance does not replace support normal displacement slope or final clearance",function()
+        for _,case in ipairs({
+            {field="sweepFound",value=false,reason="no-solid-support"},
+            {field="normal",value=0.2,reason="support-not-walkable"},
+            {field="contact",value={X=100,Y=0,Z=20},reason="support-moved"},
+            {field="slopeBehavior",value=1,reason="support-slope-override"},
+            {field="missingComponent",value=true,reason="support-component-unavailable"},
+            {field="clearanceBlocked",value=true,reason="capsule-obstructed"},
+        }) do
+            support_fixture(function(_,f)
+                f[case.field]=case.value
+                local ok,result=f:probe()
+                truthy(ok,result); equal(result.ready,false); equal(result.reason,case.reason)
+                equal(result.support.startOverlap.classification,"CLEAR")
+                equal(f.supportSweeps,1)
+            end)
+        end
+        support_fixture(function(_,f)
+            f.contact={X=100000,Y=200000,Z=300000}
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,false); equal(result.reason,"support-moved")
+            equal(result.support.contactDelta,nil)
+        end)
+    end)
+
+    test("a native start-overlap failure cannot retry or proceed into the support sweep",function()
+        support_fixture(function(_,f)
+            f.overlapFault=true
+            equal(f:probe(),false); equal(f.supportSweeps,0)
+            local calls=#f.calls
+            equal(f:probe(),false); equal(#f.calls,calls); equal(#f.overlapOutputs,1)
+        end)
+    end)
+
+    test("native startup qualifies support overlap contracts before any survey or candidate",function()
+        fixture(function(engine)
+            local signatures={}
+            local function fields(expected)
+                local result={}
+                for name in pairs(expected) do result[name]={field={}} end
+                return result
+            end
+            engine._signature=function(_,name,expected) signatures[name]=expected; return fields(expected) end
+            engine._struct=function(_,_,_,expected) return fields(expected) end
+            truthy(engine:qualify())
+            local overlap=signatures["/Script/Engine.KismetSystemLibrary:CapsuleOverlapComponents"]
+            equal(overlap.CapsulePos[2],8); equal(overlap.Radius[2],32); equal(overlap.HalfHeight[2],36)
+            equal(overlap.ObjectTypes[1],"ArrayProperty"); equal(overlap.ObjectTypes[2],40)
+            equal(overlap.OutComponents[2],80); equal(overlap.ReturnValue[2],96)
+            local converter=signatures["/Script/Pal.PalUtility:GetEngineCollisionChannelByPalTraceType"]
+            equal(converter.type[1],"EnumProperty"); equal(converter.ReturnValue[2],1)
+            truthy(signatures["/Script/Engine.PrimitiveComponent:GetCollisionEnabled"])
+            local response=signatures["/Script/Engine.PrimitiveComponent:GetCollisionResponseToChannel"]
+            equal(response.Channel[2],0); equal(response.ReturnValue[2],1)
         end)
     end)
 

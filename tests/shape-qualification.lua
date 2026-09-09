@@ -402,20 +402,67 @@ return function(test,equal,truthy)
         fixture(function(f)
             f.support_result=function(_,index)
                 return {ready=index>2,reason="support-penetrating",support={
-                    found=true,blockingHit=true,startPenetrating=index<=2,contactDelta={X=0,Y=0,Z=5}}}
+                    startOverlap={classification=index<=2 and "BLOCKED" or "CLEAR",blockers=index<=2 and 1 or 0}}}
             end
             local result=f:prepare()
             equal(result.ready,false); equal(result.pending,true); equal(result.reason,"shape-site-search-pending")
             equal(result.attempts,2); equal(f.surveys,0); equal(f.spawns,0)
             equal(f.engine.shapeQualification.attempted,nil)
             equal(f.scope.positions[1].X,500)
-            equal(#result.selection.rejections,2); equal(result.selection.rejections[1].support.startPenetrating,true)
+            equal(#result.selection.rejections,2); equal(result.selection.rejections[1].support.startOverlap.classification,"BLOCKED")
             result=f:prepare()
             equal(result.ready,true); equal(result.attempts,3); equal(f.surveys,1); equal(#f.supportPoints,3)
             equal(result.fallbackReason,"support-penetrating"); equal(result.selection.selectedMode,"in-base")
             equal(result.selection.selectedCandidate,3); equal(#f.pathPoints,1)
             for _,axis in ipairs({"X","Y","Z"}) do equal(result.position[axis],f.supportPoints[3][axis]) end
             truthy(f:spawn()); equal(f.spawns,1)
+        end)
+    end)
+
+    test("independent start-overlap queries stay inside the two-site budget before the one-shot survey",function()
+        fixture(function(f,object)
+            local overlaps,sweeps=0,0
+            local owner=object({IsA=function(_,path) return path=="/Script/Engine.Actor" end})
+            local component=object({
+                IsA=function(_,path)
+                    return path=="/Script/Engine.PrimitiveComponent" or path=="/Script/Engine.ShapeComponent"
+                end,
+                GetOwner=function() return owner end,GetWorld=function() return f.scope.world end,
+                GetCollisionEnabled=function() return 3 end,
+                GetCollisionResponseToChannel=function(_,channel) equal(channel,12); return 2 end,
+                GetWalkableSlopeOverride=function() return {WalkableSlopeBehavior=0} end,
+            })
+            local kismet=object({CapsuleOverlapComponents=function(_,world,point,radius,half,types,filter,ignored,output)
+                equal(world,f.scope.world); equal(radius,30); equal(half,30); equal(#types,32)
+                equal(filter,nil); equal(#ignored,0); equal(#output,0)
+                equal(point.Z,f.scope.origin.Z+5)
+                overlaps=overlaps+1
+                if overlaps<=2 then output[1]=component; return true end
+                return false
+            end})
+            f.engine.bridge._static_find=function(_,path)
+                equal(path,"/Script/Engine.Default__KismetSystemLibrary")
+                return kismet
+            end
+            f.engine.utility.GetEngineCollisionChannelByPalTraceType=function(_,kind) equal(kind,3); return 12 end
+            f.engine.physicsLibrary={CapsuleTraceSingleByPalTraceType=function(_,world,start,finish,radius,half,kind,_,_,_,hit)
+                equal(world,f.scope.world); equal(radius,30); equal(half,30); equal(kind,3)
+                if finish.Z>start.Z then return false end
+                sweeps=sweeps+1
+                hit.bBlockingHit,hit.bStartPenetrating=true,true
+                hit.ImpactNormal={X=0,Y=0,Z=1}
+                hit.Location={X=start.X,Y=start.Y,Z=start.Z-5}
+                hit.Component={Get=function() return component end}
+                return true
+            end}
+            f.engine._placement_support=Native._placement_support
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.pending,true); equal(result.attempts,2)
+            equal(overlaps,2); equal(sweeps,0); equal(f.surveys,0); equal(f.spawns,0)
+            equal(result.selection.rejections[1].support.startOverlap.classification,"BLOCKED")
+            result=f:prepare()
+            equal(result.ready,true); equal(result.attempts,3); equal(overlaps,3); equal(sweeps,1)
+            equal(f.surveys,1); equal(f.spawns,0); equal(result.spawnQualified,false)
         end)
     end)
 

@@ -35,7 +35,7 @@ return function(test, equal, truthy)
                 if f.shape_pending then
                     return true,{ready=f.shape_pending_ready==true,pending=true,spawnQualified=false,experiment=Shape.CONTRACT,
                         reason=f.shape_pending,attempts=2,selection={candidateLimit=17,candidatesVisited=2,rejections={
-                            {candidate=1,reason="support-penetrating",support={blockingHit=true,startPenetrating=true}}}}}
+                            {candidate=1,reason="support-penetrating",support={startOverlap={classification="BLOCKED",blockers=1}}}}}}
                 end
                 return true,{ready=not f.shape_placement_blocked,pending=false,spawnQualified=false,experiment=Shape.CONTRACT,
                     reason=f.shape_reason or "shape-fixture-blocked",surfaceSurvey={spawnQualified=false,templateOnly=true},
@@ -357,7 +357,7 @@ return function(test, equal, truthy)
         f:tick(12)
         equal(f.spawns,0); equal(f.runner.state.stage,"spawn"); equal(f.runner.state.helpersCleaned,0)
         local selection=f.runner.state.members[1].siteSelection
-        equal(selection.candidatesVisited,2); equal(selection.rejections[1].support.startPenetrating,true)
+        equal(selection.candidatesVisited,2); equal(selection.rejections[1].support.startOverlap.classification,"BLOCKED")
         f.shape_pending,f.shape_placement_blocked,f.shape_reason=nil,true,"shape-sites-exhausted"
         f:tick(5)
         equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"shape-sites-exhausted")

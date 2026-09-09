@@ -225,6 +225,18 @@ function Native:qualify()
         self:_signature("/Script/Engine.CapsuleComponent:"..method,{ReturnValue={"FloatProperty",0}})
     end
     self:_signature("/Script/Engine.PrimitiveComponent:GetWalkableSlopeOverride",{ReturnValue={"StructProperty",0}})
+    self:_signature("/Script/Engine.KismetSystemLibrary:CapsuleOverlapComponents",{
+        WorldContextObject={"ObjectProperty",0},CapsulePos={"StructProperty",8},Radius={"FloatProperty",32},
+        HalfHeight={"FloatProperty",36},ObjectTypes={"ArrayProperty",40},ComponentClassFilter={"ClassProperty",56},
+        ActorsToIgnore={"ArrayProperty",64},OutComponents={"ArrayProperty",80},ReturnValue={"BoolProperty",96},
+    })
+    self:_signature("/Script/Pal.PalUtility:GetEngineCollisionChannelByPalTraceType",{
+        type={"EnumProperty",0},ReturnValue={"ByteProperty",1},
+    })
+    self:_signature("/Script/Engine.PrimitiveComponent:GetCollisionEnabled",{ReturnValue={"ByteProperty",0}})
+    self:_signature("/Script/Engine.PrimitiveComponent:GetCollisionResponseToChannel",{
+        Channel={"ByteProperty",0},ReturnValue={"ByteProperty",1},
+    })
     self:_signature("/Script/Pal.PalPhysicsUtility:CapsuleTraceSingleByPalTraceType", {
         WorldContextObject={"ObjectProperty",0},Start={"StructProperty",8},End={"StructProperty",32},
         Radius={"FloatProperty",56},HalfHeight={"FloatProperty",60},PalTraceType={"EnumProperty",64},
@@ -831,6 +843,59 @@ function Native:_placement_path(scope, member, position, goal)
     return {ready=true,pathPoints=count,pathLength=length,defaultNavDataUsed=shape.navContext==nil}
 end
 
+function Native:_placement_start_overlap(scope,shape,start)
+    if not self.a.valid(scope.world) or not scope.world:IsA("/Script/Engine.World")
+        or not self.a.same(scope.world,self.world) then error(SCOPE,0) end
+    local kismet=self.bridge:_static_find("/Script/Engine.Default__KismetSystemLibrary")
+    if not self.a.valid(kismet) then error(SCOPE,0) end
+    local ground=self:_call("placement-ground-channel",self.utility,"GetEngineCollisionChannelByPalTraceType",3)
+    if not util.is_integer(ground) or ground<0 or ground>31 then error(SCOPE,0) end
+    local types,components={},{}
+    for index=0,31 do types[index+1]=index end
+    local before=os.clock()
+    local found=self:_call("placement-start-overlap",kismet,"CapsuleOverlapComponents",
+        scope.world,vector(start),shape.radius,shape.halfHeight,types,nil,{},components)
+    local elapsed=os.clock()-before
+    if type(found)~="boolean" or not finite(elapsed) or elapsed<0
+        or getmetatable(components)~=nil then error(SCOPE,0) end
+    local total,count=#components,0
+    local result={ready=false,classification="UNSUPPORTED",components=total,blockers=0,unqualifiedBodies=0,
+        groundChannel=ground,clockSeconds=elapsed}
+    if total>128 then result.reason="support-start-overlap-over-cap"; return result end
+    for key in pairs(components) do
+        if not util.is_integer(key) or key<1 or key>total then error(SCOPE,0) end
+        count=count+1
+    end
+    if count~=total or found~=(total>0) then error(SCOPE,0) end
+    if elapsed>0.25 then result.reason="support-start-overlap-slow"; return result end
+    for index=1,total do
+        local component=self.a.unwrap(components[index])
+        if not self.a.valid(component) or not component:IsA("/Script/Engine.PrimitiveComponent") then error(SCOPE,0) end
+        local owner=self:_call("placement-start-owner",component,"GetOwner")
+        if not self.a.valid(owner) or not owner:IsA("/Script/Engine.Actor")
+            or not self.a.same(self:_call("placement-start-world",component,"GetWorld"),scope.world)
+            or not self.a.same(self:actor_world(owner),scope.world) then error(SCOPE,0) end
+        local enabled=self:_call("placement-start-enabled",component,"GetCollisionEnabled")
+        local single_body=not component:IsA("/Script/Engine.InstancedStaticMeshComponent")
+            and not component:IsA("/Script/Engine.SkinnedMeshComponent")
+            and (component:IsA("/Script/Engine.ShapeComponent") or component:IsA("/Script/Engine.StaticMeshComponent"))
+        if (enabled~=1 and enabled~=3) or not single_body then
+            result.unqualifiedBodies=result.unqualifiedBodies+1
+        else
+            local response=self:_call("placement-start-response",component,"GetCollisionResponseToChannel",ground)
+            if not util.is_integer(response) or response<0 or response>2 then
+                result.unqualifiedBodies=result.unqualifiedBodies+1
+            elseif response==2 then
+                result.blockers=result.blockers+1
+            end
+        end
+    end
+    if result.unqualifiedBodies>0 then result.reason="support-start-overlap-unqualified"
+    elseif result.blockers>0 then result.classification,result.reason="BLOCKED","support-penetrating"
+    else result.classification,result.ready="CLEAR",true end
+    return result
+end
+
 function Native:_placement_support(scope, member, position)
     local shape, reason = self:_placement_shape(member.characterId)
     if not shape then return {ready=false,reason=reason} end
@@ -841,14 +906,19 @@ function Native:_placement_support(scope, member, position)
     local start, finish, hit = vector(position),vector(position),{}
     local color = {R=0,G=0,B=0,A=0}
     start.Z,finish.Z=start.Z+5,finish.Z-5
+    local observation={radius=shape.radius,halfHeight=shape.halfHeight,startOffsetZ=5}
+    local function outcome(ready,why) return {ready=ready,reason=why,support=observation} end
+    observation.startOverlap=self:_placement_start_overlap(scope,shape,start)
+    if not observation.startOverlap.ready then return outcome(false,observation.startOverlap.reason) end
     local found = self:_call("placement-support",self.physicsLibrary,"CapsuleTraceSingleByPalTraceType",
         scope.world,start,finish,shape.radius,shape.halfHeight,3,false,false,false,hit,0,color,color,0)
     if type(found)~="boolean" then error(SCOPE,0) end
-    local observation={found=found,radius=shape.radius,halfHeight=shape.halfHeight}
-    local function outcome(ready,why) return {ready=ready,reason=why,support=observation} end
+    observation.found=found
     if not found then return outcome(false,"no-solid-support") end
-    if type(hit.bBlockingHit)~="boolean" or type(hit.bStartPenetrating)~="boolean" then error(SCOPE,0) end
-    observation.blockingHit,observation.startPenetrating=hit.bBlockingHit,hit.bStartPenetrating
+    -- UE4SS 3.0.1's copied struct bools read the shared byte, not each FBoolProperty mask.
+    observation.copiedHitFlags={trust="UNTRUSTED"}
+    if type(hit.bBlockingHit)=="boolean" then observation.copiedHitFlags.blockingHit=hit.bBlockingHit end
+    if type(hit.bStartPenetrating)=="boolean" then observation.copiedHitFlags.startPenetrating=hit.bStartPenetrating end
     local impact,contact=self.a.unwrap(hit.ImpactNormal),self.a.unwrap(hit.Location)
     if impact and finite(impact.X) and finite(impact.Y) and finite(impact.Z)
         and math.abs(impact.X)<=1 and math.abs(impact.Y)<=1 and math.abs(impact.Z)<=1 then
@@ -860,10 +930,10 @@ function Native:_placement_support(scope, member, position)
         if math.abs(delta.X)<=100 and math.abs(delta.Y)<=100 and math.abs(delta.Z)<=100
             and delta.X^2+delta.Y^2+delta.Z^2<=100^2 then observation.contactDelta=delta end
     end
-    if not hit.bBlockingHit or hit.bStartPenetrating then return outcome(false,"support-penetrating") end
     local normal,location = vector(self.a.unwrap(hit.ImpactNormal)),vector(self.a.unwrap(hit.Location))
     if normal.Z<shape.walkableZ then return outcome(false,"support-not-walkable") end
-    if distance_squared(location,position)>10^2 then return outcome(false,"support-moved") end
+    if math.abs(location.X-position.X)>10 or math.abs(location.Y-position.Y)>10 or math.abs(location.Z-position.Z)>10
+        or distance_squared(location,position)>10^2 then return outcome(false,"support-moved") end
     local weak = self.a.unwrap(hit.Component)
     if weak==nil then return outcome(false,"support-component-unavailable") end
     local component = weak:Get()
