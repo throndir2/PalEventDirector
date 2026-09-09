@@ -388,6 +388,7 @@ function Test:halt(reason)
     self.stopped = true
     self.state.status = "failed"
     if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
+    reason = self.engine.bridge and self.engine.bridge.native_fault or reason
     self.state.code = type(reason) == "string" and reason:match("%[([a-z0-9%-]+)%]") or nil
     self.state.code = self.state.code or Diagnostic.classify_error(reason)
     self.state.cleanupComplete = not self.state.mutationStarted

@@ -613,11 +613,23 @@ function Native:_simulation_component(component,actor,world,source)
     return result
 end
 
+function Native:_simulation_object_array(values,label)
+    local ok,objects=self.bridge:_native_step(label,function()
+        local result={}
+        -- Function arrays contain borrowed RemoteUnrealParam slots, not direct UObject values.
+        for index,slot in ipairs(values) do result[index]=slot:get() end
+        return result
+    end)
+    if not ok then error(objects,0) end
+    return objects
+end
+
 function Native:_simulation_body_parts(actor,world)
-    local children={}
+    local child_slots={}
     local children_fn=self.bridge:_static_find("/Script/Engine.Actor:GetAllChildActors")
-    invoke_function(self,"simulation-child-actors",children_fn,actor,children,true)
-    if #children>16 then return nil,"child-actor-limit" end
+    invoke_function(self,"simulation-child-actors",children_fn,actor,child_slots,true)
+    if #child_slots>16 then return nil,"child-actor-limit" end
+    local children=self:_simulation_object_array(child_slots,"simulation-child-objects")
     local actors={actor}
     local function contains(list,value)
         for _,entry in ipairs(list) do if Cadence.same_checked(entry,value) then return true end end
@@ -647,9 +659,10 @@ function Native:_simulation_body_parts(actor,world)
     local fn=self.bridge:_static_find("/Script/Engine.Actor:GetComponentsByInterface")
     local parts,seen={},{}
     for _,owner in ipairs(actors) do
-        local values=invoke_function(self,"simulation-body-parts",fn,owner,interface)
-        if type(values)~="table" then error(SCOPE,0) end
-        if #values>64-#parts then return nil,"body-part-limit" end
+        local slots=invoke_function(self,"simulation-body-parts",fn,owner,interface)
+        if type(slots)~="table" then error(SCOPE,0) end
+        if #slots>64-#parts then return nil,"body-part-limit" end
+        local values=self:_simulation_object_array(slots,"simulation-body-objects")
         for _,part in ipairs(values) do
             if not Cadence.valid_checked(part) or not part:IsA("/Script/Engine.PrimitiveComponent") then
                 return nil,"invalid-body-part"

@@ -416,6 +416,14 @@ return function(test, equal, truthy)
         end
     end)
 
+    test("startup halt preserves the original bounded native fault over a generic retirement reason",function()
+        local f=fixture(Cadence.CASE)
+        f.runner.engine.bridge.native_fault="Native operation stopped at simulation-body-objects [non-callable-value]; do not retry."
+        f.runner:halt("Cadence lease restoration is unresolved")
+        equal(f.runner.state.status,"failed"); equal(f.runner.state.code,"non-callable-value")
+        equal(f.saved.code,"non-callable-value"); truthy(f.runner.stopped)
+    end)
+
     test("snapshot-support finalization is exact append-only disposition, never NPC or cadence replay",function()
         local run="20260909-214007-775097135892408489d264fb11408e6e"
         local state={schemaVersion=1,runId=run,case=Cadence.CASE,experiment=Cadence.CONTRACT,

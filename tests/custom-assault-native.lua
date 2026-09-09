@@ -1104,15 +1104,20 @@ return function(test, equal, truthy)
                 return setmetatable(object(),{__call=function(_,...) return callback(...) end})
             end
             local oldOutput
+            local function borrowed(values)
+                local slots={}
+                for index,value in ipairs(values) do slots[index]={get=function() return value end} end
+                return slots
+            end
             local childFn=callable(function(receiver,output,descendants)
                 equal(receiver,actor); equal(descendants,true); truthy(output~=oldOutput); equal(#output,0)
                 oldOutput=output
-                for index,value in ipairs(children) do output[index]=value end
+                for index,value in ipairs(borrowed(children)) do output[index]=value end
             end)
             local parentFn=callable(function(receiver) return parents[receiver] end)
             local partFn=callable(function(receiver,actualInterface)
                 equal(actualInterface,interface)
-                return parts[receiver]
+                return borrowed(parts[receiver])
             end)
             function engine.bridge:_static_find(path)
                 if path=="/Script/Engine.Actor:GetAllChildActors" then return childFn end
@@ -1140,6 +1145,25 @@ return function(test, equal, truthy)
             for index=1,17 do children[index]=child end
             result,reason=engine:_simulation_body_parts(actor,scope.world)
             equal(result,nil); equal(reason,"child-actor-limit")
+        end)
+    end)
+
+    test("simulation object arrays materialize all borrowed slots before UObject inspection",function()
+        fixture(function(engine)
+            local inspected=false
+            local first={IsValid=function() inspected=true; return true end}
+            local second={IsValid=function() inspected=true; return true end}
+            local reads=0
+            local function slot(object)
+                return {get=function()
+                    equal(inspected,false); reads=reads+1; return object
+                end}
+            end
+            local result=engine:_simulation_object_array({slot(first),slot(second)},"fixture-array-unwrap")
+            equal(reads,2); equal(result[1],first); equal(result[2],second)
+            truthy(result[1]:IsValid()); truthy(result[2]:IsValid())
+            equal(pcall(engine._simulation_object_array,engine,{{get=function() error("private slot failure") end}},
+                "fixture-array-fault"),false)
         end)
     end)
 
