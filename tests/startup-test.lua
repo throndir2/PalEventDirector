@@ -419,6 +419,7 @@ return function(test, equal, truthy)
             same=function(a,b) return a==b end,fname=function() return function(v) return v end end,
         }}
         function native:_call(_,owner,name,...) return owner[name](owner,...) end
+        function native:actor_world(which) equal(which,actor); return world end
         local support = Support.new(native,{scope})
         support.navigation=nav
         support.sourceClass={}

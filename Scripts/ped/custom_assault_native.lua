@@ -219,6 +219,7 @@ function Native:qualify()
     end
     self:_signature("/Script/NavigationSystem.NavigationPath:GetPathLength",{ReturnValue={"FloatProperty",0}})
     self:_signature("/Script/Engine.Actor:K2_GetRootComponent",{ReturnValue={"ObjectProperty",0}})
+    self:_signature("/Script/Engine.Actor:GetLevel",{ReturnValue={"ObjectProperty",0}})
     self:_signature("/Script/Engine.Pawn:GetMovementComponent",{ReturnValue={"ObjectProperty",0}})
     for _, method in ipairs({"GetScaledCapsuleRadius","GetScaledCapsuleHalfHeight"}) do
         self:_signature("/Script/Engine.CapsuleComponent:"..method,{ReturnValue={"FloatProperty",0}})
@@ -255,6 +256,16 @@ function Native:_class(path)
     if not self.a.valid(class) or class:IsClass() ~= true
         or class:GetFName():ToString():lower() ~= path:match("%.([^%.]+)$"):lower() then error(SCOPE, 0) end
     return class
+end
+
+function Native:actor_world(actor)
+    if not self.a.valid(actor) then return nil end
+    local fn=self.bridge:_static_find("/Script/Engine.Actor:GetLevel")
+    local level=self.a.unwrap(invoke_function(self,"custom-actor-level",fn,actor))
+    if not self.a.valid(level) or not level:IsA("/Script/Engine.Level") then return nil end
+    local world=self.a.unwrap(level.OwningWorld)
+    if not self.a.valid(world) or not world:IsA("/Script/Engine.World") then return nil,level end
+    return world,level
 end
 
 function Native:prepare(world)
@@ -954,7 +965,7 @@ end
 
 function Native:_detached_capture(record)
     if not self.a.valid(record.actor) or not record.actor:IsA("/Script/Pal.PalCharacter")
-        or not self.a.same(self:_call("detached-actor-world", record.actor, "GetWorld"), record.world) then return nil end
+        or not self.a.same(self:actor_world(record.actor), record.world) then return nil end
     local parameter = self:_call("detached-actor-parameter", self.utility, "GetIndividualCharacterParameterByActor", record.actor)
     if not self.a.valid(parameter) then return nil end
     local id = full_id(self:_call("detached-actor-id", parameter, "GetPalId"))
@@ -1024,7 +1035,7 @@ function Native:_owned_state(handle, member)
     end
     if not self.a.valid(actor) then return self:_absent_state(record) end
     if not actor:IsA("/Script/Pal.PalCharacter")
-        or not self.a.same(self:_call("actor-world", actor, "GetWorld"), record.world) then error(SCOPE, 0) end
+        or not self.a.same(self:actor_world(actor), record.world) then error(SCOPE, 0) end
     local component = self:_call("parameter-component", actor, "GetCharacterParameterComponent")
     if not self.a.valid(component) then return { phase = "pending" } end
     local captured = self:_call("capture-processing", component, "GetIsCapturedProcessing")
@@ -1115,7 +1126,7 @@ end
 
 function Native:_character_scope(actor, scope)
     if not self.a.valid(actor) or not actor:IsA("/Script/Pal.PalCharacter")
-        or not self.a.same(self:_call("defender-world", actor, "GetWorld"), scope.world) then return false end
+        or not self.a.same(self:actor_world(actor), scope.world) then return false end
     local parameter = self:_call("defender-parameter", self.utility, "GetIndividualCharacterParameterByActor", actor)
     if not self.a.valid(parameter) then return nil end
     local location = vector(self:_call("defender-location", actor, "K2_GetActorLocation"))
@@ -1412,7 +1423,7 @@ function Native:_despawn_status(record)
         actor = self:_call("cleanup-actor", handle, "TryGetIndividualActor")
         if self.a.valid(actor) then
             if not self.a.same(actor, record.actor) then error(IDENTITY, 0) end
-            if not self.a.same(self:_call("cleanup-world", actor, "GetWorld"), record.world) then error(SCOPE, 0) end
+            if not self.a.same(self:actor_world(actor), record.world) then error(SCOPE, 0) end
             local destroying = self:_call("cleanup-attached-destroying", actor, "IsActorBeingDestroyed")
             if type(destroying) ~= "boolean" then error(OWNERSHIP, 0) end
             if destroying then return "despawning" end

@@ -78,7 +78,7 @@ function Support:_record(index)
     local record = self.records[index]
     if not record or not self.a.valid(record.actor) or not record.actor:IsA("/Script/Engine.TargetPoint")
         or record.actor:GetFName():ToString() ~= record.name
-        or not self.a.same(self.native:_call("support-actor-world",record.actor,"GetWorld"),record.world) then error(ERROR,0) end
+        or not self.a.same(self.native:actor_world(record.actor),record.world) then error(ERROR,0) end
     return record
 end
 

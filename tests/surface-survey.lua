@@ -80,6 +80,18 @@ return function(test,equal,truthy)
             GetAllActorsOfClass=function(_,actual,_,out)
                 equal(actual,world)
                 for index=1,(f.missingWater and 9 or 10) do out[index]=actors[index] end
+                if f.foreignWater then
+                    out[11]=object({IsA=function() return true end,foreign=true})
+                elseif f.streamedWater then
+                    local extra=object({IsA=function(_,path) return path==WATER_CLASS end,streamed=true,
+                        GetWorld=function() error("shadowed world helper was used") end,bWorldOceanPlane=false})
+                    extra.SwimmingVolume=component(extra,"volume",{center={X=0,Y=0,Z=-500},extent={X=10000,Y=10000,Z=500}})
+                    extra.HierarchicalInstancedStaticMesh=component(extra,"surface",{
+                        StaticMesh=mesh,center={X=0,Y=0,Z=0},extent={X=10000,Y=10000,Z=0},
+                        GetInstanceCount=function() return 1 end,
+                    })
+                    out[11]=extra
+                end
             end,
         })
         local state=object({IsA=function() return true end,GetWorld=function() return world end})
@@ -92,6 +104,10 @@ return function(test,equal,truthy)
         native._signature=function() end
         native._class=function(_,path) equal(path,WATER_CLASS); return object() end
         native._call=function(_,_,owner,method,...) return owner[method](owner,...) end
+        native.actor_world=function(_,actor)
+            if actor.foreign then return object(),object() end
+            return world,actor.streamed and object() or persistent
+        end
         native.bridge._static_find=function(_,path)
             if path=="/Script/Engine.Default__KismetSystemLibrary" then return kismet end
             if path=="/Script/Engine.Default__GameplayStatics" then return gameplay end
@@ -124,6 +140,15 @@ return function(test,equal,truthy)
         equal(result.spawnQualified,false)
     end)
 
+    test("surface inventory includes supported streamed water while retaining the persistent certificate",function()
+        local f=fixture(); f.streamedWater=true
+        local result=f.survey:run()
+        equal(result.complete,true); equal(result.waterActors,11)
+        equal(result.persistentWaterActors,10); equal(result.otherLevelWaterActors,1)
+        equal(result.foreignWorldWaterActors,0); equal(result.worldlessWaterActors,0)
+        equal(result.spawnQualified,false)
+    end)
+
     test("surface survey checks both operative responses and never filters away water contact",function()
         local f=fixture()
         f.capsule={f.blocker}
@@ -147,5 +172,9 @@ return function(test,equal,truthy)
         equal(f.survey:run().code,"column-over-cap"); equal(f.queries,1)
         f=fixture(); f.clockStep=0.3
         equal(f.survey:run().code,"column-slow"); equal(f.queries,1)
+        f=fixture(); f.foreignWater=true
+        result=f.survey:run()
+        equal(result.code,"water-cohort-world-mismatch"); equal(result.foreignWorldWaterActors,1)
+        equal(result.persistentWaterActors,10); equal(f.queries,0)
     end)
 end

@@ -67,6 +67,7 @@ function Survey:_qualify()
             WorldContextObject={"ObjectProperty",0},ActorClass={"ClassProperty",8},OutActors={"ArrayProperty",16}}},
         {"/Script/Engine.GameplayStatics:GetWorldOriginLocation",{
             WorldContextObject={"ObjectProperty",0},ReturnValue={"StructProperty",8}}},
+        {"/Script/Engine.Actor:GetLevel",{ReturnValue={"ObjectProperty",0}}},
         {"/Script/Pal.PalUtility:GetWorldOceanPlaneZ",{WorldContextObject={"ObjectProperty",0},ReturnValue={"FloatProperty",8}}},
         {"/Script/Pal.PalUtility:GetPalGameStateInGame",{WorldContextObject={"ObjectProperty",0},ReturnValue={"ObjectProperty",8}}},
         {"/Script/Pal.PalUtility:GetEngineCollisionChannelByPalTraceType",{type={"EnumProperty",0},ReturnValue={"ByteProperty",1}}},
@@ -91,7 +92,7 @@ function Survey:_component(component)
     if not self.a.valid(component) or not component:IsA("/Script/Engine.PrimitiveComponent") then error(ERROR,0) end
     local owner=self:_call("owner",component,"GetOwner")
     if not self.a.valid(owner) or not self.a.same(self:_call("component-world",component,"GetWorld"),self.world)
-        or not self.a.same(self:_call("owner-world",owner,"GetWorld"),self.world) then error(ERROR,0) end
+        or not self.a.same(self.native:actor_world(owner),self.world) then error(ERROR,0) end
     local enabled=self:_call("collision-enabled",component,"GetCollisionEnabled")
     if enabled~=1 and enabled~=3 then return nil,"query-state-unqualified" end
     return {owner=owner,objectType=channel(self:_call("object-type",component,"GetCollisionObjectType"))}
@@ -134,7 +135,7 @@ function Survey:_environment()
     if not self.a.valid(persistent) then return false,"persistent-level-unavailable" end
     local game_state=self:_call("game-state",self.native.utility,"GetPalGameStateInGame",self.world)
     if not self.a.valid(game_state) or not game_state:IsA("/Script/Pal.PalGameStateInGame")
-        or not self.a.same(self:_call("game-state-world",game_state,"GetWorld"),self.world) then
+        or not self.a.same(self.native:actor_world(game_state),self.world) then
         return false,"game-state-unavailable"
     end
     local ocean_z=self:_call("ocean-height",self.native.utility,"GetWorldOceanPlaneZ",self.world)
@@ -145,25 +146,33 @@ function Survey:_environment()
     local total=count(actors,64)
     if not total then return false,"water-cohort-over-cap" end
     self.result.waterActors=total
-    local persistent_count,other_count,ocean_count=0,0,0
+    local persistent_count,other_count,ocean_count,foreign_count,worldless_count=0,0,0,0,0
+    local levels={}
     for index=1,total do
         local actor=self.a.unwrap(actors[index])
-        if not self.a.valid(actor) or not actor:IsA(WATER_CLASS)
-            or not self.a.same(self:_call("cohort-world",actor,"GetWorld"),self.world) then
-            return false,"water-cohort-scope"
+        if not self.a.valid(actor) or not actor:IsA(WATER_CLASS) then return false,"water-cohort-scope" end
+        local actor_world,level=self.native:actor_world(actor)
+        levels[index]=level
+        if not self.a.valid(actor_world) then
+            worldless_count=worldless_count+1
+        elseif not self.a.same(actor_world,self.world) then
+            foreign_count=foreign_count+1
+        else
+            if self.a.same(level,persistent) then persistent_count=persistent_count+1
+            else other_count=other_count+1 end
+            if type(actor.bWorldOceanPlane)~="boolean" then error(ERROR,0) end
+            if actor.bWorldOceanPlane then ocean_count=ocean_count+1 end
         end
-        if self.a.same(actor:GetOuter(),persistent) then persistent_count=persistent_count+1
-        else other_count=other_count+1 end
-        if type(actor.bWorldOceanPlane)~="boolean" then error(ERROR,0) end
-        if actor.bWorldOceanPlane then ocean_count=ocean_count+1 end
     end
     self.result.persistentWaterActors,self.result.otherLevelWaterActors,self.result.oceanActors=persistent_count,other_count,ocean_count
-    if total~=10 or persistent_count~=10 then return false,"water-cohort-incomplete" end
+    self.result.foreignWorldWaterActors,self.result.worldlessWaterActors=foreign_count,worldless_count
+    if foreign_count>0 or worldless_count>0 then return false,"water-cohort-world-mismatch" end
+    if persistent_count~=10 then return false,"water-cohort-incomplete" end
     self.waterChannel=channel(self:_call("water-channel",self.native.utility,"GetEngineCollisionChannelByPalTraceType",4))
-    local oceans,instance_counts=0,{}
+    local oceans,persistent_oceans,instance_counts=0,0,{}
     for index=1,total do
         local actor=self.a.unwrap(actors[index])
-        if not self.a.valid(actor) or not actor:IsA(WATER_CLASS) or not self.a.same(actor:GetOuter(),persistent) then
+        if not self.a.valid(actor) or not actor:IsA(WATER_CLASS) then
             return false,"water-cohort-scope"
         end
         for _,entry in ipairs(self.waters) do if self.a.same(entry.actor,actor) then return false,"water-cohort-duplicate" end end
@@ -181,17 +190,19 @@ function Survey:_environment()
         end
         local instances=self:_call("water-instances",surface,"GetInstanceCount")
         if not util.is_integer(instances) or instances<1 or instances>2000 then return false,"water-instances-unqualified" end
-        instance_counts[instances]=(instance_counts[instances] or 0)+1
+        if self.a.same(levels[index],persistent) then instance_counts[instances]=(instance_counts[instances] or 0)+1 end
         local ocean=actor.bWorldOceanPlane
         if type(ocean)~="boolean" then error(ERROR,0) end
         if ocean then
             oceans=oceans+1
+            if self.a.same(levels[index],persistent) then persistent_oceans=persistent_oceans+1 end
             local location=vector(self:_call("ocean-location",actor,"K2_GetActorLocation"))
             if math.abs(location.Z-ocean_z)>1 or math.abs(sb.center.Z-ocean_z)>1 then return false,"ocean-witness-mismatch" end
         end
         self.waters[#self.waters+1]={actor=actor,volume=volume,surface=surface,ocean=ocean,volumeBounds=vb,surfaceBounds=sb}
     end
-    if oceans~=1 or instance_counts[1]~=2 or instance_counts[4]~=6 or instance_counts[1681]~=1 or instance_counts[356]~=1 then
+    if oceans<1 or persistent_oceans~=1 or instance_counts[1]~=2 or instance_counts[4]~=6
+        or instance_counts[1681]~=1 or instance_counts[356]~=1 then
         return false,"water-cohort-geometry"
     end
     self.result.oceanWitness=true

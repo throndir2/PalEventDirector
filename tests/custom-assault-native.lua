@@ -21,7 +21,9 @@ return function(test, equal, truthy)
             if value.A == 0 and value.B == 0 and value.C == 0 and value.D == 0 then return nil end
             return table.concat({ value.A, value.B, value.C, value.D }, "-")
         end
-        local world = object()
+        local world = object({IsA=function(_,path) return path=="/Script/Engine.World" end})
+        local level=object({IsA=function(_,path) return path=="/Script/Engine.Level" end,OwningWorld=world})
+        f.levels={}
         local component = object({ GetIsCapturedProcessing = function() return f.capturing end })
         local actions = object({
             GetCurrentAction_BP = function() return f.current_action end,
@@ -128,6 +130,14 @@ return function(test, equal, truthy)
         function bridge:_static_find(path)
             if path=="/Script/Engine.Default__KismetSystemLibrary" then
                 return object({GetOuterObject=function() return f.current_action end})
+            end
+            if path=="/Script/Engine.Actor:GetLevel" then
+                return setmetatable(object(),{__call=function(_,which)
+                    if f.foreign_world and which==actor then
+                        return object({IsA=function() return true end,OwningWorld=object({IsA=function() return true end})})
+                    end
+                    return f.levels[which] or level
+                end})
             end
         end
         local engine = Native.new(bridge, {
@@ -294,6 +304,22 @@ return function(test, equal, truthy)
                     GetAIActionComponent = function() return { IsValid = function() return true end } end,
                     GetMyPalBlackboard = function() return { IsValid = function() return true end } end } end }
             equal(engine:inspect(member.handle, member), false)
+        end)
+    end)
+
+    test("actor scope uses reflected level ownership instead of the shadowed outer-world helpers",function()
+        fixture(function(engine,member,f,_,actor,scope)
+            actor.GetWorld=function() error("shadowed actor world helper was called") end
+            actor.GetLevel=function() error("shadowed actor level helper was called") end
+            local streamed={IsValid=function() return true end,IsA=function() return true end,OwningWorld=scope.world}
+            f.levels[actor]=streamed
+            local actual,level=engine:actor_world(actor)
+            equal(actual,scope.world); equal(level,streamed)
+            local ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state); equal(state.phase,"alive")
+            streamed.OwningWorld=nil
+            equal(engine:actor_world(actor),nil)
+            equal(engine:inspect(member.handle,member),false)
         end)
     end)
 
