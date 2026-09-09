@@ -234,6 +234,16 @@ function Native:qualify()
         type={"EnumProperty",0},ReturnValue={"ByteProperty",1},
     })
     self:_signature("/Script/Engine.PrimitiveComponent:GetCollisionEnabled",{ReturnValue={"ByteProperty",0}})
+    self:_signature("/Script/Engine.PrimitiveComponent:GetCollisionProfileName",{ReturnValue={"NameProperty",0}})
+    self:_signature("/Script/Pal.PalUtility:GetEngineCollisionChannelByPalObjectType",{
+        type={"EnumProperty",0},ReturnValue={"ByteProperty",1},
+    })
+    self:_signature("/Script/Pal.PalUtility:IsWildNPC",{
+        Actor={"ObjectProperty",0},ReturnValue={"BoolProperty",8},
+    })
+    for _,method in ipairs({"GetWalkableFloorAngleByPriority","GetInWaterRate"}) do
+        self:_signature("/Script/Pal.PalCharacterMovementComponent:"..method,{ReturnValue={"FloatProperty",0}})
+    end
     self:_signature("/Script/Engine.PrimitiveComponent:GetCollisionResponseToChannel",{
         Channel={"ByteProperty",0},ReturnValue={"ByteProperty",1},
     })
@@ -841,6 +851,31 @@ function Native:_placement_path(scope, member, position, goal)
         return {ready=false,reason="path-endpoint-mismatch"}
     end
     return {ready=true,pathPoints=count,pathLength=length,defaultNavDataUsed=shape.navContext==nil}
+end
+
+function Native:collision_profile(component)
+    local name=self.a.text(self:_call("collision-profile",component,"GetCollisionProfileName"))
+    if type(name)~="string" or #name>96 or not name:match("^[A-Za-z][A-Za-z0-9_]*$") then error(SCOPE,0) end
+    return name:lower()
+end
+
+function Native.player_pawn_collision_model(template,player_pawn)
+    if not util.is_integer(player_pawn) or player_pawn<0 or player_pawn>31
+        or type(template)~="table" or type(template.responses)~="table" or #template.responses~=32 then error(SCOPE,0) end
+    for index=1,32 do
+        local response=template.responses[index]
+        if not util.is_integer(response) or response<0 or response>2 then error(SCOPE,0) end
+    end
+    local model=util.deep_copy(template)
+    model.responses[player_pawn+1]=2
+    return model
+end
+
+function Native:placement_collision_model(template)
+    local player_pawn=self:_call("player-pawn-channel",self.utility,"GetEngineCollisionChannelByPalObjectType",2)
+    local model=Native.player_pawn_collision_model(template,player_pawn)
+    return model,{policy="conservative-player-pawn-block",palObjectSelector=2,playerPawnChannel=player_pawn,
+        templateResponse=template.responses[player_pawn+1],expectedResponse=2,modelOnly=true}
 end
 
 function Native:_placement_start_overlap(scope,shape,start)

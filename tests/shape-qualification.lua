@@ -22,9 +22,11 @@ return function(test,equal,truthy)
         local zero={A=0,B=0,C=0,D=0}
         local identity={PlayerUId=util.deep_copy(zero),InstanceId={A=1,B=2,C=3,D=4},DebugName=""}
         local world=object({IsA=function() return true end})
+        f.movementClass=object()
         local function character(cdo)
             local actor=object({IsA=function(_,path)
-                return path=="/Script/Pal.PalCharacter" or path==require("ped.bounties").pawn_class("BOSS_Hunter_Rifle")
+                return path=="/Script/Pal.PalCharacter" or path=="/Script/Pal.PalNPC"
+                    or path==require("ped.bounties").pawn_class("BOSS_Hunter_Rifle")
             end})
             local function component(kind,values)
                 local value=object(values)
@@ -40,10 +42,12 @@ return function(test,equal,truthy)
                 local value=component(kind,{
                     RelativeLocation={X=0,Y=0,Z=z},RelativeScale3D={X=1,Y=1,Z=1},RelativeRotation={Pitch=0,Yaw=0,Roll=0},
                     collisionEnabled=3,objectType=2,responses={},
+                    profileName="Pawn",
                 })
                 for index=1,32 do value.responses[index]=2 end
                 value.GetCollisionEnabled=function(self) return self.collisionEnabled end
                 value.GetCollisionObjectType=function(self) return self.objectType end
+                value.GetCollisionProfileName=function(self) return self.profileName end
                 value.GetCollisionResponseToChannel=function(self,channel)
                     truthy(channel>=0 and channel<=31)
                     return self.responses[channel+1]
@@ -59,6 +63,7 @@ return function(test,equal,truthy)
             end
             local root=primitive("/Script/Engine.CapsuleComponent",0)
             root.CapsuleRadius,root.CapsuleHalfHeight=30,30
+            root.responses[17]=cdo and 0 or 2
             root.GetScaledCapsuleRadius=function(self) return self.CapsuleRadius*self.RelativeScale3D.X end
             root.GetScaledCapsuleHalfHeight=function(self) return self.CapsuleHalfHeight*self.RelativeScale3D.Z end
             actor.CapsuleComponent,actor.RootComponent=root,root
@@ -68,9 +73,13 @@ return function(test,equal,truthy)
                 MeshCapsuleRadius=30,MeshCapsuleHalfHeight=95,MeshRelativeLocation={X=0,Y=0,Z=-97},
             })
             actor.CharacterMovement=component("/Script/Pal.PalCharacterMovementComponent",{
-                NavAgentProps={AgentRadius=-1,AgentHeight=-1,AgentStepHeight=-1},WalkableFloorZ=0.7,
-                bUpdateNavAgentWithOwnersCollision=true,UpdatedComponent=root,MovementMode=1,CustomMovementMode=0,
-                EnteredWaterFlag=0,WaterPlaneZ=0,InWaterRate=0,Velocity={X=0,Y=0,Z=0},
+                NavAgentProps={AgentRadius=cdo and -1 or 30,AgentHeight=cdo and -1 or 60,AgentStepHeight=-1},
+                WalkableFloorZ=cdo and 0.7071067690849304 or 0.017452383413910866,WalkableFloorAngle=cdo and 45 or 89,
+                bUpdateNavAgentWithOwnersCollision=true,UpdatedComponent=root,CharacterOwner=actor,MovementMode=1,CustomMovementMode=0,
+                EnteredWaterFlag=0,WaterPlaneZ=3.4028234663852886e38,InWaterRate=0.6499999761581421,Velocity={X=0,Y=0,Z=0},
+                GetClass=function() return f.movementClass end,
+                GetWalkableFloorAngleByPriority=function() return f.selectedAngle or 89 end,
+                GetInWaterRate=function() return f.computedImmersion or 0 end,
                 IsMovingOnGround=function() return true end,IsFalling=function() return false end,IsFlying=function() return false end,
                 GetCurrentAcceleration=function() return {X=0,Y=0,Z=0} end,
             })
@@ -127,7 +136,10 @@ return function(test,equal,truthy)
             address=function(value) return value and value.address end,guid=id,text=function(value) return value end,
             fname=function() return function(value) return value end end,
         })
-        engine.world,engine.utility=world,object()
+        engine.world,engine.utility=world,object({
+            GetEngineCollisionChannelByPalObjectType=function(_,selector) equal(selector,2); return f.playerPawnChannel or 16 end,
+            IsWildNPC=function(_,actor) equal(actor,f.actor); return f.wildNPC~=false end,
+        })
         engine.controllerClass=object()
         engine.characterManager=object({
             GetIndividualHandle=function(_,value)
@@ -148,7 +160,10 @@ return function(test,equal,truthy)
             return handle
         end})
         engine.actor_world=function() return world end
-        engine._class=function() return object({GetCDO=function() return f.cdo end}) end
+        engine._class=function(_,path)
+            if path=="/Script/Pal.PalCharacterMovementComponent" then return f.movementClass end
+            return object({GetCDO=function() return f.cdo end})
+        end
         engine._signature=function(_,name,expected)
             f.signatures[name]=expected
             return {ReturnValue={field={}}}
@@ -207,20 +222,28 @@ return function(test,equal,truthy)
         Survey.new=function(actual,actual_scope,options)
             equal(actual,engine); equal(actual_scope,scope)
             local probe={point=util.shallow_copy(options.point)}
+            local function template_collision()
+                return {enabled=f.cdo.CapsuleComponent.collisionEnabled,objectType=f.cdo.CapsuleComponent.objectType,
+                    profileName=f.cdo.CapsuleComponent.profileName:lower(),responses=util.deep_copy(f.cdo.CapsuleComponent.responses)}
+            end
             function probe:local_proxy(point,shape)
                 f.prefilters=f.prefilters+1
-                if f.local_proxy_result then return f.local_proxy_result(point,shape,f.prefilters) end
-                return {complete=true,classification="proxy-clear",spawnQualified=false,templateOnly=true,localOnly=true}
+                local result=f.local_proxy_result and f.local_proxy_result(point,shape,f.prefilters)
+                    or {complete=true,classification="proxy-clear",spawnQualified=false,templateOnly=true,localOnly=true}
+                local _,policy=engine:placement_collision_model(template_collision())
+                result.collisionPolicy=result.collisionPolicy or policy
+                return result
             end
             function probe:run()
                 f.surveys=f.surveys+1
                 if f.on_survey then f.on_survey() end
                 local measured=engine:_placement_shape("BOSS_Hunter_Rifle")
-                self.shape,self.sourceCollision=measured,{
-                    enabled=f.cdo.CapsuleComponent.collisionEnabled,objectType=f.cdo.CapsuleComponent.objectType,
-                    responses=util.deep_copy(f.cdo.CapsuleComponent.responses)}
+                self.shape,self.sourceCollision=measured,template_collision()
+                local policy
+                self.effectiveSourceCollision,policy=engine:placement_collision_model(self.sourceCollision)
                 return {complete=true,classification=f.survey_classification or "proxy-clear",
-                    spawnQualified=false,templateOnly=true,bodyProxy=util.deep_copy(measured.bodyProxy)}
+                    spawnQualified=false,templateOnly=true,bodyProxy=util.deep_copy(measured.bodyProxy),collisionPolicy=policy,
+                    columnOceanWitness=true,footAboveWaterCm=967,waterContacts=0,mutualBlockers=0,unqualifiedBodies=0}
             end
             return probe
         end
@@ -712,7 +735,7 @@ return function(test,equal,truthy)
             equal(result.instanceOnly,true); equal(result.spawnQualified,false)
             equal(result.actual.root.radius,30); equal(result.actual.body.halfHeight,95)
             equal(result.actual.mesh.relativeLocation.Z,-33); equal(result.actual.body.authoredOffset.Z,-97)
-            equal(result.actual.nav.radius,-1); equal(result.actual.movement.grounded,true)
+            equal(result.actual.nav.radius,30); equal(result.actual.nav.height,60); equal(result.actual.movement.grounded,true)
             equal(result.actual.water.cachedInstanceObservation,true); equal(result.actual.water.enteredFlag,0)
             equal(result.actual.measuredProxy.halfHeight,95); equal(result.actual.measuredProxy.centerOffsetZ,62)
             local cleaned,outcome=f.engine:despawn(f.scope,f.member)
@@ -752,7 +775,143 @@ return function(test,equal,truthy)
             end
             local fields=f.signatures["/Script/Pal.PalCharacterParameterComponent:GetCapsuleRadius"]
             equal(fields.ReturnValue[1],"FloatProperty"); equal(fields.ReturnValue[2],0)
+            for _,method in ipairs({"GetInWaterRate","GetWalkableFloorAngleByPriority"}) do
+                fields=f.signatures["/Script/Pal.PalCharacterMovementComponent:"..method]
+                equal(fields.ReturnValue[1],"FloatProperty"); equal(fields.ReturnValue[2],0)
+            end
+            fields=f.signatures["/Script/Pal.PalUtility:IsWildNPC"]
+            equal(fields.Actor[1],"ObjectProperty"); equal(fields.Actor[2],0)
+            equal(fields.ReturnValue[1],"BoolProperty"); equal(fields.ReturnValue[2],8)
+            fields=f.signatures["/Script/Pal.PalUtility:GetEngineCollisionChannelByPalObjectType"]
+            equal(fields.type[1],"EnumProperty"); equal(fields.type[2],0); equal(fields.ReturnValue[2],1)
+            fields=f.signatures["/Script/Engine.PrimitiveComponent:GetCollisionProfileName"]
+            equal(fields.ReturnValue[1],"NameProperty"); equal(fields.ReturnValue[2],0)
             equal(f.spawns,0)
+        end)
+    end)
+
+    test("both initialized samples match derived policies while configuration and no-plane cache remain distinct",function()
+        fixture(function(f)
+            local placement=f:prepare()
+            truthy(placement.ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            for _=1,2 do
+                local ok,result=f:observe()
+                truthy(ok,result); equal(result.comparison,"MATCH"); equal(result.spawnQualified,false); equal(result.instanceOnly,true)
+                equal(result.actual.initializationPolicy.isWildNPC,true)
+                equal(result.actual.initializationPolicy.playerPawnChannel,16)
+                equal(result.expectedInitialization.nav.templateRadius,-1); equal(result.expectedInitialization.nav.radius,30)
+                equal(result.expectedInitialization.nav.height,60); equal(result.expectedInitialization.nav.stepHeight,-1)
+                equal(result.expectedInitialization.rootResponse.templateResponse,0)
+                equal(result.expectedInitialization.rootResponse.expectedResponse,2)
+                truthy(math.abs(result.expectedInitialization.slope.expectedFloorZ-0.017452383413910866)<0.0000002)
+                equal(result.actual.water.configuredImmersionTarget,0.6499999761581421)
+                equal(result.actual.water.computedImmersionRate,0); equal(result.actual.water.cachedPlaneAvailable,false)
+                equal(result.actual.water.cachedPlaneStatus,"NO_CACHED_PLANE"); equal(result.actual.water.cachedPlaneZ,nil)
+                f.now=f.now+1
+            end
+            equal(f.cdo.CapsuleComponent.responses[17],0)
+            equal(f.cdo.CharacterMovement.WalkableFloorAngle,45)
+            equal(placement.plannedGeometry.nav.walkableZ,0.7071067690849304)
+        end)
+    end)
+
+    test("unexpected initialized response navigation slope and water changes remain mismatches",function()
+        for _,change in ipairs({
+            function(f) f.playerPawnChannel=17 end,
+            function(f) f.actor.CapsuleComponent.responses[18]=1 end,
+            function(f) f.actor.CapsuleComponent.responses[17]=0 end,
+            function(f) f.actor.CapsuleComponent.collisionEnabled=1 end,
+            function(f) f.actor.CharacterMovement.NavAgentProps.AgentRadius=31 end,
+            function(f) f.actor.CharacterMovement.NavAgentProps.AgentHeight=61 end,
+            function(f) f.actor.CharacterMovement.NavAgentProps.AgentStepHeight=0 end,
+            function(f) f.actor.CharacterMovement.bUpdateNavAgentWithOwnersCollision=false end,
+            function(f) f.actor.CharacterMovement.WalkableFloorZ=0.7071067690849304 end,
+            function(f) f.actor.CharacterMovement.WalkableFloorAngle=88 end,
+            function(f) f.actor.CharacterMovement.InWaterRate=0.8 end,
+            function(f) f.computedImmersion=0.65 end,
+        }) do
+            fixture(function(f)
+                truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+                change(f)
+                local ok,result=f:observe()
+                truthy(ok,result); equal(result.comparison,"MISMATCH"); truthy(#result.reasons>0)
+                truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
+            end)
+        end
+    end)
+
+    test("initialized policy applicability excludes nonwild profiles and unqualified movement ownership",function()
+        for _,change in ipairs({
+            function(f) f.wildNPC=false end,
+            function(f) f.actor.CapsuleComponent.profileName="Pawn_NoDamageFlyPal" end,
+            function(f) f.actor.CapsuleComponent.profileName="PawnParts_NonBlock" end,
+            function(f) f.actor.CharacterMovement.CharacterOwner=nil end,
+            function(f) f.actor.CharacterMovement.GetClass=function() return {} end end,
+            function(f) f.engine.shapeQualification.drySceneQualified=false end,
+        }) do
+            fixture(function(f)
+                truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+                change(f)
+                local ok,result=f:observe()
+                truthy(ok,result); equal(result.comparison,"UNSUPPORTED")
+                truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
+            end)
+        end
+        fixture(function(f)
+            f.cdo.CharacterMovement.bUpdateNavAgentWithOwnersCollision=false
+            f.actor.CharacterMovement.bUpdateNavAgentWithOwnersCollision=false
+            truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            local ok,result=f:observe()
+            truthy(ok,result); equal(result.comparison,"UNSUPPORTED"); equal(result.reasons[1],"custom-nav-agent-policy")
+        end)
+    end)
+
+    test("entered water with the unavailable plane sentinel never passes from computed zero",function()
+        fixture(function(f)
+            truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            f.actor.CharacterMovement.EnteredWaterFlag=2
+            local ok,result=f:observe()
+            truthy(ok,result); equal(result.comparison,"UNSUPPORTED"); equal(result.reasons[1],"entered-water-without-cached-plane")
+            equal(result.actual.water.computedImmersionRate,0); equal(result.actual.water.cachedPlaneStatus,"NO_CACHED_PLANE")
+            truthy(result.expectedInitialization)
+        end)
+    end)
+
+    test("active slope and PlayerPawn mapping are derived rather than hardcoded to the prior sample",function()
+        fixture(function(f)
+            f.playerPawnChannel=18
+            f.cdo.CapsuleComponent.responses[19]=0
+            f.actor.CapsuleComponent.responses[17]=0
+            f.actor.CapsuleComponent.responses[19]=2
+            f.selectedAngle=60
+            f.actor.CharacterMovement.WalkableFloorAngle=60
+            f.actor.CharacterMovement.WalkableFloorZ=0.5
+            truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            local ok,result=f:observe()
+            truthy(ok,result); equal(result.comparison,"MATCH")
+            equal(result.expectedInitialization.rootResponse.playerPawnChannel,18)
+            equal(result.expectedInitialization.slope.selectedAngleDegrees,60)
+        end)
+        fixture(function(f)
+            truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            local ok,result=f:observe()
+            truthy(ok,result); equal(result.comparison,"MATCH")
+            f.selectedAngle=60
+            f.actor.CharacterMovement.WalkableFloorAngle=60
+            f.actor.CharacterMovement.WalkableFloorZ=0.5
+            ok,result=f:observe()
+            truthy(ok,result); equal(result.comparison,"MISMATCH"); equal(result.reasons[1],"initialized-slope-policy-changed")
+        end)
+    end)
+
+    test("a changed PlayerPawn model between local and final clearance cannot mint a spawn proof",function()
+        fixture(function(f)
+            f.local_proxy_result=function()
+                return {complete=true,localOnly=true,templateOnly=true,spawnQualified=false,classification="proxy-clear",
+                    collisionPolicy={playerPawnChannel=17}}
+            end
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.reason,"shape-template-changed"); equal(f.spawns,0)
         end)
     end)
 
@@ -765,7 +924,7 @@ return function(test,equal,truthy)
             function(f) f.actor.CapsuleComponent.worldScale={X=2,Y=1,Z=1} end,
             function(f) f.actor.Mesh.RelativeScale3D.Z=2 end,
             function(f) f.actor.CapsuleComponent.responses[1]=1 end,
-            function(f) f.actor.CharacterMovement.EnteredWaterFlag=1 end,
+            function(f) f.actor.CharacterMovement.EnteredWaterFlag=1; f.actor.CharacterMovement.WaterPlaneZ=0 end,
             function(f) f.actor.CapsuleComponent.RelativeLocation.Z=f.actor.CapsuleComponent.RelativeLocation.Z+20 end,
         }) do
             fixture(function(f)

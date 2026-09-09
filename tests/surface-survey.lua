@@ -1,5 +1,6 @@
 return function(test,equal,truthy)
     local Survey=require("ped.surface_survey")
+    local Native=require("ped.custom_assault_native")
     local WATER_CLASS="/Game/Others/FluidInteractionTool/Blueprints/NotNeeded/BP_SimpleWater.BP_SimpleWater_C"
     local function fixture()
         local f={queries=0,clockValue=0,columnQueries=0,inventoryQueries=0,outputs={}}
@@ -104,12 +105,15 @@ return function(test,equal,truthy)
         local native={utility=object({
             GetPalGameStateInGame=function() return state end,GetWorldOceanPlaneZ=function() return 0 end,
             GetEngineCollisionChannelByPalTraceType=function(_,kind) equal(kind,4); return 7 end,
+            GetEngineCollisionChannelByPalObjectType=function(_,kind) equal(kind,2); return f.playerPawnChannel or 16 end,
         }),bridge={}}
         native.a={valid=function(v) return type(v)=="table" and v.IsValid and v:IsValid() end,
-            same=function(a,b) return a==b end,unwrap=function(v) return v end}
+            same=function(a,b) return a==b end,unwrap=function(v) return v end,text=function(v) return v end}
         native._signature=function() end
         native._class=function(_,path) equal(path,WATER_CLASS); return object() end
         native._call=function(_,_,owner,method,...) return owner[method](owner,...) end
+        native.collision_profile=Native.collision_profile
+        native.placement_collision_model=Native.placement_collision_model
         native.actor_world=function(_,actor)
             if actor.foreign then return object(),object() end
             return world,actor.streamed and object() or persistent
@@ -120,6 +124,7 @@ return function(test,equal,truthy)
             return mesh
         end
         local source=object({GetCollisionEnabled=function() return 3 end,GetCollisionObjectType=function() return 2 end,
+            GetCollisionProfileName=function() return "Pawn" end,
             GetCollisionResponseToChannel=function() return f.ignoreSource and 0 or 2 end})
         native._placement_shape=function() return {capsule=source,bodyProxy={templateOnly=true,
             radius=30,halfHeight=95,centerOffsetZ=62,lowerFootOffsetZ=-33}} end
@@ -174,6 +179,25 @@ return function(test,equal,truthy)
         end
         f=fixture(); f.capsule={f.blocker}; f.ignoreSource=true
         equal(f:local_probe().classification,"proxy-clear")
+    end)
+
+    test("local and full proxy models conservatively overlay the resolved PlayerPawn channel without setters",function()
+        local f=fixture()
+        f.ignoreSource=true; f.blocker.objectType=16; f.capsule={f.blocker}
+        local result,probe=f:local_probe()
+        equal(result.classification,"blocked"); equal(result.collisionPolicy.palObjectSelector,2)
+        equal(result.collisionPolicy.playerPawnChannel,16); equal(result.collisionPolicy.templateResponse,0)
+        equal(probe.sourceCollision.responses[17],0); equal(probe.effectiveSourceCollision.responses[17],2)
+        local full=f.survey:run()
+        equal(full.classification,"blocked"); equal(full.collisionPolicy.playerPawnChannel,16)
+        equal(f.survey.sourceCollision.responses[17],0); equal(f.survey.effectiveSourceCollision.responses[17],2)
+        f=fixture()
+        f.ignoreSource=true; f.playerPawnChannel=18; f.blocker.objectType=16; f.capsule={f.blocker}
+        equal(f:local_probe().classification,"proxy-clear")
+        f.blocker.objectType=18
+        equal(f:local_probe().classification,"blocked")
+        f=fixture(); f.playerPawnChannel=32
+        equal(pcall(f.local_probe,f),false); equal(f.queries,0)
     end)
 
     test("local proxy vetoes water volumes and surfaces even when root responses ignore them",function()

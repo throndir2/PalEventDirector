@@ -63,6 +63,8 @@ function Survey:_qualify_local()
         {"/Script/Pal.PalUtility:GetEngineCollisionChannelByPalTraceType",{type={"EnumProperty",0},ReturnValue={"ByteProperty",1}}},
         {"/Script/Engine.PrimitiveComponent:GetCollisionEnabled",{ReturnValue={"ByteProperty",0}}},
         {"/Script/Engine.PrimitiveComponent:GetCollisionObjectType",{ReturnValue={"ByteProperty",0}}},
+        {"/Script/Engine.PrimitiveComponent:GetCollisionProfileName",{ReturnValue={"NameProperty",0}}},
+        {"/Script/Pal.PalUtility:GetEngineCollisionChannelByPalObjectType",{type={"EnumProperty",0},ReturnValue={"ByteProperty",1}}},
         {"/Script/Engine.PrimitiveComponent:GetCollisionResponseToChannel",{Channel={"ByteProperty",0},ReturnValue={"ByteProperty",1}}},
     }) do n:_signature(entry[1],entry[2]) end
     self.kismet=self.bridge:_static_find("/Script/Engine.Default__KismetSystemLibrary")
@@ -271,8 +273,9 @@ function Survey:_local_proxy(point,shape)
     local source=self:_call("source-enabled",shape.capsule,"GetCollisionEnabled")
     if source~=1 and source~=3 then return self:_stop("source-response-unqualified") end
     local source_type=channel(self:_call("source-type",shape.capsule,"GetCollisionObjectType"))
-    self.sourceCollision={enabled=source,objectType=source_type,responses={}}
+    self.sourceCollision={enabled=source,objectType=source_type,profileName=self.native:collision_profile(shape.capsule),responses={}}
     for to=0,31 do self.sourceCollision.responses[to+1]=self:_response(shape.capsule,to) end
+    self.effectiveSourceCollision,self.result.collisionPolicy=self.native:placement_collision_model(self.sourceCollision)
     local queries,center={},vector(point)
     for index=0,31 do queries[index+1]=index end
     center.Z=center.Z+proxy.centerOffsetZ
@@ -295,7 +298,7 @@ function Survey:_local_proxy(point,shape)
             if kind then contacts,counts.waterContacts=contacts+1,counts.waterContacts+1 end
             if category~="shape" and category~="staticMesh" then
                 if not kind then unknown,counts.unqualifiedBodies=unknown+1,counts.unqualifiedBodies+1 end
-            elseif self.sourceCollision.responses[info.objectType+1]==2 and self:_response(component,source_type)==2 then
+            elseif self.effectiveSourceCollision.responses[info.objectType+1]==2 and self:_response(component,source_type)==2 then
                 blockers,counts.mutualBlockers=blockers+1,counts.mutualBlockers+1
             end
         end

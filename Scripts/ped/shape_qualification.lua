@@ -11,6 +11,15 @@ Shape.PREMISE = "Authored proxies are the controlled test envelope, not a univer
 local ERROR = "Custom assault scope is invalid"
 local CHARACTER = "BOSS_Hunter_Rifle"
 local AXES = {"X","Y","Z"}
+local NO_CACHED_PLANE = 3.4028234663852886e38
+
+local function float32(value)
+    return (string.unpack("<f",string.pack("<f",value)))
+end
+
+local function floor_z(angle)
+    return float32(math.cos(float32(float32(angle)*float32(math.pi/180))))
+end
 
 local function finite(value)
     return type(value)=="number" and value==value and math.abs(value)<math.huge
@@ -116,13 +125,21 @@ function Shape:_qualify()
     self.native:_signature("/Script/Pal.PalCharacterParameterComponent:GetCapsuleRadius",{ReturnValue={"FloatProperty",0}})
     self.native:_signature("/Script/Engine.PrimitiveComponent:GetCollisionEnabled",{ReturnValue={"ByteProperty",0}})
     self.native:_signature("/Script/Engine.PrimitiveComponent:GetCollisionObjectType",{ReturnValue={"ByteProperty",0}})
+    self.native:_signature("/Script/Engine.PrimitiveComponent:GetCollisionProfileName",{ReturnValue={"NameProperty",0}})
+    self.native:_signature("/Script/Pal.PalUtility:GetEngineCollisionChannelByPalObjectType",{
+        type={"EnumProperty",0},ReturnValue={"ByteProperty",1}})
+    self.native:_signature("/Script/Pal.PalUtility:IsWildNPC",{Actor={"ObjectProperty",0},ReturnValue={"BoolProperty",8}})
+    for _,method in ipairs({"GetWalkableFloorAngleByPriority","GetInWaterRate"}) do
+        self.native:_signature("/Script/Pal.PalCharacterMovementComponent:"..method,{ReturnValue={"FloatProperty",0}})
+    end
     self.native:_signature("/Script/Engine.PrimitiveComponent:GetCollisionResponseToChannel",{
         Channel={"ByteProperty",0},ReturnValue={"ByteProperty",1}})
 end
 
 function Shape:_collision(component)
     local result={enabled=self:_call("collision-enabled",component,"GetCollisionEnabled"),
-        objectType=self:_call("collision-type",component,"GetCollisionObjectType"),responses={}}
+        objectType=self:_call("collision-type",component,"GetCollisionObjectType"),
+        profileName=self.native:collision_profile(component),responses={}}
     if not util.is_integer(result.enabled) or result.enabled<0 or result.enabled>3
         or not util.is_integer(result.objectType) or result.objectType<0 or result.objectType>31 then return nil end
     for channel=0,31 do
@@ -153,6 +170,9 @@ function Shape:_geometry(actor,actual)
         or self.a.valid(self:_field(capsule,"AttachParent"))
         or not self.a.same(self:_field(mesh,"AttachParent"),capsule) then return nil,"component-attachment" end
     local result={root={},mesh={},body={},nav={}}
+    if actual and not self.a.same(movement:GetClass(),self.native:_class("/Script/Pal.PalCharacterMovementComponent")) then
+        return nil,"movement-policy-class"
+    end
     for _,pair in ipairs({{capsule,result.root},{mesh,result.mesh}}) do
         local component,out=pair[1],pair[2]
         out.relativeLocation=vector(self:_field(component,"RelativeLocation"))
@@ -190,16 +210,22 @@ function Shape:_geometry(actor,actual)
     end
     result.nav.updateFromCollision=self:_field(movement,"bUpdateNavAgentWithOwnersCollision")
     result.nav.walkableZ=self:_field(movement,"WalkableFloorZ")
+    result.nav.walkableAngle=self:_field(movement,"WalkableFloorAngle")
     if type(result.nav.updateFromCollision)~="boolean" or not finite(result.nav.walkableZ) then
         result.nav.updateFromCollision,result.nav.walkableZ=nil,nil
         return nil,"nav-agent-properties",result
     end
+    if not finite(result.nav.walkableAngle) then result.nav.walkableAngle=nil; return nil,"nav-angle-unreadable",result end
+    local configured=self:_field(movement,"InWaterRate")
+    if not finite(configured) or configured<0 or configured>1 then return nil,"water-configuration-unreadable",result end
+    result.water={configuredImmersionTarget=configured}
     result.updatedRoot=self.a.same(self:_field(movement,"UpdatedComponent"),capsule)
     return result,movement
 end
 
 local function same_collision(a,b)
-    if not a or not b or a.enabled~=b.enabled or a.objectType~=b.objectType or #a.responses~=32 or #b.responses~=32 then return false end
+    if not a or not b or a.enabled~=b.enabled or a.objectType~=b.objectType or a.profileName~=b.profileName
+        or #a.responses~=32 or #b.responses~=32 then return false end
     for index=1,32 do if a.responses[index]~=b.responses[index] then return false end end
     return true
 end
@@ -311,6 +337,8 @@ function Shape:prepare(scope,member)
     if not shape then return blocked(reason or "shape-template-unavailable") end
     local planned,why=self:_geometry(shape.cdo,false)
     if not planned then return blocked("shape-template-"..why) end
+    local collision_model,collision_policy=n:placement_collision_model(planned.root.collision)
+    planned.initialization={placementCollisionPolicy=collision_policy,placementRootCollision=collision_model}
     local unit,zero={X=1,Y=1,Z=1},{X=0,Y=0,Z=0}
     if not same_vector(planned.root.relativeScale,unit,0.001) or not same_vector(planned.mesh.relativeScale,unit,0.001)
         or not same_vector(planned.root.relativeLocation,zero,0.001)
@@ -334,6 +362,10 @@ function Shape:prepare(scope,member)
         return blocked("shape-template-changed",result)
     end
     if not same_collision(planned.root.collision,survey.sourceCollision)
+        or not same_collision(collision_model,survey.effectiveSourceCollision)
+        or not result.collisionPolicy or result.collisionPolicy.playerPawnChannel~=collision_policy.playerPawnChannel
+        or not self.selectedLocalProxy.collisionPolicy
+        or self.selectedLocalProxy.collisionPolicy.playerPawnChannel~=collision_policy.playerPawnChannel
         or not close(planned.root.scaledRadius,survey.shape.radius,0.001)
         or not close(planned.root.scaledHalfHeight,survey.shape.halfHeight,0.001)
         or not close(planned.body.radius,proxy.bodyRadius,0.001)
@@ -343,6 +375,10 @@ function Shape:prepare(scope,member)
         return blocked("shape-template-changed",result)
     end
     self.point,self.goal,self.planned=vector(point),vector(goal),planned
+    self.drySceneQualified=result.complete==true and result.columnOceanWitness==true
+        and finite(result.footAboveWaterCm) and result.footAboveWaterCm>10
+        and result.waterContacts==0 and result.mutualBlockers==0 and result.unqualifiedBodies==0
+    if not self.drySceneQualified then return blocked("shape-water-evidence-unavailable",result) end
     self.proxy=util.deep_copy(proxy)
     self.preparedAt=n.bridge.clock()
     if not finite(self.preparedAt) then error(ERROR,0) end
@@ -372,6 +408,29 @@ function Shape:validate_observation(scope,member)
 end
 
 function Shape.reconcile(planned,actual)
+    local policy=actual.initializationPolicy
+    if not policy or policy.isWildNPC~=true or policy.nativeNPC~=true or policy.rootProfileExcluded~=false then
+        return "UNSUPPORTED",{"wild-npc-response-policy-unqualified"}
+    end
+    if planned.nav.updateFromCollision~=true then return "UNSUPPORTED",{"custom-nav-agent-policy"} end
+    if not finite(policy.selectedWalkableAngle) or policy.selectedWalkableAngle<0 or policy.selectedWalkableAngle>90 then
+        return "UNSUPPORTED",{"selected-slope-policy-unavailable"}
+    end
+    if policy.drySceneQualified~=true then return "UNSUPPORTED",{"independent-dry-scene-unqualified"} end
+    local expected_root=require("ped.custom_assault_native").player_pawn_collision_model(planned.root.collision,policy.playerPawnChannel)
+    local expected_z=floor_z(policy.selectedWalkableAngle)
+    local expected={
+        nav={policy="collision-derived-initialization",templateRadius=planned.nav.radius,templateHeight=planned.nav.height,
+            radius=actual.root.scaledRadius,height=2*actual.root.scaledHalfHeight,stepHeight=planned.nav.stepHeight},
+        rootResponse={policy="eligible-wild-npc-player-pawn-block",palObjectSelector=2,playerPawnChannel=policy.playerPawnChannel,
+            templateResponse=planned.root.collision.responses[policy.playerPawnChannel+1],expectedResponse=2},
+        slope={policy="active-priority-selected-angle",selectedAngleDegrees=policy.selectedWalkableAngle,
+            templateFloorZ=planned.nav.walkableZ,expectedFloorZ=expected_z},
+        water={configuredImmersionTarget=planned.water.configuredImmersionTarget,computedWhenNoEnteredFlags=0},
+    }
+    if actual.water.enteredFlag~=0 and not actual.water.cachedPlaneAvailable then
+        return "UNSUPPORTED",{"entered-water-without-cached-plane"},expected
+    end
     local differences={}
     local function check(ok,field) if not ok then differences[#differences+1]=field end end
     for _,field in ipairs({"radius","halfHeight","scaledRadius","scaledHalfHeight"}) do
@@ -384,17 +443,19 @@ function Shape.reconcile(planned,actual)
             world_scale[key]=planned.root.relativeScale[key]*(part=="mesh" and planned.mesh.relativeScale[key] or 1)
         end
         check(same_vector(world_scale,actual[part].worldScale,0.001),part.."-world-scale")
-        check(same_collision(planned[part].collision,actual[part].collision),part.."-collision")
+        check(same_collision(part=="root" and expected_root or planned[part].collision,actual[part].collision),part.."-collision")
     end
     check(same_vector(planned.mesh.relativeLocation,actual.mesh.relativeLocation,0.1),"mesh-relative-location")
     check(same_vector(planned.mesh.relativeRotation,actual.mesh.relativeRotation,0.1,{"Pitch","Yaw","Roll"}),"mesh-relative-rotation")
     for _,field in ipairs({"radius","halfHeight"}) do check(close(planned.body[field],actual.body[field],0.1),"body-"..field) end
     check(same_vector(planned.body.authoredOffset,actual.body.authoredOffset,0.1),"body-authored-offset")
-    for _,field in ipairs({"radius","height","stepHeight"}) do
-        check(close(planned.nav[field],actual.nav[field],0.1),"nav-"..field)
-    end
-    check(close(planned.nav.walkableZ,actual.nav.walkableZ,0.001),"nav-walkableZ")
+    check(actual.nav.radius>0 and close(expected.nav.radius,actual.nav.radius,0.01),"nav-radius-from-collision")
+    check(actual.nav.height>0 and close(expected.nav.height,actual.nav.height,0.01),"nav-height-from-collision")
+    check(close(planned.nav.stepHeight,actual.nav.stepHeight,0.001),"nav-stepHeight")
+    check(close(policy.selectedWalkableAngle,actual.nav.walkableAngle,0.0001),"nav-selected-walkable-angle")
+    check(close(expected_z,actual.nav.walkableZ,0.0000002),"nav-selected-walkableZ")
     check(planned.nav.updateFromCollision==actual.nav.updateFromCollision,"nav-update-from-collision")
+    check(policy.playerPawnChannel==planned.initialization.placementCollisionPolicy.playerPawnChannel,"player-pawn-channel-mapping")
     check(actual.updatedRoot==true,"movement-updated-root")
     check(close(actual.root.worldRotation.Pitch,0,0.1) and close(actual.root.worldRotation.Roll,0,0.1),"root-upright")
     check(same_vector(actual.root.relativeLocation,actual.root.worldLocation,0.1),"root-relative-world")
@@ -402,10 +463,11 @@ function Shape.reconcile(planned,actual)
     check(actual.displacementCm<=5,"spawn-displacement")
     check(close(actual.parameterRadius,planned.body.radius,0.1),"initialized-parameter-radius")
     check(actual.movement.grounded and not actual.movement.falling and not actual.movement.flying,"grounded")
-    check(actual.water.enteredFlag==0 and actual.water.inWaterRate==0,"actual-water-cache")
-    if #differences>0 then return "MISMATCH",differences end
-    if actual.currentActionPresent then return "UNSUPPORTED",{"stock-action-present"} end
-    return "MATCH",differences
+    check(close(planned.water.configuredImmersionTarget,actual.water.configuredImmersionTarget,0.000001),"configured-immersion-target")
+    check(actual.water.enteredFlag==0 and actual.water.computedImmersionRate==0,"actual-water-state")
+    if #differences>0 then return "MISMATCH",differences,expected end
+    if actual.currentActionPresent then return "UNSUPPORTED",{"stock-action-present"},expected end
+    return "MATCH",differences,expected
 end
 
 function Shape:observe(state)
@@ -419,12 +481,29 @@ function Shape:observe(state)
     if not actual.actorLocation then result.reasons={"actor-location"}; return result end
     actual.displacementCm=distance(actual.actorLocation,self.point)
     actual.movement=self.native:_movement_observation(state)
-    local entered,rate,plane=self:_field(movement,"EnteredWaterFlag"),self:_field(movement,"InWaterRate"),self:_field(movement,"WaterPlaneZ")
-    actual.water={cachedInstanceObservation=true}
-    if not util.is_integer(entered) or entered<0 or entered>255 or not finite(rate) or not finite(plane) then
+    if not self.a.same(self:_field(movement,"CharacterOwner"),state.actor) then
+        result.reasons={"movement-character-owner"}; return result
+    end
+    local entered,plane=self:_field(movement,"EnteredWaterFlag"),self:_field(movement,"WaterPlaneZ")
+    actual.water.cachedInstanceObservation=true
+    if not util.is_integer(entered) or entered<0 or entered>255 or not finite(plane) then
         result.reasons={"instance-water-cache-unreadable"}; return result
     end
-    actual.water.enteredFlag,actual.water.inWaterRate,actual.water.planeZ=entered,rate,plane
+    actual.water.enteredFlag=entered
+    actual.water.cachedPlaneAvailable=plane~=NO_CACHED_PLANE
+    actual.water.cachedPlaneStatus=actual.water.cachedPlaneAvailable and "AVAILABLE" or "NO_CACHED_PLANE"
+    if actual.water.cachedPlaneAvailable then actual.water.cachedPlaneZ=plane end
+    local rate=self:_call("computed-immersion",movement,"GetInWaterRate")
+    if not finite(rate) or rate<0 or rate>1 then result.reasons={"computed-immersion-unavailable"}; return result end
+    actual.water.computedImmersionRate=rate
+    local _,mapping=self.native:placement_collision_model(self.planned.root.collision)
+    local wild=self:_call("wild-npc",self.native.utility,"IsWildNPC",state.actor)
+    local angle=self:_call("selected-slope",movement,"GetWalkableFloorAngleByPriority")
+    if type(wild)~="boolean" or not finite(angle) then result.reasons={"initialization-policy-unreadable"}; return result end
+    local profile=actual.root.collision.profileName
+    actual.initializationPolicy={isWildNPC=wild,nativeNPC=state.actor:IsA("/Script/Pal.PalNPC"),
+        rootProfileExcluded=profile=="pawn_nodamageflypal" or profile=="pawnparts_nonblock",
+        playerPawnChannel=mapping.playerPawnChannel,selectedWalkableAngle=angle,drySceneQualified=self.drySceneQualified==true}
     if not self.a.valid(state.component) or not state.component:IsA("/Script/Pal.PalCharacterParameterComponent")
         or not self.a.same(self:_call("parameter-owner",state.component,"GetOwner"),state.actor) then
         result.reasons={"initialized-parameter-owner"}; return result
@@ -434,7 +513,14 @@ function Shape:observe(state)
     local actions=self:_call("ai-component",state.controller,"GetAIActionComponent")
     if not self.a.valid(actions) then result.reasons={"ai-observation-unavailable"}; return result end
     actual.currentActionPresent=self.a.valid(self:_call("current-action",actions,"GetCurrentAction_BP"))
-    result.comparison,result.reasons=Shape.reconcile(self.planned,actual)
+    result.comparison,result.reasons,result.expectedInitialization=Shape.reconcile(self.planned,actual)
+    if result.comparison=="MATCH" then
+        if self.firstSelectedAngle and not close(self.firstSelectedAngle,angle,0.0001) then
+            result.comparison,result.reasons="MISMATCH",{"initialized-slope-policy-changed"}
+        else
+            self.firstSelectedAngle=angle
+        end
+    end
     result.proxy=util.deep_copy(self.proxy)
     local unit={X=1,Y=1,Z=1}
     if same_vector(actual.root.worldScale,unit,0.001) and same_vector(actual.mesh.worldScale,unit,0.001)
