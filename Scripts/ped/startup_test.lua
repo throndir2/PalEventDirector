@@ -412,9 +412,11 @@ function Test:_tick()
         member.placementMode, member.placementAttempts = placement.mode, placement.attempts
         member.placementReason, member.fallbackReason = placement.reason, placement.fallbackReason
         if self.state.case==Shape.CASE then
-            if placement.spawnQualified~=false or placement.experiment~=Shape.CONTRACT or placement.pending==true then
+            if placement.spawnQualified~=false or placement.experiment~=Shape.CONTRACT
+                or (placement.pending==true and placement.reason~="shape-residency-pending") then
                 return self:halt("Custom assault scope is invalid")
             end
+            if placement.residency then self.state.helpers[1].observation=placement.residency end
             self.state.surfaceSurvey=placement.surfaceSurvey
             member.plannedGeometry=placement.plannedGeometry
             member.defaultNavDataUsed=placement.defaultNavDataUsed

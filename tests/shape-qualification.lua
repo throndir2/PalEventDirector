@@ -362,6 +362,20 @@ return function(test,equal,truthy)
         end)
     end)
 
+    test("shape admission waits for transient streaming readiness before consuming its single attempt",function()
+        fixture(function(f)
+            f.residency_missing=true
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.pending,true); equal(result.reason,"shape-residency-pending")
+            equal(f.surveys,0); equal(f.spawns,0)
+            f.residency_missing=false
+            result=f:prepare()
+            equal(result.ready,true); equal(result.pending,false); equal(f.surveys,1)
+            equal(f.engine:prepare_spawn(f.scope,f.member),false)
+            equal(f.surveys,1)
+        end)
+    end)
+
     test("actual shape waits for pending IDs and measures owned instance geometry rather than CDO caches",function()
         fixture(function(f)
             truthy(f:prepare().ready); f.id_pending=true

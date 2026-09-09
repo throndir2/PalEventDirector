@@ -923,10 +923,10 @@ function Native:prepare_spawn(scope, member)
         self:_validate_spawn_scope(scope,member)
         local runner=self.bridge.startup_test
         if runner and runner.state.case=="shape-qualification" then
-            if self.shapeQualification or next(self.records) or next(self.placements) or next(self.placementSearches) then
+            if next(self.records) or next(self.placements) or next(self.placementSearches) then
                 error(SCOPE,0)
             end
-            local experiment=require("ped.shape_qualification").new(self,runner,scope,member)
+            local experiment=self.shapeQualification or require("ped.shape_qualification").new(self,runner,scope,member)
             self.shapeQualification=experiment
             local result=experiment:prepare()
             if not result.ready then return result end

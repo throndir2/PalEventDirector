@@ -198,15 +198,19 @@ end
 function Shape:prepare()
     self:_validate(self.scope,self.member,true)
     if self.attempted then error(ERROR,0) end
-    self.attempted=true
-    self:_qualify()
+    if not self.layoutsQualified then self:_qualify(); self.layoutsQualified=true end
     local function blocked(reason,survey)
         return {ready=false,pending=false,reason=reason,mode="in-base",attempts=1,
             experiment=Shape.CONTRACT,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=survey}
     end
     local ok,residency=self.runner.support:poll(1)
     if not ok then error(residency,0) end
-    if not residency.ready or not residency.enabled or not residency.streamingComplete then return blocked("shape-residency-unavailable") end
+    if not residency.ready or not residency.enabled or not residency.streamingComplete then
+        local pending=blocked("shape-residency-pending")
+        pending.pending,pending.residency=true,residency
+        return pending
+    end
+    self.attempted=true
     local n,scope,member=self.native,self.scope,self.member
     local candidate=scope.positions[1] or scope.origin
     local floor=n:startup_floor(scope.world,candidate,CHARACTER)
