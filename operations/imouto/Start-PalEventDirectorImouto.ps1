@@ -8,7 +8,7 @@ param(
 
     [switch]$ValidateOnly,
 
-    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey', 'ShapeQualification')]
+    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey', 'ShapeQualification', 'QualifiedEngagement')]
     [string]$StartupTest = 'None',
 
     [Parameter(DontShow)]
@@ -255,8 +255,9 @@ function Read-StartupTestOutcome {
         $state.status -notin @('running','passed','blocked','failed') -or
         $state.mutationStarted -isnot [bool] -or $state.cleanupComplete -isnot [bool] -or
         [string]$state.artifactSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Startup test outcome schema is invalid.' }
-    if ($state.case -eq 'shape-qualification') {
-        if ($null -eq $state.PSObject.Properties['experiment'] -or $state.experiment -cne 'hunter-level30-one-instance-v1' -or
+    if ($state.case -in @('shape-qualification','qualified-engagement')) {
+        $expectedContract = if ($state.case -eq 'qualified-engagement') { 'hunter-level30-qualified-engagement-v1' } else { 'hunter-level30-one-instance-v1' }
+        if ($null -eq $state.PSObject.Properties['experiment'] -or $state.experiment -cne $expectedContract -or
             $state.moved -ne 0 -or $state.spawned -gt 1) { throw 'Startup shape experiment outcome is invalid.' }
         if ($state.status -eq 'passed') {
             if ($state.spawned -ne 1 -or $state.initialized -ne 1 -or $state.cleaned -ne 1 -or
@@ -267,6 +268,30 @@ function Read-StartupTestOutcome {
             foreach ($observation in $shapeObservations) {
                 if ($observation.comparison -cne 'MATCH' -or $observation.instanceOnly -ne $true -or
                     $observation.spawnQualified -ne $false) { throw 'Startup shape evidence is not a qualification.' }
+            }
+            if ($state.case -eq 'qualified-engagement') {
+                if ($null -eq $state.PSObject.Properties['qualifiedEngagementArmed'] -or $state.qualifiedEngagementArmed -ne $true -or
+                    $null -eq $state.PSObject.Properties['dealtDamageEvents'] -or $state.dealtDamageEvents -lt 1 -or
+                    $null -eq $state.PSObject.Properties['dealtDamage'] -or $state.dealtDamage -lt 1) {
+                    throw 'Qualified engagement requires observed outgoing damage.'
+                }
+                $members = @($state.members | ForEach-Object { $_ })
+                if ($members.Count -ne 1) { throw 'Qualified engagement member count is invalid.' }
+                $authorization = $state.engagementAuthorization
+                if ($null -eq $authorization -or $authorization.armed -ne $true -or $authorization.runId -cne $state.runId -or
+                    $authorization.case -cne $state.case -or $authorization.experiment -cne $expectedContract -or
+                    $authorization.artifactSha256 -cne $state.artifactSha256 -or $authorization.memberIndex -ne 1 -or
+                    $authorization.samples -ne 2 -or $authorization.baseId -cne $members[0].baseId -or
+                    $authorization.actorAddress -cne $members[0].actorAddress) { throw 'Qualified engagement authorization is invalid.' }
+                for ($index = 0; $index -lt 2; $index++) {
+                    $receipt = $shapeObservations[$index].receipt
+                    if ($null -eq $receipt -or $receipt.sample -ne ($index + 1) -or $receipt.runId -cne $state.runId -or
+                        $receipt.case -cne $state.case -or $receipt.experiment -cne $expectedContract -or
+                        $receipt.artifactSha256 -cne $state.artifactSha256 -or $receipt.memberIndex -ne 1 -or
+                        -not $receipt.actorAddress -or $receipt.actorAddress -cne $members[0].actorAddress) {
+                        throw 'Qualified engagement receipt is invalid.'
+                    }
+                }
             }
         }
     }
@@ -326,10 +351,11 @@ try {
         $testDirectory = Join-Path $testRoot $testRunId
         Assert-StartupTestPath $testDirectory
         New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop | Out-Null
-        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey'; ShapeQualification='shape-qualification' }
+        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey'; ShapeQualification='shape-qualification'; QualifiedEngagement='qualified-engagement' }
         $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
             artifactSha256=[string]$deployment.artifactSha256 }
         if ($StartupTest -eq 'ShapeQualification') { $plan['experiment'] = 'hunter-level30-one-instance-v1' }
+        if ($StartupTest -eq 'QualifiedEngagement') { $plan['experiment'] = 'hunter-level30-qualified-engagement-v1' }
         if ($previousTestRunId) { $plan['previousRunId'] = $previousTestRunId }
         [IO.File]::WriteAllText((Join-Path $testDirectory 'plan.json'), ($plan | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText($activeTestPath, (@{ runId=$testRunId } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))

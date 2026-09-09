@@ -269,6 +269,41 @@ try {
         } catch {
             if ($_.Exception.Message -notmatch 'shape evidence is not a qualification') { throw }
         }
+        $shapeState.shapeObservations[1].comparison = 'MATCH'
+        Write-StartupTestFixtureOutcome $shapeStatePath $shapeState
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest QualifiedEngagement -ValidateOnly | Out-Null
+        $activeAfterValidate = Get-Content (Join-Path $testRoot 'active.json') -Raw | ConvertFrom-Json
+        if ($activeAfterValidate.runId -ne $shapeLaunch.StartupTestRunId) { throw 'Qualified engagement validation armed a test.' }
+        $qualifiedLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest QualifiedEngagement
+        $qualifiedPlan = Get-Content (Join-Path $qualifiedLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
+        if ($qualifiedPlan.case -cne 'qualified-engagement' -or $qualifiedPlan.experiment -cne 'hunter-level30-qualified-engagement-v1' -or
+            $qualifiedPlan.previousRunId -cne $shapeLaunch.StartupTestRunId -or $qualifiedPlan.runId -ceq $shapeLaunch.StartupTestRunId) {
+            throw 'Qualified engagement reused a shape run or omitted its distinct contract.'
+        }
+        $qualifiedState = @{schemaVersion=1;runId=$qualifiedPlan.runId;case=$qualifiedPlan.case;experiment=$qualifiedPlan.experiment;
+            status='passed';mutationStarted=$true;cleanupComplete=$true;sourceRevision=$qualifiedPlan.sourceRevision;
+            artifactSha256=$qualifiedPlan.artifactSha256;spawned=1;initialized=1;cleaned=1;moved=0;helpersCreated=1;helpersCleaned=1;
+            qualifiedEngagementArmed=$true;dealtDamageEvents=1;dealtDamage=1;members=@(@{baseId='fixture-base';actorAddress='fixture-actor'});
+            shapeObservations=@()}
+        $qualifiedState.engagementAuthorization = @{armed=$true;runId=$qualifiedPlan.runId;case=$qualifiedPlan.case;
+            experiment=$qualifiedPlan.experiment;artifactSha256=$qualifiedPlan.artifactSha256;memberIndex=1;samples=2;
+            baseId='fixture-base';actorAddress='fixture-actor'}
+        foreach ($sample in @(1,2)) {
+            $qualifiedState.shapeObservations += @{comparison='MATCH';instanceOnly=$true;spawnQualified=$false;
+                receipt=@{sample=$sample;runId=$qualifiedPlan.runId;case=$qualifiedPlan.case;experiment=$qualifiedPlan.experiment;
+                    artifactSha256=$qualifiedPlan.artifactSha256;memberIndex=1;actorAddress='fixture-actor'}}
+        }
+        $qualifiedStatePath = Join-Path $qualifiedLaunch.StartupTestDirectory 'snapshot.json'
+        Write-StartupTestFixtureOutcome $qualifiedStatePath $qualifiedState
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest QualifiedEngagement -ValidateOnly | Out-Null
+        $qualifiedState.dealtDamageEvents = 0
+        Write-StartupTestFixtureOutcome $qualifiedStatePath $qualifiedState
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest QualifiedEngagement -ValidateOnly | Out-Null
+            throw 'A damage-free qualified engagement pass was accepted.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'requires observed outgoing damage') { throw }
+        }
         if ($env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID -ne 'parent-build' -or $env:PAL_EVENT_DIRECTOR_DATA_DIR -ne 'parent-data') {
             throw 'Launcher did not restore the parent process environment.'
         }

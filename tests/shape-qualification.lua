@@ -4,7 +4,7 @@ return function(test,equal,truthy)
     local Survey=require("ped.surface_survey")
     local Config=require("ped.config")
     local util=require("ped.util")
-    local function fixture(callback)
+    local function fixture(callback,case)
         local f={now=1000,spawns=0,despawns=0,surveys=0,calls={},signatures={},
             floorQueries={},navQueries={},supportPoints={},pathPoints={},residencies=0,prefilters=0}
         local next_address=0
@@ -102,12 +102,22 @@ return function(test,equal,truthy)
             return actor
         end
         f.cdo,f.actor=character(true),character(false)
-        local actions=object({GetCurrentAction_BP=function() return f.action end})
-        f.controller=object({GetAIActionComponent=function() return actions end,GetMyPalBlackboard=function() return object() end})
+        local actions=object({
+            GetCurrentAction_BP=function() return f.action end,
+            TerminateCurrentActionByClass=function() end,
+            SetActionClassParameter=function()
+                f.dispatched=(f.dispatched or 0)+1
+                f.action=object({IsA=function(_,path) return path=="/Script/AIModule.PawnAction" end})
+                return f.action
+            end,
+        })
+        f.controller=object({GetAIActionComponent=function() return actions end,GetMyPalBlackboard=function() return object() end,
+            AddTargetNPC=function(_,target) equal(target,f.defender); f.targets=(f.targets or 0)+1 end,
+            StopMovement=function() f.stops=(f.stops or 0)+1 end})
         local parameter=object({
             SaveParameter={IsPlayer=false,OwnerPlayerUId=util.deep_copy(zero),OldOwnerPlayerUIds={}},
             GetPalId=function() return identity end,GetCharacterID=function() return "BOSS_Hunter_Rifle" end,
-            GetMaxHP=function() return 1000 end,IsDead=function() return false end,
+            GetMaxHP=function() return 1000 end,IsDead=function() return f.dead==true end,
         })
         local handle=object({
             GetIndividualID=function() return f.id_pending and {PlayerUId=zero,InstanceId=zero} or identity end,
@@ -140,8 +150,15 @@ return function(test,equal,truthy)
         engine.world,engine.utility=world,object({
             GetEngineCollisionChannelByPalObjectType=function(_,selector) equal(selector,2); return f.playerPawnChannel or 16 end,
             IsWildNPC=function(_,actor) equal(actor,f.actor); return f.wildNPC~=false end,
+            ChangeDefaultLandMovementModeForWalking=function() f.walking=(f.walking or 0)+1 end,
+            GetBattleManager=function() return object({TargetIsPlayerOrPlayersOtomoPal=function() return false end}) end,
+            GetIndividualCharacterParameterByActor=function(_,actor) return actor.parameter end,
         })
         engine.controllerClass=object()
+        engine.classes.invoker=object()
+        f.actor.GetComponentByClass=function() return object({ActivateInvoker=function() f.invokers=(f.invokers or 0)+1 end}) end
+        engine._action_class=function() return object({type=function() return "UClass" end}) end
+        engine._choose_defender=function() return f.defender end
         engine.characterManager=object({
             GetIndividualHandle=function(_,value)
                 equal(id(value.InstanceId),id(identity.InstanceId)); equal(value.DebugName,"")
@@ -205,7 +222,7 @@ return function(test,equal,truthy)
             })}
         local member={index=1,slot=1,groupId="startup:shape-fixture",baseId=scope.baseId,characterId="BOSS_Hunter_Rifle",
             level=30,phase="planned"}
-        local runner={engine=engine,scopes={scope},state={case=Shape.CASE,experiment=Shape.CONTRACT,
+        local runner={engine=engine,scopes={scope},state={case=case or Shape.CASE,experiment=Shape.contract(case or Shape.CASE),
             runId="shape-fixture",artifactSha256=string.rep("2",64),sourceRevision=string.rep("1",40),
             status="running",stage="spawn",members={member},spawned=0,initialized=0,moved=0,
             helpersCreated=1,helpersCleaned=0,helpers={{phase="configured"}}}}
@@ -215,6 +232,14 @@ return function(test,equal,truthy)
         end}
         bridge.startup_test=runner
         f.engine,f.scope,f.member,f.runner=engine,scope,member,runner
+        function f:defender_at(base,guild)
+            return object({IsA=function(_,path) return path=="/Script/Pal.PalCharacter" end,
+                K2_GetActorLocation=function() return {X=100,Y=0,Z=1000} end,
+                parameter=object({GetBaseCampId=function() return {A=base or 9,B=0,C=0,D=0} end,
+                    GetGroupId=function() return {A=guild or 8,B=0,C=0,D=0} end}),
+            })
+        end
+        f.defender=f:defender_at()
         f.environment={COMPUTERNAME="IMOUTO",PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN="shape-fixture",
             PAL_EVENT_DIRECTOR_SOURCE_REVISION=runner.state.sourceRevision,PAL_EVENT_DIRECTOR_ARTIFACT_SHA256=runner.state.artifactSha256,
             PAL_EVENT_DIRECTOR_SERVER_BUILD_ID="25080279",PAL_EVENT_DIRECTOR_UE4SS_TAG="2281fa31",PAL_EVENT_DIRECTOR_UE4SS_API_VERSION="3.0.1"}
@@ -275,12 +300,39 @@ return function(test,equal,truthy)
             truthy(ok,result)
             local assigned=engine:startup_identity(member)
             member.instanceGuid,member.playerGuid=assigned.instanceGuid,assigned.playerGuid
-            if result.phase=="alive" then runner.state.initialized,runner.state.stage=1,"shape-observe" end
+            member.phase,member.actorAddress=result.phase,result.actorAddress
+            if result.phase=="alive" then
+                runner.state.initialized,runner.state.stage,runner.state.stageStartedAt=1,"shape-observe",self.now
+            end
             return result
         end
         function f:observe()
             local plan=util.shallow_copy(member)
-            return engine:startup_shape_observation(scope,plan)
+            local ok,result=engine:startup_shape_observation(scope,plan)
+            if ok and runner.state.case==Shape.ENGAGEMENT_CASE then
+                runner.state.shapeObservations=runner.state.shapeObservations or {}
+                runner.state.shapeObservations[#runner.state.shapeObservations+1]=result
+            end
+            return ok,result
+        end
+        function f:arm()
+            engine:startup_test_stage_changed(runner,"engagement")
+            runner.state.stage,runner.state.stageStartedAt="engagement",self.now
+            local ok,result=engine:startup_arm_qualified_engagement(scope,member)
+            if ok and result.armed then
+                runner.state.qualifiedEngagementArmed,runner.state.engagementAuthorization=true,result
+            end
+            return ok,result
+        end
+        function f:qualify_engagement()
+            truthy(self:prepare().ready); truthy(self:spawn()); equal(self:ready().phase,"alive")
+            local ok,result=self:observe()
+            truthy(ok,result); equal(result.comparison,"MATCH")
+            self.now=self.now+1
+            ok,result=self:observe()
+            truthy(ok,result); equal(result.comparison,"MATCH")
+            ok,result=self:arm()
+            truthy(ok,result); equal(result.armed,true)
         end
         local ok,why=xpcall(function() callback(f,object) end,debug.traceback)
         os.getenv,Survey.new=previous_getenv,previous_survey
@@ -1003,6 +1055,138 @@ return function(test,equal,truthy)
             equal(result.actual.root.halfHeight,30)
             truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
         end)
+    end)
+
+    test("qualified engagement needs two native same-actor receipts and an explicit bounded arm",function()
+        fixture(function(f)
+            f:qualify_engagement()
+            local permit=f.engine.shapeQualification.engagementPermit
+            equal(permit.expiresAt,permit.stageStartedAt+60)
+            local ok,result=f.engine:engage(f.scope,f.member)
+            truthy(ok,result); equal(result,true); equal(f.targets,1); equal(f.dispatched,1)
+            equal(f.walking,1); equal(f.runner.state.moved,0); equal(f.spawns,1)
+            truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
+            equal(f.engine.shapeQualification.engagementPermit,nil)
+        end,Shape.ENGAGEMENT_CASE)
+    end)
+
+    test("zero or one matching shape sample cannot authorize any gameplay entry",function()
+        for _,method in ipairs({"engage","startup_travel","configure"}) do
+            for samples=0,1 do
+                fixture(function(f)
+                    truthy(f:prepare().ready); truthy(f:spawn()); local state=f:ready()
+                    if samples==1 then
+                        local ok,result=f:observe()
+                        truthy(ok,result); equal(result.comparison,"MATCH")
+                    end
+                    local calls=#f.calls
+                    local ok
+                    if method=="configure" then
+                        local record=f.engine.records[f.member.groupId..":1"]
+                        ok=pcall(f.engine._configure_movement,f.engine,record,state,f.scope,f.member)
+                    else ok=f.engine[method](f.engine,f.scope,f.member) end
+                    equal(ok,false); equal(#f.calls,calls); equal(f.dispatched,nil); equal(f.walking,nil)
+                end,Shape.ENGAGEMENT_CASE)
+            end
+        end
+    end)
+
+    test("qualified gameplay refuses changed case run artifact contract member and copied receipts",function()
+        for _,change in ipairs({
+            function(f) f.runner.state.case=Shape.CASE end,
+            function(f) f.runner.state.runId="old-run" end,
+            function(f) f.runner.state.artifactSha256=string.rep("7",64) end,
+            function(f) f.runner.state.experiment=Shape.CONTRACT end,
+            function(f) f.runner.state.engagementAuthorization=util.deep_copy(f.runner.state.engagementAuthorization) end,
+            function(f) f.member=util.shallow_copy(f.member); f.member.index=2 end,
+            function(f) f.member=util.shallow_copy(f.member); f.member.instanceGuid={A=99,B=2,C=3,D=4} end,
+            function(f) f.runner.state.shapeObservations=util.deep_copy(f.runner.state.shapeObservations) end,
+        }) do
+            fixture(function(f)
+                f:qualify_engagement()
+                change(f)
+                equal(f.engine:engage(f.scope,f.member),false)
+                equal(f.dispatched,nil); equal(f.walking,nil)
+            end,Shape.ENGAGEMENT_CASE)
+        end
+    end)
+
+    test("cleanup stage changes capture and death permanently revoke the engagement permit",function()
+        for _,change in ipairs({
+            function(f) f.engine:startup_test_stage_changed(f.runner,"cleanup"); f.runner.state.stage="cleanup" end,
+            function(f) f.capturing=true; truthy(f.engine:inspect(f.member.handle,f.member)); f.capturing=false end,
+            function(f) f.dead=true; truthy(f.engine:inspect(f.member.handle,f.member)); f.dead=false end,
+            function(f) truthy(f.engine:despawn(f.scope,f.member)) end,
+        }) do
+            fixture(function(f)
+                f:qualify_engagement()
+                change(f)
+                equal(f.engine:engage(f.scope,f.member),false)
+                equal(f.dispatched,nil); equal(f.walking,nil)
+            end,Shape.ENGAGEMENT_CASE)
+        end
+    end)
+
+    test("an expired engagement window refuses dispatch without inventing a native fault or blocking cleanup",function()
+        fixture(function(f)
+            f:qualify_engagement()
+            f.now=f.engine.shapeQualification.engagementPermit.expiresAt
+            local ok,result=f.engine:engage(f.scope,f.member)
+            truthy(ok,result); equal(result,"unavailable")
+            equal(f.engine.shapeQualification.engagementPermit,nil); equal(f.engine.bridge.native_fault,nil)
+            equal(f.dispatched,nil); equal(f.walking,nil)
+            truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
+        end,Shape.ENGAGEMENT_CASE)
+    end)
+
+    test("mismatched or replayed shape evidence cannot arm qualified engagement",function()
+        fixture(function(f)
+            truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            local ok,result=f:observe(); truthy(ok,result); equal(result.comparison,"MATCH")
+            f.now=f.now+1
+            f.actor.CapsuleComponent.CapsuleHalfHeight=95
+            ok,result=f:observe(); truthy(ok,result); equal(result.comparison,"MISMATCH")
+            equal(f:arm(),false); equal(f.engine.shapeQualification.engagementPermit,nil); equal(f.dispatched,nil)
+        end,Shape.ENGAGEMENT_CASE)
+        fixture(function(f)
+            truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+            f.runner.state.shapeObservations={{comparison="MATCH"},{comparison="MATCH"}}
+            equal(f:arm(),false); equal(f.dispatched,nil)
+        end,Shape.ENGAGEMENT_CASE)
+    end)
+
+    test("qualified engagement retains full parent child and unknown target scope checks",function()
+        for _,kind in ipairs({"parent","child","unknown-child"}) do
+            fixture(function(f,object)
+                f:qualify_engagement()
+                local foreign=f:defender_at(99,98)
+                local combat=object({IsA=function(_,path)
+                    return path=="/Script/AIModule.PawnAction" or path:find("NPC_CombatBase",1,true)~=nil
+                end,TargetActor=foreign,CombatModule=object({GetTargetActor=function() return foreign end})})
+                if kind=="parent" then
+                    f.action=combat
+                else
+                    f.action=object({IsA=function(_,path) return path=="/Script/AIModule.PawnAction" end,
+                        ChildAction=kind=="child" and combat or object({IsA=function() return false end})})
+                end
+                local ok,result=f.engine:engage(f.scope,f.member)
+                truthy(ok,result); equal(result,"unavailable")
+                equal(f.engine.shapeQualification.engagementPermit,nil); equal(f.dispatched,nil)
+                equal(f.walking,nil)
+            end,Shape.ENGAGEMENT_CASE)
+        end
+    end)
+
+    test("qualified outgoing damage requires the owned attacker and the exact target base",function()
+        fixture(function(f)
+            f:qualify_engagement()
+            local ok,result=f.engine:startup_qualified_damage_target(f.scope,f.member,f.actor,f.defender)
+            truthy(ok,result); equal(result.allowed,true); equal(result.active,true)
+            ok,result=f.engine:startup_qualified_damage_target(f.scope,f.member,f.actor,f:defender_at(99,8))
+            truthy(ok,result); equal(result.allowed,false)
+            ok,result=f.engine:startup_qualified_damage_target(f.scope,f.member,{},f.defender)
+            truthy(ok,result); equal(result.allowed,false)
+        end,Shape.ENGAGEMENT_CASE)
     end)
 
     test("shape records reject gameplay dispatch and mismatched individual identity before mutation",function()

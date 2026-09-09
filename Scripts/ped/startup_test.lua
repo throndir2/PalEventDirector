@@ -11,7 +11,7 @@ local Test = {}
 Test.__index = Test
 
 local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1,
-    ["class-catalog"] = 1, ["surface-survey"] = 1, [Shape.CASE] = 1 }
+    ["class-catalog"] = 1, ["surface-survey"] = 1, [Shape.CASE] = 1, [Shape.ENGAGEMENT_CASE] = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -27,15 +27,33 @@ function Test.validate_state(state, run_id)
         and (state.mutationStarted or state.spawned == 0), "Startup test ownership counts are inconsistent")
     assert(util.is_integer(state.npcsFinalized or 0) and (state.npcsFinalized or 0) >= 0
         and state.cleaned + (state.npcsFinalized or 0) <= state.spawned, "Startup NPC finalization counts are invalid")
-    if state.case==Shape.CASE then
-        assert(state.experiment==Shape.CONTRACT and state.moved==0 and #state.members<=1
+    if Shape.contract(state.case) then
+        assert(state.experiment==Shape.contract(state.case) and state.moved==0 and #state.members<=1
             and #(state.shapeObservations or {})<=2, "Startup shape experiment outcome is invalid")
         if state.status=="passed" then
             assert(state.spawned==1 and state.initialized==1 and state.cleaned==1 and state.helpersCreated==1
                 and state.helpersCleaned==1 and #(state.shapeObservations or {})==2, "Startup shape evidence is incomplete")
-            for _,observation in ipairs(state.shapeObservations) do
+            for index,observation in ipairs(state.shapeObservations) do
                 assert(observation.comparison=="MATCH" and observation.instanceOnly==true
                     and observation.spawnQualified==false, "Startup shape evidence is not a qualification")
+                if state.case==Shape.ENGAGEMENT_CASE then
+                    local receipt=observation.receipt
+                    assert(type(receipt)=="table" and receipt.sample==index and receipt.runId==state.runId
+                        and receipt.case==state.case and receipt.experiment==state.experiment and receipt.artifactSha256==state.artifactSha256
+                        and receipt.memberIndex==1 and receipt.actorAddress~=nil and receipt.actorAddress==state.members[1].actorAddress,
+                        "Qualified engagement receipt is invalid")
+                end
+            end
+            if state.case==Shape.ENGAGEMENT_CASE then
+                local authorization=state.engagementAuthorization
+                assert(type(authorization)=="table" and authorization.armed==true and authorization.runId==state.runId
+                    and authorization.case==state.case and authorization.experiment==state.experiment
+                    and authorization.artifactSha256==state.artifactSha256 and authorization.memberIndex==1
+                    and authorization.samples==2 and authorization.baseId==state.members[1].baseId
+                    and authorization.actorAddress==state.members[1].actorAddress, "Qualified engagement authorization is invalid")
+                assert(state.qualifiedEngagementArmed==true and util.is_integer(state.dealtDamageEvents) and state.dealtDamageEvents>0
+                    and util.is_integer(state.dealtDamage) and state.dealtDamage>0,
+                    "Qualified engagement requires observed outgoing damage")
             end
         end
     end
@@ -190,14 +208,13 @@ function Test.new(options)
     assert(type(plan.runId) == "string" and plan.runId:match("^[a-z0-9%-]+$") and #plan.runId <= 80, "Startup test run identity is invalid")
     assert(type(plan.sourceRevision) == "string" and #plan.sourceRevision == 40 and plan.sourceRevision:match("^%x+$"), "Startup test source is invalid")
     assert(type(plan.artifactSha256) == "string" and #plan.artifactSha256 == 64 and plan.artifactSha256:match("^%x+$"), "Startup test artifact is invalid")
-    assert((plan.case==Shape.CASE and plan.experiment==Shape.CONTRACT)
-        or (plan.case~=Shape.CASE and plan.experiment==nil), "Startup shape experiment contract is invalid")
+    assert(plan.experiment==Shape.contract(plan.case), "Startup shape experiment contract is invalid")
     local self = setmetatable({
         engine = assert(options.engine), store = assert(options.store), logger = assert(options.logger),
         clock = options.clock or util.now_seconds, runtime = {}, cursor = 1, damageQueue = {},
         state = { schemaVersion = 1, runId = plan.runId, case = plan.case, sourceRevision = plan.sourceRevision,
             artifactSha256 = plan.artifactSha256,
-            experiment=plan.experiment, experimentalPremise=plan.case==Shape.CASE and Shape.PREMISE or nil,
+            experiment=plan.experiment, experimentalPremise=Shape.contract(plan.case) and Shape.PREMISE or nil,
             status = "running", stage = plan.case == "class-catalog" and "class-catalog" or "world",
             startedAt = (options.clock or util.now_seconds)(),
             mutationStarted = false, cleanupComplete = false, members = {},
@@ -211,6 +228,8 @@ end
 
 function Test:on_damage(attacker, defender, amount)
     if self.stopped or self.state.stage ~= "engagement" or not util.is_integer(amount) or amount <= 0 then return end
+    if self.state.case~= "engagement" and self.state.case~=Shape.ENGAGEMENT_CASE then return end
+    if self.state.case==Shape.ENGAGEMENT_CASE and not self.state.qualifiedEngagementArmed then return end
     if #self.damageQueue >= 64 then self.damageOverflow = true; return end
     self.damageQueue[#self.damageQueue + 1] = {attacker=attacker,defender=defender,amount=amount}
 end
@@ -223,7 +242,25 @@ function Test:_damage_witness()
             local member = self.state.members[index]
             if runtime.actor and member.phase == "alive" and not member.cleanupRequested then
                 if self.engine:sameActor(runtime.actor, event.attacker) then
-                    local ok, allowed = self.engine:startup_damage_target(self.scopes[index],event.defender)
+                    local ok,allowed
+                    if self.state.case==Shape.ENGAGEMENT_CASE then
+                        local member_plan=util.shallow_copy(member)
+                        member_plan.handle=runtime.handle
+                        local result
+                        ok,result=self.engine:startup_qualified_damage_target(self.scopes[index],member_plan,event.attacker,event.defender)
+                        if not ok then return self:halt(result) end
+                        if type(result)~="table" or type(result.allowed)~="boolean" or type(result.active)~="boolean" then
+                            return self:halt("Custom assault scope is invalid")
+                        end
+                        if not result.active then
+                            self.state.failure="engagement-permit-revoked"
+                            self:_stage("cleanup")
+                            return false
+                        end
+                        allowed=result.allowed
+                    else
+                        ok,allowed=self.engine:startup_damage_target(self.scopes[index],event.defender)
+                    end
                     if not ok then return self:halt(allowed) end
                     if allowed then
                         self.state.dealtDamageEvents = (self.state.dealtDamageEvents or 0) + 1
@@ -245,6 +282,7 @@ function Test:_save(kind)
     if not ok then
         self.state.status, self.state.code = "failed", "journal-write"
         self.stopped = true
+        if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
         self.logger:error("Startup test journal failed; native work stopped")
         return false
     end
@@ -252,6 +290,7 @@ function Test:_save(kind)
     if not saved then
         self.state.status, self.state.code = "failed", "snapshot-write"
         self.stopped = true
+        if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
         self.logger:error("Startup test snapshot failed; native work stopped")
         return false
     end
@@ -261,6 +300,7 @@ end
 function Test:halt(reason)
     if self.stopped then return false end
     self.state.status = "failed"
+    if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
     self.state.code = type(reason) == "string" and reason:match("%[([a-z0-9%-]+)%]") or nil
     self.state.code = self.state.code or Diagnostic.classify_error(reason)
     self.state.cleanupComplete = not self.state.mutationStarted
@@ -273,11 +313,13 @@ function Test:halt(reason)
 end
 
 function Test:_stage(stage)
+    if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,stage) end
     self.state.stage, self.state.stageStartedAt, self.cursor = stage, self.clock(), 1
     return self:_save("startup_test_stage")
 end
 
 function Test:_finish(status, code)
+    if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"finished") end
     self.state.status, self.state.code = status, code
     self.state.cleanupComplete, self.state.finishedAt = true, self.clock()
     self:_save("startup_test_finished")
@@ -300,11 +342,12 @@ end
 function Test:_cleaned_npcs()
     if self.state.helpersCreated > self.state.helpersCleaned then return self:_stage("support-cleanup") end
     return self:_finish(self.state.failure and "blocked" or "passed",
-        self.state.failure or (self.state.case==Shape.CASE and "shape-instance-only" or "complete"))
+        self.state.failure or (self.state.case==Shape.CASE and "shape-instance-only"
+            or self.state.case==Shape.ENGAGEMENT_CASE and "qualified-engagement-damage-observed" or "complete"))
 end
 
 function Test:_update_identity(member)
-    if member.instanceGuid and (self.state.case~=Shape.CASE or member.actorAddress) then return true end
+    if member.instanceGuid and (not Shape.contract(self.state.case) or member.actorAddress) then return true end
     local identity = self.engine:startup_identity(member)
     local changed=false
     if identity.instanceGuid and not member.instanceGuid then
@@ -343,7 +386,7 @@ function Test:_tick()
         end
         self.state.physical = result.physical
         self.state.availableBases = result.availableBases
-        if result.blockedCode or self.state.case==Shape.CASE then
+        if result.blockedCode or Shape.contract(self.state.case) then
             self.scopes = result.scopes or result.candidates
             if type(self.scopes) ~= "table" or #self.scopes ~= CASES[self.state.case] then
                 return self:_finish("blocked", result.blockedCode or "shape-base-unavailable")
@@ -437,7 +480,7 @@ function Test:_tick()
         local member = self.state.members[self.cursor]
         if not member then return self:_stage("initialize") end
         member.placementStartedAt = member.placementStartedAt or now
-        if self.state.case==Shape.CASE and now>=member.placementStartedAt+120 then
+        if Shape.contract(self.state.case) and now>=member.placementStartedAt+120 then
             self.state.failure="spawn-placement-timeout"
             return self:_stage("cleanup")
         end
@@ -448,8 +491,8 @@ function Test:_tick()
         end
         member.placementMode, member.placementAttempts = placement.mode, placement.attempts
         member.placementReason, member.fallbackReason = placement.reason, placement.fallbackReason
-        if self.state.case==Shape.CASE then
-            if placement.spawnQualified~=false or placement.experiment~=Shape.CONTRACT
+        if Shape.contract(self.state.case) then
+            if placement.spawnQualified~=false or placement.experiment~=Shape.contract(self.state.case)
                 or (placement.pending==true and (placement.ready~=false
                     or (placement.reason~="shape-residency-pending" and placement.reason~="shape-site-search-pending"))) then
                 return self:halt("Custom assault scope is invalid")
@@ -472,7 +515,7 @@ function Test:_tick()
             return self:halt("Custom assault placement is unavailable")
         end
         if not placement.ready then
-            self.state.failure = self.state.case==Shape.CASE and (placement.reason or "shape-placement-unavailable") or "spawn-physical-unavailable"
+            self.state.failure = Shape.contract(self.state.case) and (placement.reason or "shape-placement-unavailable") or "spawn-physical-unavailable"
             member.placementReason = placement.reason
             return self:_stage("cleanup")
         end
@@ -493,7 +536,7 @@ function Test:_tick()
         self.cursor = self.cursor + 1
         return
     elseif stage=="shape-observe" then
-        if self.state.case~=Shape.CASE or #self.state.members~=1 then return self:halt("Custom assault scope is invalid") end
+        if not Shape.contract(self.state.case) or #self.state.members~=1 then return self:halt("Custom assault scope is invalid") end
         if now>self.state.stageStartedAt+10 then
             self.state.failure="shape-observation-timeout"
             return self:_stage("cleanup")
@@ -517,9 +560,32 @@ function Test:_tick()
             self.state.failure="shape-"..result.comparison:lower()
             return self:_stage("cleanup")
         end
-        if #self.state.shapeObservations==2 then return self:_stage("cleanup") end
+        if #self.state.shapeObservations==2 then
+            return self:_stage(self.state.case==Shape.ENGAGEMENT_CASE and "engagement" or "cleanup")
+        end
         return
     elseif stage == "initialize" or stage == "movement" or stage == "engagement" then
+        if self.state.case==Shape.ENGAGEMENT_CASE and stage=="engagement" then
+            if now>=self.state.stageStartedAt+60 then
+                self.state.failure="engagement-timeout"
+                return self:_stage("cleanup")
+            end
+            if not self.state.qualifiedEngagementArmed then
+                local plan=util.shallow_copy(self.state.members[1])
+                plan.handle=self.runtime[1].handle
+                if not self:_save("startup_qualified_engagement_arm_intent") then return end
+                local ok,result=self.engine:startup_arm_qualified_engagement(self.scopes[1],plan)
+                if not ok then return self:halt(result) end
+                if type(result)~="table" or type(result.armed)~="boolean" then return self:halt("Custom assault scope is invalid") end
+                if not result.armed then
+                    self.state.failure=result.reason or "engagement-arm-unavailable"
+                    return self:_stage("cleanup")
+                end
+                self.state.engagementAuthorization=result
+                self.state.qualifiedEngagementArmed=true
+                return self:_save("startup_qualified_engagement_armed")
+            end
+        end
         local ready, arrived = 0, 0
         for index, member in ipairs(self.state.members) do
             local runtime = self.runtime[index]
@@ -608,12 +674,15 @@ function Test:_tick()
                 end
                 self.state.failure = "unexpected-member-" .. observation.phase
                 return self:_stage("cleanup")
+            elseif stage=="engagement" and self.state.case==Shape.ENGAGEMENT_CASE then
+                self.state.failure="engagement-member-"..observation.phase
+                return self:_stage("cleanup")
             end
         end
         if ready == #self.state.members then
             self.state.simultaneous = #self.state.members > 1
             if stage == "initialize" then
-                if self.state.case==Shape.CASE then return self:_stage("shape-observe") end
+                if Shape.contract(self.state.case) then return self:_stage("shape-observe") end
                 if self.state.case == "engagement" and self.state.members[1].placementMode == "in-base" then
                     return self:_stage("engagement")
                 end

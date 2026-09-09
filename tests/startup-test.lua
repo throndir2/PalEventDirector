@@ -31,13 +31,13 @@ return function(test, equal, truthy)
         end
         function engine:prepare_spawn(_, member)
             f.prepares=(f.prepares or 0)+1
-            if f.runner.state.case==Shape.CASE then
+            if Shape.contract(f.runner.state.case) then
                 if f.shape_pending then
-                    return true,{ready=f.shape_pending_ready==true,pending=true,spawnQualified=false,experiment=Shape.CONTRACT,
+                    return true,{ready=f.shape_pending_ready==true,pending=true,spawnQualified=false,experiment=Shape.contract(f.runner.state.case),
                         reason=f.shape_pending,attempts=2,selection={candidateLimit=17,candidatesVisited=2,rejections={
                             {candidate=1,reason="support-penetrating",support={startOverlap={classification="BLOCKED",blockers=1}}}}}}
                 end
-                return true,{ready=not f.shape_placement_blocked,pending=false,spawnQualified=false,experiment=Shape.CONTRACT,
+                return true,{ready=not f.shape_placement_blocked,pending=false,spawnQualified=false,experiment=Shape.contract(f.runner.state.case),
                     reason=f.shape_reason or "shape-fixture-blocked",surfaceSurvey={spawnQualified=false,templateOnly=true},
                     plannedGeometry={fixture=true}}
             end
@@ -70,16 +70,47 @@ return function(test, equal, truthy)
             equal(f.runner.state.helpersCleaned,0)
             f.shape_observations=(f.shape_observations or 0)+1
             if f.capture_at_observation then f.phases[1]="capturing" end
-            return true,{comparison=f.shape_result or "MATCH",instanceOnly=true,spawnQualified=false,
+            local result={comparison=f.shape_result or "MATCH",instanceOnly=true,spawnQualified=false,
                 actual={root={radius=30,halfHeight=30},body={radius=30,halfHeight=95}}}
+            if f.runner.state.case==Shape.ENGAGEMENT_CASE then
+                local state=f.runner.state
+                result.receipt={sample=f.shape_observations,runId=state.runId,case=state.case,experiment=state.experiment,
+                    artifactSha256=state.artifactSha256,memberIndex=1,actorAddress="fixture-actor",observedAt=f.now}
+            end
+            return true,result
         end
         function engine:inspect(_, member)
             f.actors[member.index]=f.actors[member.index] or {}
             return true, { phase = f.phases[member.index] or "alive", healthBudget = 1000, targetId = "private-target-" .. member.index,
                 actor=f.actors[member.index],
+                actorAddress="fixture-actor",
                 location = { X=f.arrived and 500 or 4000,Y=0,Z=0 } }
         end
-        function engine:engage() f.engages=(f.engages or 0)+1; return true,true end
+        function engine:engage()
+            if f.runner.state.case==Shape.ENGAGEMENT_CASE then
+                equal(f.activePermit,true); equal(#f.runner.state.shapeObservations,2)
+            end
+            f.engages=(f.engages or 0)+1
+            return true,f.engagementUnavailable and "unavailable" or true
+        end
+        function engine:startup_test_stage_changed(_,stage)
+            if stage~="engagement" then f.activePermit=false end
+        end
+        function engine:startup_arm_qualified_engagement()
+            equal(f.records[#f.records],"startup_qualified_engagement_arm_intent")
+            equal(#f.runner.state.shapeObservations,2)
+            for _,observation in ipairs(f.runner.state.shapeObservations) do equal(observation.comparison,"MATCH") end
+            equal(f.runner.state.helpersCleaned,0)
+            f.arms=(f.arms or 0)+1
+            f.activePermit=not f.armBlocked
+            local state=f.runner.state
+            return true,{armed=f.activePermit,reason="engagement-ownership-unavailable",runId=state.runId,case=state.case,
+                experiment=state.experiment,artifactSha256=state.artifactSha256,memberIndex=1,samples=2,
+                baseId=state.members[1].baseId,actorAddress="fixture-actor"}
+        end
+        function engine:startup_qualified_damage_target(_,_,attacker,defender)
+            return true,{active=f.activePermit==true,allowed=attacker==f.actors[1] and defender==f.legal_target}
+        end
         function engine:startup_behavior() return "combat" end
         function engine:startup_combat_observation(_, _, movement_only)
             f.observations = (f.observations or 0) + 1
@@ -103,7 +134,7 @@ return function(test, equal, truthy)
             return true, f.pending_cleanup and "pending" or "despawned"
         end
         f.runner = Startup.new({ plan = { schemaVersion=1, runId="fixture-run", case=case or "spawn-cleanup",
-            experiment=case==Shape.CASE and Shape.CONTRACT or nil,
+            experiment=Shape.contract(case),
             sourceRevision=string.rep("1",40), artifactSha256=string.rep("2",64) }, store=store, engine=engine, clock=function() return f.now end,
             logger={ info=function() end, error=function() end } })
         function f:tick(count)
@@ -336,6 +367,89 @@ return function(test, equal, truthy)
         equal(f.surveys,1); equal(f.runner.state.helpersCleaned,1)
         equal(f.runner.state.surfaceSurvey.spawnQualified,false)
         f:tick(5); equal(f.surveys,1)
+    end)
+
+    test("qualified engagement waits for two samples and an arm before dispatch without fabricated movement",function()
+        local f=fixture(Shape.ENGAGEMENT_CASE)
+        f.physical_ready=true
+        for _=1,20 do
+            f:tick()
+            if f.shape_observations==1 then break end
+        end
+        equal(f.shape_observations,1); equal(f.engages,nil); equal(f.arms,nil); equal(f.runner.state.helpersCleaned,0)
+        f:tick()
+        equal(f.shape_observations,2); equal(f.runner.state.stage,"engagement"); equal(f.engages,nil)
+        f.runner:on_damage(f.actors[1],{},100)
+        equal(#f.runner.damageQueue,0)
+        f:tick()
+        equal(f.arms,1); equal(f.engages,nil)
+        f:tick(3)
+        truthy(f.engages>0); truthy(f.observations>0)
+        equal(f.spawns,1); equal(f.runner.state.moved,0); equal(f.travels,0)
+        equal(f.runner.state.status,"running")
+    end)
+
+    test("qualified engagement passes only on positive outgoing scoped character damage and complete cleanup",function()
+        local f=fixture(Shape.ENGAGEMENT_CASE)
+        f.physical_ready=true
+        f:tick(20)
+        equal(f.runner.state.stage,"engagement")
+        f.runner:on_damage({},f.actors[1],10)
+        f.runner:on_damage(f.actors[1],{},100)
+        f:tick()
+        equal(f.runner.state.receivedDamageEvents,1); equal(f.runner.state.dealtDamageEvents,nil)
+        equal(f.runner.state.status,"running")
+        f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,25)
+        f:tick(5)
+        equal(f.runner.state.status,"passed"); equal(f.runner.state.code,"qualified-engagement-damage-observed")
+        equal(f.runner.state.dealtDamageEvents,1); equal(f.runner.state.dealtDamage,25)
+        equal(f.runner.state.cleaned,1); equal(f.runner.state.helpersCleaned,1)
+        equal(f.runner.state.moved,0); equal(f.activePermit,false)
+        truthy(Startup.validate_state(f.runner.state,"fixture-run"))
+    end)
+
+    test("qualified engagement without outgoing damage times out with exact NPC and helper cleanup",function()
+        local f=fixture(Shape.ENGAGEMENT_CASE)
+        f.physical_ready=true
+        f:tick(20)
+        local engages=f.engages
+        f.now=f.runner.state.stageStartedAt+60
+        f:tick(5)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"engagement-timeout")
+        equal(f.engages,engages); equal(f.despawns,1); equal(f.runner.state.helpersCleaned,1)
+        equal(f.runner.state.cleanupComplete,true); equal(f.activePermit,false)
+    end)
+
+    test("bad shape samples block qualified engagement before any gameplay arm",function()
+        for _,comparison in ipairs({"MISMATCH","UNSUPPORTED"}) do
+            local f=fixture(Shape.ENGAGEMENT_CASE)
+            f.physical_ready,f.shape_result=true,comparison
+            f:tick(25)
+            equal(f.runner.state.status,"blocked"); equal(f.arms,nil); equal(f.engages,nil)
+            equal(f.spawns,1); equal(f.despawns,1); equal(f.runner.state.helpersCleaned,1)
+        end
+    end)
+
+    test("qualified engagement evidence rejects old contracts one sample and damage-free passes",function()
+        local f=fixture(Shape.ENGAGEMENT_CASE)
+        f.physical_ready=true
+        f:tick(20)
+        f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,1)
+        f:tick(5)
+        truthy(Startup.validate_state(f.runner.state,"fixture-run"))
+        for _,change in ipairs({
+            function(state) state.experiment=Shape.CONTRACT end,
+            function(state) state.shapeObservations[2]=nil end,
+            function(state) state.shapeObservations[2].receipt.runId="previous-run" end,
+            function(state) state.dealtDamageEvents=0 end,
+            function(state) state.dealtDamage=0 end,
+        }) do
+            local state=util.deep_copy(f.runner.state)
+            change(state)
+            equal(pcall(Startup.validate_state,state,"fixture-run"),false)
+        end
     end)
 
     test("shape qualification always retains a helper for one NPC and two read-only samples",function()

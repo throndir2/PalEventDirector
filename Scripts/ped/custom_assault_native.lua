@@ -3,6 +3,7 @@ local util = require("ped.util")
 local bounties = require("ped.bounties")
 local PlacementSearch = require("ped.placement_search")
 local invoke_function = require("ped.native_observer").invoke
+local Qualification = require("ped.shape_qualification")
 
 local Native = {}
 Native.__index = Native
@@ -1046,11 +1047,11 @@ function Native:prepare_spawn(scope, member)
         self:_validate_spawn_scope(scope,member)
         local runner=self.bridge.startup_test
         if self.shapeQualification then self.shapeQualification:_validate(scope,member,true) end
-        if runner and runner.state.case=="shape-qualification" then
+        if runner and Qualification.contract(runner.state.case) then
             if next(self.records) or next(self.placements) or next(self.placementSearches) then
                 error(SCOPE,0)
             end
-            local experiment=self.shapeQualification or require("ped.shape_qualification").new(self,runner,scope,member)
+            local experiment=self.shapeQualification or Qualification.new(self,runner,scope,member)
             self.shapeQualification=experiment
             local result=experiment:prepare(scope,member)
             if not result.ready then return result end
@@ -1086,7 +1087,7 @@ function Native:spawn(scope, member)
             or distance_squared(placement.position, position) ~= 0 then error(SCOPE, 0) end
         if placement.shapeQualification~=self.shapeQualification
             or (placement.shapeQualification and placement.shapeQualification.native~=self)
-            or (self.bridge.startup_test and self.bridge.startup_test.state.case=="shape-qualification"
+            or (self.bridge.startup_test and Qualification.contract(self.bridge.startup_test.state.case)
                 and not placement.shapeQualification) then error(SCOPE,0) end
         self.placements[key] = nil
         if placement.shapeQualification then placement.shapeQualification:consume(scope,member,placement) end
@@ -1115,7 +1116,58 @@ function Native:startup_shape_observation(scope,member)
             error(IDENTITY,0)
         end
         local state=self:_owned_state(member.handle,member)
-        return record.shapeQualification:observe(state)
+        local result=record.shapeQualification:observe(state)
+        record.shapeQualification:record_observation(record,state,result)
+        return result
+    end)
+end
+
+function Native:startup_test_stage_changed(runner,stage)
+    if self.shapeQualification and self.shapeQualification.runner==runner then self.shapeQualification:stage_changed(stage) end
+end
+
+function Native:_qualification_identity(record,member)
+    if not self.a.same(member.handle,record.handle) or not record.id
+        or not same_id(record.id,{InstanceId=guid(member.instanceGuid,false),PlayerUId=guid(member.playerGuid,true)}) then
+        record.shapeQualification:revoke_engagement("identity")
+        error(IDENTITY,0)
+    end
+end
+
+function Native:startup_arm_qualified_engagement(scope,member)
+    return self.bridge:_native_step("startup-qualified-engagement-arm",function()
+        local record=self.records[member_key(member)]
+        if not record or not record.shapeQualification then error(SCOPE,0) end
+        self:_qualification_identity(record,member)
+        local start=record.shapeQualification:begin_engagement(scope,member,record)
+        local state=self:_owned_state(member.handle,member)
+        return record.shapeQualification:finish_engagement(record,state,start)
+    end)
+end
+
+function Native:_gameplay_state(scope,member)
+    local record=self.records[member_key(member)]
+    if record and record.shapeQualification then
+        if not record.shapeQualification:validate_gameplay(scope,member,record) then return {phase="expired"},record end
+        self:_qualification_identity(record,member)
+    end
+    local state=self:_owned_state(member.handle,member)
+    if record and record.shapeQualification and state.phase=="alive" then
+        if not record.shapeQualification:validate_gameplay(scope,member,record,state) then return {phase="expired"},record end
+    end
+    return state,record
+end
+
+function Native:startup_qualified_damage_target(scope,member,attacker,defender)
+    return self.bridge:_native_step("startup-qualified-damage-target",function()
+        local record=self.records[member_key(member)]
+        if not record or not record.shapeQualification or record.shapeQualification.case~=Qualification.ENGAGEMENT_CASE then error(SCOPE,0) end
+        local state=self:_gameplay_state(scope,member)
+        if state.phase~="alive" then return {allowed=false,active=false,phase=state.phase} end
+        if not self.a.same(attacker,state.actor) then return {allowed=false,active=true} end
+        local scoped,parameter=self:_character_scope(defender,scope)
+        local allowed=scoped==true and self.a.guid(self:_call("qualified-damage-base",parameter,"GetBaseCampId"))==scope.baseId
+        return {allowed=allowed,active=true}
     end)
 end
 
@@ -1153,7 +1205,7 @@ function Native:_absent_state(record)
     error(OWNERSHIP, 0)
 end
 
-function Native:_owned_state(handle, member)
+function Native:_read_owned_state(handle, member)
     local record = self.records[member_key(member)]
     if not record then error(IDENTITY, 0) end
     if record.despawnRequested then return { phase = self:_despawn_status(record) } end
@@ -1237,7 +1289,7 @@ function Native:_owned_state(handle, member)
         if state.distanceFromBase > record.scope.leashRadius then state.phase, state.scopeReason = "escaped", "outside-leash" end
         state.location = location
         -- The experiment never dispatches gameplay, but stock AI must still remain in its base scope.
-        if record.shapeQualification then
+        if record.shapeQualification and record.shapeQualification.case==Qualification.CASE then
             if self:_combat_targets_scoped(actions,record.scope)==false then
                 state.phase,state.scopeReason="escaped","combat-target"
             end
@@ -1262,6 +1314,13 @@ function Native:_owned_state(handle, member)
             record.combatPendingAt = nil
         end
     elseif not dead then state.location = vector(self:_call("inactive-location", actor, "K2_GetActorLocation")) end
+    return state
+end
+
+function Native:_owned_state(handle,member)
+    local state=self:_read_owned_state(handle,member)
+    local record=self.records[member_key(member)]
+    if record and record.shapeQualification then record.shapeQualification:ownership_observed(state) end
     return state
 end
 
@@ -1436,9 +1495,15 @@ function Native:_behavior(record, member, mode, target)
     record.target, record.mode = target, mode
 end
 
-function Native:_configure_movement(record, state, scope)
-    if record.shapeQualification then error(SCOPE,0) end
-    if record.configured then return end
+function Native:_configure_movement(record, state, scope,member)
+    if record.shapeQualification then
+        if not member then error(SCOPE,0) end
+        local observed,owned=self:_gameplay_state(scope,member)
+        if owned~=record then error(SCOPE,0) end
+        if observed.phase~="alive" then return false end
+        if not self.a.same(observed.actor,state.actor) or not self.a.same(observed.controller,state.controller) then error(IDENTITY,0) end
+    end
+    if record.configured then return true end
     local blackboard = self:_call("ai-blackboard", state.controller, "GetMyPalBlackboard")
     if not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
     blackboard.SpawnerLocation_BB, blackboard.SpawnedPosition_BB = vector(scope.origin), vector(state.location)
@@ -1448,15 +1513,17 @@ function Native:_configure_movement(record, state, scope)
     self:_call("activate-nav", invoker, "ActivateInvoker")
     self:_call("walking-mode", self.utility, "ChangeDefaultLandMovementModeForWalking", state.actor)
     record.configured = true
+    return true
 end
 
 function Native:startup_travel(scope, member)
     return self.bridge:_native_step("startup-travel", function()
-        local record=self.records[member_key(member)]
-        if record and record.shapeQualification then error(SCOPE,0) end
-        local state = self:_owned_state(member.handle, member)
-        if state.phase ~= "alive" then error(INITIALIZATION, 0) end
-        self:_configure_movement(self.records[member_key(member)], state, scope)
+        local state,record=self:_gameplay_state(scope,member)
+        if state.phase~="alive" then
+            if record and record.shapeQualification then return "unavailable" end
+            error(INITIALIZATION,0)
+        end
+        if not self:_configure_movement(record,state,scope,member) then return "unavailable" end
         local actions = self:_call("startup-ai-component", state.controller, "GetAIActionComponent")
         if not self.a.valid(actions) then error(INITIALIZATION, 0) end
         self:_set_action(actions, "travel", self.records[member_key(member)].goal, nil)
@@ -1491,19 +1558,20 @@ end
 
 function Native:engage(scope, member)
     return self.bridge:_native_step("custom-engage", function()
-        local owned=self.records[member_key(member)]
-        if owned and owned.shapeQualification then error(SCOPE,0) end
-        local state = self:_owned_state(member.handle, member)
-        if state.phase ~= "alive" then error(OWNERSHIP, 0) end
+        local state,owned=self:_gameplay_state(scope,member)
+        if state.phase~="alive" then
+            if owned and owned.shapeQualification then return "unavailable" end
+            error(OWNERSHIP,0)
+        end
         local record, actor, controller = self.records[member_key(member)], state.actor, state.controller
         local actions = self:_call("ai-component", controller, "GetAIActionComponent")
         local blackboard = self:_call("ai-blackboard", controller, "GetMyPalBlackboard")
         if not self.a.valid(actions) or not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
+        if not self:_configure_movement(record,state,scope,member) then return "unavailable" end
         if not record.hostileConfigured then
             state.component.bIsAttackNonCriminal = true
             record.hostileConfigured = true
         end
-        self:_configure_movement(record, state, scope)
         local defender = self:_choose_defender(scope, state, record)
         if defender then
             local now = self.bridge.clock()
@@ -1574,6 +1642,8 @@ end
 
 function Native:despawn(_, member)
     return self.bridge:_native_step("custom-despawn", function()
+        local owned=self.records[member_key(member)]
+        if owned and owned.shapeQualification then owned.shapeQualification:revoke_engagement("cleanup") end
         local state = self:_owned_state(member.handle, member)
         if TERMINAL[state.phase] then return state.phase end
         if state.phase == "despawning" then return "pending" end

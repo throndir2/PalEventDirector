@@ -6,7 +6,14 @@ local Shape = {}
 Shape.__index = Shape
 Shape.CASE = "shape-qualification"
 Shape.CONTRACT = "hunter-level30-one-instance-v1"
+Shape.ENGAGEMENT_CASE = "qualified-engagement"
+Shape.ENGAGEMENT_CONTRACT = "hunter-level30-qualified-engagement-v1"
 Shape.PREMISE = "Authored proxies are the controlled test envelope, not a universal final-shape or dry-placement certificate."
+local CONTRACTS = {[Shape.CASE]=Shape.CONTRACT,[Shape.ENGAGEMENT_CASE]=Shape.ENGAGEMENT_CONTRACT}
+
+function Shape.contract(case)
+    return CONTRACTS[case]
+end
 
 local ERROR = "Custom assault scope is invalid"
 local CHARACTER = "BOSS_Hunter_Rifle"
@@ -63,6 +70,7 @@ end
 function Shape.new(native,runner,scope,member)
     local state=runner.state
     local self=setmetatable({native=native,a=native.a,runner=runner,scope=scope,member=member,
+        case=state.case,contract=CONTRACTS[state.case],receipts={},
         runId=state.runId,artifact=state.artifactSha256,source=state.sourceRevision,
         base=scope.base,world=scope.world,baseId=scope.baseId,guildId=scope.guildId,
         origin=vector(scope.origin),range=scope.range,leashRadius=scope.leashRadius,
@@ -77,7 +85,7 @@ function Shape:_validate(scope,member,spawning)
     local n,runner=self.native,self.runner
     local state=runner.state
     if n.bridge.startup_test~=runner or runner.engine~=n or runner.stopped or state.status~="running"
-        or state.case~=Shape.CASE or state.experiment~=Shape.CONTRACT
+        or not self.contract or state.case~=self.case or state.experiment~=self.contract
         or state.runId~=self.runId or state.artifactSha256~=self.artifact or state.sourceRevision~=self.source
         or n.bridge.delivery_profile~="laboratory-native-test" or n.bridge.config.mode~="laboratory"
         or n.bridge.config.capabilities.startAllInvasions~=true
@@ -302,7 +310,7 @@ function Shape:prepare(scope,member)
     local function blocked(reason,survey)
         return {ready=false,pending=false,reason=reason,mode="in-base",attempts=self.search.attempts,
             fallbackReason=self.search.fallbackReason,selection=self:_selection(),
-            experiment=Shape.CONTRACT,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=survey}
+            experiment=self.contract,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=survey}
     end
     if self:_expired() then self.selectionClosed=true; return blocked("spawn-placement-timeout") end
     if not self.layoutsQualified then self:_qualify(); self.layoutsQualified=true end
@@ -388,7 +396,7 @@ function Shape:prepare(scope,member)
     if self:_expired() then return blocked("spawn-placement-timeout",result) end
     return {ready=true,pending=false,mode="in-base",attempts=site.attempts,position=vector(point),goal=vector(goal),
         fallbackReason=site.fallbackReason,selection=self:_selection(),
-        experiment=Shape.CONTRACT,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=result,
+        experiment=self.contract,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=result,
         plannedGeometry=util.deep_copy(planned),pathPoints=site.pathPoints,pathLength=site.pathLength,
         defaultNavDataUsed=site.defaultNavDataUsed,templateOnly=true}
 end
@@ -408,6 +416,123 @@ function Shape:validate_observation(scope,member)
     self:_validate(scope,member,false)
     if not self.consumed or self.runner.state.stage~="shape-observe" or self.runner.state.spawned~=1
         or not member.instanceGuid or not member.playerGuid then error(ERROR,0) end
+end
+
+function Shape:revoke_engagement(reason)
+    self.engagementRevoked=self.engagementRevoked or reason
+    self.engagementPermit=nil
+end
+
+function Shape:stage_changed(stage)
+    if #self.receipts==0 and not self.engagementArmAttempted then return end
+    if stage=="engagement" and self.case==Shape.ENGAGEMENT_CASE
+        and self.runner.state.stage=="shape-observe" and #self.receipts==2 and not self.engagementArmAttempted then return end
+    self:revoke_engagement("stage-change")
+end
+
+function Shape:ownership_observed(state)
+    if self.case==Shape.ENGAGEMENT_CASE and (#self.receipts>0 or self.engagementArmAttempted) and state.phase~="alive" then
+        self:revoke_engagement("ownership-"..state.phase)
+    end
+end
+
+function Shape:record_observation(record,state,result)
+    if self.case~=Shape.ENGAGEMENT_CASE then return end
+    if result.comparison~="MATCH" or state.phase~="alive" then
+        self:revoke_engagement("shape-not-matched")
+        return
+    end
+    local now=self.native.bridge.clock()
+    local index=#self.receipts+1
+    local start=self.runner.state.stageStartedAt
+    if self.engagementRevoked or index>2 or not finite(now) or not finite(start) or now<start or now>start+10 then error(ERROR,0) end
+    local previous=self.receipts[index-1]
+    if previous and (now<previous.at+1 or not self.a.same(previous.actor,state.actor)
+        or not self.a.same(previous.parameter,state.parameter) or not self.a.same(previous.controller,state.controller)
+        or not self.a.same(previous.handle,record.handle) or previous.id~=record.id) then
+        self:revoke_engagement("shape-receipt-identity")
+        error(ERROR,0)
+    end
+    result.receipt={sample=index,runId=self.runId,case=self.case,experiment=self.contract,artifactSha256=self.artifact,
+        memberIndex=1,actorAddress=self.a.address(state.actor),observedAt=now}
+    self.receipts[index]={at=now,actor=state.actor,parameter=state.parameter,controller=state.controller,
+        handle=record.handle,id=record.id,record=record,result=result}
+end
+
+function Shape:_engagement_receipts(record)
+    local samples=self.runner.state.shapeObservations
+    if #self.receipts~=2 or type(samples)~="table" or #samples~=2 then error(ERROR,0) end
+    for index,receipt in ipairs(self.receipts) do
+        if receipt.record~=record or receipt.id~=record.id or receipt.result~=samples[index]
+            or receipt.result.comparison~="MATCH" or receipt.result.instanceOnly~=true or receipt.result.spawnQualified~=false
+            or not self.a.same(receipt.actor,record.actor) or not self.a.same(receipt.parameter,record.parameter)
+            or not self.a.same(receipt.handle,record.handle) then error(ERROR,0) end
+    end
+end
+
+function Shape:begin_engagement(scope,member,record)
+    self:_validate(scope,member,false)
+    if self.case~=Shape.ENGAGEMENT_CASE or self.contract~=Shape.ENGAGEMENT_CONTRACT
+        or self.engagementRevoked or self.engagementArmAttempted or not self.consumed
+        or self.runner.state.stage~="engagement" or self.runner.state.spawned~=1 or self.runner.state.initialized~=1
+        or member.cleanupRequested or self.member.cleanupRequested or record.despawnRequested then error(ERROR,0) end
+    self.engagementArmAttempted=true
+    self:_engagement_receipts(record)
+    local now,start=self.native.bridge.clock(),self.runner.state.stageStartedAt
+    if not finite(now) or not finite(start) or now<start or now>start+5
+        or self.receipts[2].at>start or self.receipts[2].at<start-2 then error(ERROR,0) end
+    return start
+end
+
+function Shape:finish_engagement(record,state,start)
+    self:_validate(self.scope,self.member,false)
+    local now=self.native.bridge.clock()
+    if self.engagementRevoked or state.phase~="alive" or self.runner.state.stage~="engagement"
+        or self.runner.state.stageStartedAt~=start or not finite(now) or now<start or now>start+5 then
+        self:revoke_engagement("arm-ownership-unavailable")
+        return {armed=false,reason="engagement-ownership-unavailable"}
+    end
+    for _,receipt in ipairs(self.receipts) do
+        if not self.a.same(receipt.actor,state.actor) or not self.a.same(receipt.parameter,state.parameter)
+            or not self.a.same(receipt.controller,state.controller) then error(ERROR,0) end
+    end
+    local authorization={armed=true,case=self.case,experiment=self.contract,runId=self.runId,artifactSha256=self.artifact,
+        memberIndex=1,baseId=self.baseId,actorAddress=self.a.address(state.actor),samples=2,stageStartedAt=start,expiresAt=start+60}
+    self.engagementPermit={record=record,stageStartedAt=start,expiresAt=start+60,authorization=authorization}
+    return authorization
+end
+
+function Shape:validate_gameplay(scope,member,record,owned)
+    self:_validate(scope,member,false)
+    local permit=self.engagementPermit
+    local state=self.runner.state
+    local now=self.native.bridge.clock()
+    if permit and permit.record==record and state.stage=="engagement" and state.stageStartedAt==permit.stageStartedAt
+        and finite(now) and now>=permit.expiresAt then
+        self:revoke_engagement("expired")
+        return false
+    end
+    if self.case~=Shape.ENGAGEMENT_CASE or self.contract~=Shape.ENGAGEMENT_CONTRACT or self.engagementRevoked
+        or not self.consumed or not self.engagementArmAttempted or self.native.bridge.native_fault
+        or not permit or permit.record~=record or state.stage~="engagement"
+        or state.qualifiedEngagementArmed~=true or state.engagementAuthorization~=permit.authorization
+        or state.stageStartedAt~=permit.stageStartedAt or not finite(now) or now<permit.stageStartedAt or now>=permit.expiresAt
+        or state.failure or state.spawned~=1 or state.initialized~=1
+        or member.cleanupRequested or self.member.cleanupRequested or record.despawnRequested then
+        self:revoke_engagement("gameplay-scope-ended")
+        error(ERROR,0)
+    end
+    self:_engagement_receipts(record)
+    if owned then
+        for _,receipt in ipairs(self.receipts) do
+            if not self.a.same(receipt.actor,owned.actor) or not self.a.same(receipt.parameter,owned.parameter)
+                or not self.a.same(receipt.controller,owned.controller) then
+                self:revoke_engagement("gameplay-owner-changed")
+                error(ERROR,0)
+            end
+        end
+    end
+    return true
 end
 
 function Shape.reconcile(planned,actual)
@@ -479,7 +604,7 @@ end
 
 function Shape:observe(state)
     local result={comparison="UNSUPPORTED",phase=state.phase,instanceOnly=true,spawnQualified=false,
-        premise=Shape.PREMISE,experiment=Shape.CONTRACT}
+        premise=Shape.PREMISE,experiment=self.contract}
     if state.phase~="alive" then result.reasons={"member-"..state.phase}; return result end
     local actual,movement,partial=self:_geometry(state.actor,true)
     if not actual then result.actual=partial; result.reasons={movement}; return result end
