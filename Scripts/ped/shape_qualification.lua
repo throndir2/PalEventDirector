@@ -257,6 +257,7 @@ end
 
 function Shape:_candidate(position)
     local n,scope,member=self.native,self.scope,self.member
+    self.selectedSupportWitness=nil
     local function rejected(reason) return {ready=false,reason=reason} end
     local function duplicate()
         self.duplicates=self.duplicates+1
@@ -284,7 +285,7 @@ function Shape:_candidate(position)
     local envelope=proxy.halfHeight+math.abs(proxy.centerOffsetZ)
     if scope.range<=envelope or distance(point,scope.origin)>math.min(scope.range,9000)-envelope
         or math.abs(point.Z-scope.origin.Z)+envelope>500 then return rejected("shape-outside-base-envelope") end
-    local support=n:_placement_support(scope,member,point)
+    local support,support_witness=n:_placement_support(scope,member,point)
     if not support.ready then return support end
     local path_scope=util.shallow_copy(scope)
     path_scope.leashRadius=math.min(scope.leashRadius,scope.range,9000)-envelope
@@ -295,7 +296,7 @@ function Shape:_candidate(position)
     if not shape or not same_vector(shape.bodyProxy,proxy,0.001,{"radius","halfHeight","centerOffsetZ","lowerFootOffsetZ"}) then
         return rejected(reason or "shape-template-changed")
     end
-    local local_probe=Survey.new(n,scope,{point=point})
+    local local_probe=Survey.new(n,scope,{point=point,supportWitness=support_witness})
     local clearance=local_probe:local_proxy(point,shape)
     if type(clearance)~="table" or clearance.spawnQualified~=false or clearance.templateOnly~=true
         or clearance.localOnly~=true or type(clearance.complete)~="boolean" then error(ERROR,0) end
@@ -303,6 +304,7 @@ function Shape:_candidate(position)
         return {ready=false,reason="shape-local-proxy-"..(clearance.complete and clearance.classification or clearance.code or "unavailable"),
             support=support.support,localProxy=clearance}
     end
+    self.selectedSupportWitness=support_witness
     return {ready=true,position=vector(point),goal=vector(goal),proxy=util.deep_copy(proxy),localProxy=clearance,
         pathPoints=route.pathPoints,pathLength=route.pathLength,defaultNavDataUsed=route.defaultNavDataUsed}
 end
@@ -383,7 +385,7 @@ function Shape:prepare(scope,member)
         return blocked("shape-template-transform")
     end
     if self:_expired() then return blocked("spawn-placement-timeout") end
-    local survey=Survey.new(n,scope,{point=point})
+    local survey=Survey.new(n,scope,{point=point,supportWitness=self.selectedSupportWitness})
     local result=survey:run()
     if result.complete and result.classification~="proxy-clear" then
         return blocked("shape-survey-"..(result.classification or "unsupported"),result)

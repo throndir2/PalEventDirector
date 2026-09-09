@@ -998,6 +998,71 @@ function Native:_placement_start_overlap(scope,shape,start)
     return result
 end
 
+function Native.support_contact_metrics(start,finish,proposed,hit)
+    local result={diagnosticOnly=true,contactExceptionEnabled=false}
+    local function readable(value)
+        return value and finite(value.X) and finite(value.Y) and finite(value.Z)
+    end
+    local function same(left,right)
+        return readable(left) and readable(right) and left.X==right.X and left.Y==right.Y and left.Z==right.Z
+    end
+    local length=math.sqrt((finish.X-start.X)^2+(finish.Y-start.Y)^2+(finish.Z-start.Z)^2)
+    if not finite(length) or length<=0 or length>20 then return result end
+    result.traceLengthCm=length
+    if finite(hit.Time) and hit.Time>=0 and hit.Time<=1 then result.time=hit.Time end
+    if finite(hit.Distance) and hit.Distance>=0 and hit.Distance<=length+0.0001 then result.distanceCm=hit.Distance end
+    result.positiveTimeDistance=result.time~=nil and result.time>0 and result.distanceCm~=nil and result.distanceCm>0
+    result.traceEchoAvailable=readable(hit.TraceStart)==true and readable(hit.TraceEnd)==true
+    result.traceEchoAgreement=same(hit.TraceStart,start)==true and same(hit.TraceEnd,finish)==true
+    local location=hit.Location
+    if readable(location) then
+        local signed=proposed.Z-location.Z
+        if finite(signed) and math.abs(signed)<=100 then result.signedProposedMinusHitZ=signed end
+        result.sameXY=location.X==proposed.X and location.Y==proposed.Y
+        result.atOrBeforeReportedTOI=result.sameXY and location.Z<=proposed.Z and proposed.Z<=start.Z
+        if result.time~=nil then
+            local error_squared=0
+            for _,axis in ipairs({"X","Y","Z"}) do
+                error_squared=error_squared+(location[axis]-(start[axis]+result.time*(finish[axis]-start[axis])))^2
+            end
+            local error_cm=math.sqrt(error_squared)
+            if finite(error_cm) and error_cm<=100 then result.reconstructionErrorCm=error_cm end
+        end
+    end
+    if result.time~=nil and result.distanceCm~=nil then
+        result.distanceTimeErrorCm=math.abs(result.distanceCm-result.time*length)
+    end
+    result.reconstructionAgreement=result.reconstructionErrorCm~=nil and result.reconstructionErrorCm<=0.000001
+    result.distanceTimeAgreement=result.distanceTimeErrorCm~=nil and result.distanceTimeErrorCm<=0.0001
+    return result
+end
+
+function Native:_support_witness(scope,shape,point,component,observation)
+    local witness={native=self,scope=scope,world=scope.world,component=component,capsule=shape.capsule,cdo=shape.cdo,
+        radius=shape.radius,halfHeight=shape.halfHeight,walkableZ=shape.walkableZ,point=vector(point),traceType=3,traceComplex=false,
+        groundChannel=observation.startOverlap.groundChannel,createdAt=self.bridge.clock(),
+        metrics=util.deep_copy(observation.contact),startClear=observation.startOverlap.ready==true,
+        upwardClear=observation.clearanceBlocked==false,qualified=false}
+    if self.a.valid(shape.capsule) then
+        local scale=self.a.unwrap(shape.capsule.RelativeScale3D)
+        if scale and finite(scale.X) and finite(scale.Y) and finite(scale.Z) then witness.rootScale=vector(scale) end
+        local rotation=self.a.unwrap(shape.capsule.RelativeRotation)
+        if rotation and finite(rotation.Pitch) and finite(rotation.Yaw) and finite(rotation.Roll) then
+            witness.rootRotation={Pitch=rotation.Pitch,Yaw=rotation.Yaw,Roll=rotation.Roll}
+        end
+    end
+    local owner=self:_call("support-witness-owner",component,"GetOwner")
+    if not self.a.valid(owner) or not owner:IsA("/Script/Engine.Actor") then return witness end
+    witness.owner=owner
+    if not self.a.same(self:_call("support-witness-world",component,"GetWorld"),scope.world)
+        or not self.a.same(self:actor_world(owner),scope.world) then return witness end
+    local enabled=self:_call("support-witness-enabled",component,"GetCollisionEnabled")
+    local response=self:_call("support-witness-ground",component,"GetCollisionResponseToChannel",witness.groundChannel)
+    witness.enabled,witness.groundResponse=enabled,response
+    witness.qualified=(enabled==1 or enabled==3) and response==2 and finite(witness.createdAt)
+    return witness
+end
+
 function Native:_placement_support(scope, member, position)
     local shape, reason = self:_placement_shape(member.characterId)
     if not shape then return {ready=false,reason=reason} end
@@ -1017,6 +1082,7 @@ function Native:_placement_support(scope, member, position)
     if type(found)~="boolean" then error(SCOPE,0) end
     observation.found=found
     if not found then return outcome(false,"no-solid-support") end
+    observation.contact=Native.support_contact_metrics(start,finish,position,hit)
     -- UE4SS 3.0.1's copied struct bools read the shared byte, not each FBoolProperty mask.
     observation.copiedHitFlags={trust="UNTRUSTED"}
     if type(hit.bBlockingHit)=="boolean" then observation.copiedHitFlags.blockingHit=hit.bBlockingHit end
@@ -1054,7 +1120,8 @@ function Native:_placement_support(scope, member, position)
     if type(blocked)~="boolean" then error(SCOPE,0) end
     observation.clearanceBlocked=blocked
     if blocked then return outcome(false,"capsule-obstructed") end
-    return outcome(true)
+    -- This second return is process-local evidence only, never part of the public support result.
+    return outcome(true),self:_support_witness(scope,shape,position,component,observation)
 end
 
 function Native:_placement_surface(scope, member, position)

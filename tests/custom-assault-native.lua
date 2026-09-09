@@ -329,6 +329,11 @@ return function(test, equal, truthy)
                 hit.bBlockingHit,hit.bStartPenetrating=shared_byte~=0,shared_byte~=0
                 hit.ImpactNormal={X=0,Y=0,Z=f.normal or 1}
                 hit.Location=f.contact or util.shallow_copy(f.point)
+                hit.Time=f.hitTime or 0.5
+                hit.Distance=f.hitDistance or 5
+                hit.TraceStart=util.shallow_copy(start)
+                hit.TraceEnd=util.shallow_copy(finish)
+                if f.badTraceEcho then hit.TraceStart.Z=hit.TraceStart.Z+1 end
                 local function resolve() return not f.missingComponent and hit_component or nil end
                 hit.Component={Get=resolve,get=resolve}
                 hit.ActorName="private-hit-name"
@@ -336,9 +341,9 @@ return function(test, equal, truthy)
             end}
             function engine.bridge:_native_step(_,operation)
                 if self.native_fault then return false,self.native_fault end
-                local ok,result=pcall(operation)
-                if not ok then self.native_fault=result end
-                return ok,result
+                local values=table.pack(pcall(operation))
+                if not values[1] then self.native_fault=values[2] end
+                return table.unpack(values,1,values.n)
             end
             function f:probe(surface)
                 return engine.bridge:_native_step("fixture-support",function()
@@ -1204,6 +1209,40 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("support contact metrics retain signed TOI evidence without changing support acceptance",function()
+        for _,delta in ipairs({0,0.000023,-0.000023}) do
+            support_fixture(function(_,f)
+                f.contact={X=f.point.X,Y=f.point.Y,Z=f.point.Z-delta}
+                f.hitTime=(5+delta)/10; f.hitDistance=5+delta
+                local ok,result,witness=f:probe()
+                truthy(ok,result); equal(result.ready,true)
+                local contact=result.support.contact
+                equal(contact.diagnosticOnly,true); equal(contact.contactExceptionEnabled,false)
+                truthy(contact.positiveTimeDistance); equal(contact.traceEchoAgreement,true)
+                truthy(contact.reconstructionErrorCm<0.000001)
+                equal(contact.atOrBeforeReportedTOI,delta>=0)
+                truthy(math.abs(contact.signedProposedMinusHitZ-delta)<0.00000001)
+                truthy(witness.component); equal(result.support.component,nil); equal(result.support.witness,nil)
+                equal(f.supportSweeps,1); equal(f.clearanceQueries,1); equal(#f.overlapOutputs,1)
+            end)
+        end
+        support_fixture(function(_,f)
+            f.hitTime,f.hitDistance=0,0
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,true); equal(result.support.contact.positiveTimeDistance,false)
+        end)
+        support_fixture(function(_,f)
+            f.badTraceEcho=true
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,true); equal(result.support.contact.traceEchoAgreement,false)
+        end)
+        support_fixture(function(_,f)
+            f.hitTime=0.4
+            local ok,result=f:probe()
+            truthy(ok,result); equal(result.ready,true); equal(result.support.contact.reconstructionAgreement,false)
+        end)
+    end)
+
     test("start overlaps use the actual ground trace response and never a pawn profile or packed flag",function()
         support_fixture(function(_,f)
             f.hitByte=0
@@ -1218,7 +1257,7 @@ return function(test, equal, truthy)
             f.startComponents={f:component("static",0),f:component("shape",1)}
             local ok,result=f:probe()
             truthy(ok,result); equal(result.ready,true)
-            equal(result.support.startOverlap.blockers,0); equal(f.responseQueries,2)
+            equal(result.support.startOverlap.blockers,0); equal(f.responseQueries,3)
         end)
     end)
 

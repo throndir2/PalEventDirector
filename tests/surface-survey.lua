@@ -109,7 +109,10 @@ return function(test,equal,truthy)
         local state=object({IsA=function() return true end,GetWorld=function() return world end})
         local native={utility=object({
             GetPalGameStateInGame=function() return state end,GetWorldOceanPlaneZ=function() return 0 end,
-            GetEngineCollisionChannelByPalTraceType=function(_,kind) equal(kind,4); return 7 end,
+            GetEngineCollisionChannelByPalTraceType=function(_,kind)
+                truthy(kind==3 or kind==4)
+                return kind==3 and (f.groundChannel or 12) or 7
+            end,
             GetEngineCollisionChannelByPalObjectType=function(_,kind) equal(kind,2); return f.playerPawnChannel or 16 end,
         }),bridge={}}
         native.a={valid=function(v) return type(v)=="table" and v.IsValid and v:IsValid() end,
@@ -123,6 +126,8 @@ return function(test,equal,truthy)
         native.collision_profile=Native.collision_profile
         native.placement_collision_model=Native.placement_collision_model
         native.placement_mesh_policy=Native.placement_mesh_policy
+        native._support_witness=Native._support_witness
+        native.bridge.clock=function() return f.now or 1000 end
         native.actor_world=function(_,actor)
             if actor.foreign then return object(),object() end
             return world,actor.streamed and object() or persistent
@@ -149,15 +154,26 @@ return function(test,equal,truthy)
             GetCollisionProfileName=function() return f.meshProfile or "NoCollision" end,
             GetCollisionResponseToChannel=function() return f.meshResponse or 0 end})
         f.cdo=cdo
-        native._placement_shape=function() return {cdo=cdo,capsule=source,radius=30,halfHeight=30,bodyProxy={templateOnly=true,
+        native._placement_shape=function() return {cdo=cdo,capsule=source,radius=30,halfHeight=30,walkableZ=0.7,bodyProxy={templateOnly=true,
             radius=30,halfHeight=95,centerOffsetZ=62,lowerFootOffsetZ=-33,meshOffsetZ=-33}} end
         native.startup_floor=function() return {X=100,Y=200,Z=f.height or 1000} end
         f.survey=Survey.new(native,{world=world,positions={{X=100,Y=200,Z=1000}},origin={X=0,Y=0,Z=1000}},
             {clock=function() f.clockValue=f.clockValue+(f.clockStep or 0); return f.clockValue end})
-        function f:local_probe(shape)
+        function f:local_probe(shape,witness)
             local probe=Survey.new(native,self.survey.scope,{
+                supportWitness=witness,
                 clock=function() self.clockValue=self.clockValue+(self.clockStep or 0); return self.clockValue end})
             return probe:local_proxy({X=100,Y=200,Z=self.height or 1000},shape or native:_placement_shape()),probe
+        end
+        function f:witness(hit_z)
+            local point={X=100,Y=200,Z=self.height or 1000}
+            local start={X=point.X,Y=point.Y,Z=point.Z+5}
+            local finish={X=point.X,Y=point.Y,Z=point.Z-5}
+            local hit={Time=(start.Z-(hit_z or point.Z))/10,Distance=start.Z-(hit_z or point.Z),
+                TraceStart=start,TraceEnd=finish,Location={X=point.X,Y=point.Y,Z=hit_z or point.Z}}
+            local metrics=Native.support_contact_metrics(start,finish,point,hit)
+            return native:_support_witness(self.survey.scope,native:_placement_shape(),point,self.blocker,{
+                startOverlap={groundChannel=12,ready=true},clearanceBlocked=false,contact=metrics})
         end
         return f
     end
@@ -202,6 +218,88 @@ return function(test,equal,truthy)
         end
         f=fixture(); f.root={f.blocker}; f.ignoreSource=true
         equal(f:local_probe().classification,"proxy-clear")
+    end)
+
+    test("support association distinguishes exact component matches from owner-only matches and duplicates",function()
+        local f=fixture()
+        local witness=f:witness()
+        local other=require("ped.util").shallow_copy(f.blocker)
+        f.root={f.blocker,f.blocker,other,other}
+        local result=f:local_probe(nil,witness)
+        equal(result.classification,"blocked"); equal(result.mutualBlockers,4)
+        local root=result.rootClearance
+        equal(root.components,4); equal(root.distinctComponents,2); equal(root.duplicateComponents,2)
+        equal(root.distinctMutualBlockers,2); equal(root.duplicateMutualBlockers,2)
+        equal(root.supportAssociation.matchingSupportBlockers,1)
+        equal(root.supportAssociation.otherBlockers,1); equal(root.supportAssociation.label,"OTHER_BLOCKERS")
+        equal(root.componentCategories.staticMesh.distinctMutualBlockers,2)
+        equal(root.componentCategories.staticMesh.matchingSupportBlockers,1)
+        equal(root.componentCategories.staticMesh.otherBlockers,1)
+        f=fixture(); witness=f:witness(); other=require("ped.util").shallow_copy(f.blocker)
+        f.root={other}
+        result=f:local_probe(nil,witness)
+        equal(result.rootClearance.supportAssociation.matchingSupportBlockers,0)
+        equal(result.rootClearance.supportAssociation.otherBlockers,1)
+        equal(result.classification,"blocked")
+    end)
+
+    test("before at and arbitrarily small past TOI associations remain diagnostic and blocked",function()
+        for _,delta in ipairs({0,0.000023,-0.000023,-0.000000001}) do
+            local f=fixture()
+            f.root={f.blocker,f.blocker}
+            local witness=f:witness(1000-delta)
+            local result=f:local_probe(nil,witness)
+            local association=result.rootClearance.supportAssociation
+            equal(association.label,delta<0 and "PAST_TOI_AMBIGUOUS" or "CONTACT_CANDIDATE")
+            equal(association.trace.atOrBeforeReportedTOI,delta>=0)
+            equal(association.matchingSupportBlockers,1); equal(association.otherBlockers,0)
+            equal(association.bodyScopeQualified,false); equal(association.contactExceptionEnabled,false)
+            equal(result.classification,"blocked"); equal(result.spawnQualified,false)
+            equal(f.queries,2)
+        end
+    end)
+
+    test("stale wrong-scope shape point and filter witnesses never become contact permission",function()
+        for _,change in ipairs({
+            function(f,w) f.now=1003 end,
+            function(_,w) w.radius=31 end,
+            function(_,w) w.point.Z=w.point.Z+0.0000001 end,
+            function(_,w) w.world={} end,
+            function(_,w) w.scope={} end,
+            function(_,w) w.groundChannel=11 end,
+            function(_,w) w.owner={} end,
+            function(_,w) w.qualified=false end,
+        }) do
+            local f=fixture(); f.root={f.blocker}
+            local witness=f:witness()
+            change(f,witness)
+            local result=f:local_probe(nil,witness)
+            equal(result.rootClearance.supportAssociation.witnessQualified,false)
+            equal(result.rootClearance.supportAssociation.matchingSupportBlockers,0)
+            equal(result.classification,"blocked"); equal(result.spawnQualified,false)
+        end
+    end)
+
+    test("support witness objects and hit coordinates never enter local or final survey results",function()
+        local f=fixture(); f.root={f.blocker}
+        local witness=f:witness()
+        witness.metrics.privateHit={Location={X=100,Y=200,Z=1000},Component=f.blocker}
+        local result=f:local_probe(nil,witness)
+        local function plain(value)
+            if type(value)=="table" then
+                equal(value.IsValid,nil); equal(value.GetWorld,nil); equal(value.GetOwner,nil)
+                for _,item in pairs(value) do plain(item) end
+            else truthy(type(value)~="userdata" and type(value)~="function") end
+        end
+        plain(result)
+        local encoded=require("ped.json").encode(result)
+        equal(encoded:find("privateHit",1,true),nil); equal(encoded:find('"component":',1,true),nil)
+        equal(encoded:find('"TraceStart":',1,true),nil); equal(encoded:find('"observedAt":',1,true),nil)
+        local survey=Survey.new(f.survey.native,f.survey.scope,{point={X=100,Y=200,Z=1000},supportWitness=witness})
+        local full=survey:run()
+        equal(full.rootClearance.supportAssociation.label,"CONTACT_CANDIDATE")
+        equal(full.classification,"blocked"); equal(full.spawnQualified,false)
+        plain(full)
     end)
 
     test("disabled mesh body-only solid contact never becomes an invented root blocker",function()

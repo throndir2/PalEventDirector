@@ -209,7 +209,7 @@ return function(test,equal,truthy)
         engine._placement_support=function(_,_,_,point)
             f.supportPoints[#f.supportPoints+1]=util.shallow_copy(point)
             if f.support_result then return f.support_result(point,#f.supportPoints) end
-            return {ready=not f.support_missing,reason="support-fixture-missing"}
+            return {ready=not f.support_missing,reason="support-fixture-missing"},f.supportWitness
         end
         engine._placement_path=function(_,scope,_,point,goal)
             truthy(scope.leashRadius<=4000)
@@ -266,6 +266,7 @@ return function(test,equal,truthy)
                     rootCollision=root_collision,expectedRootCollision=expected,mesh=mesh_policy}
             end
             function probe:local_proxy(point,shape)
+                f.localSupportWitness=options.supportWitness
                 f.prefilters=f.prefilters+1
                 local result=f.local_proxy_result and f.local_proxy_result(point,shape,f.prefilters)
                     or {complete=true,classification="proxy-clear",spawnQualified=false,templateOnly=true,localOnly=true}
@@ -275,6 +276,7 @@ return function(test,equal,truthy)
                 return result
             end
             function probe:run()
+                f.finalSupportWitness=options.supportWitness
                 f.surveys=f.surveys+1
                 if f.on_survey then f.on_survey() end
                 local measured=engine:_placement_shape("BOSS_Hunter_Rifle")
@@ -584,6 +586,21 @@ return function(test,equal,truthy)
             for _,axis in ipairs({"X","Y","Z"}) do equal(result.position[axis],f.pathPoints[2].point[axis]) end
             equal(f.spawns,0); truthy(f:spawn()); equal(f.spawns,1)
             equal(f.engine:prepare_spawn(f.scope,f.member),false); equal(f.surveys,1)
+        end)
+    end)
+
+    test("candidate support witnesses remain process-local through local and final surveys",function()
+        fixture(function(f,object)
+            local opaque=object()
+            f.supportWitness={component=opaque,world=opaque,privateHit={secretCoordinates=true}}
+            local result=f:prepare()
+            equal(result.ready,true)
+            equal(f.localSupportWitness,f.supportWitness); equal(f.finalSupportWitness,f.supportWitness)
+            equal(f.engine.shapeQualification.selectedSupportWitness,f.supportWitness)
+            local encoded=require("ped.json").encode(result)
+            equal(encoded:find("privateHit",1,true),nil); equal(encoded:find("secretCoordinates",1,true),nil)
+            equal(encoded:find("supportWitness",1,true),nil)
+            equal(result.spawnQualified,false); equal(f.surveys,1)
         end)
     end)
 

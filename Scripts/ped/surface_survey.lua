@@ -38,6 +38,7 @@ end
 function Survey.new(native,scope,options)
     return setmetatable({native=native,a=native.a,bridge=native.bridge,scope=scope,world=scope.world,
         requestedPoint=options and options.point and vector(options.point),
+        supportWitness=options and options.supportWitness,
         clock=options and options.clock or os.clock,
         result={complete=false,spawnQualified=false,templateOnly=true,queries=0},waters={}},Survey)
 end
@@ -288,17 +289,80 @@ function Survey:_physical_policy(shape)
         rootCapsule={radius=shape.radius,halfHeight=shape.halfHeight,centerOffsetZ=0},mesh=mesh}
 end
 
-function Survey:_classify_contacts(components,physical)
+function Survey:_support_association(point,shape)
+    self.associationComponent=nil
+    local result={diagnosticOnly=true,contactExceptionEnabled=false,bodyScopeQualified=false,witnessQualified=false,
+        label="SUPPORT_WITNESS_UNAVAILABLE",matchingSupportBlockers=0,otherBlockers=0,unassociatedBlockers=0}
+    local witness=self.supportWitness
+    if not witness then return result end
+    local now=self.native.bridge.clock()
+    if not finite(now) or not finite(witness.createdAt) or now<witness.createdAt or now>witness.createdAt+2 then
+        result.label="STALE_SUPPORT_WITNESS"; return result
+    end
+    result.label="UNQUALIFIED_SUPPORT_WITNESS"
+    if witness.native~=self.native or witness.scope~=self.scope or not self.a.same(witness.world,self.world)
+        or not self.a.same(witness.cdo,shape.cdo) or not self.a.same(witness.capsule,shape.capsule)
+        or witness.radius~=shape.radius or witness.halfHeight~=shape.halfHeight
+        or not finite(witness.walkableZ) or witness.walkableZ~=shape.walkableZ
+        or witness.qualified~=true
+        or witness.traceType~=3 or witness.traceComplex~=false or not witness.startClear or not witness.upwardClear then return result end
+    local scale,rotation=shape.capsule.RelativeScale3D,shape.capsule.RelativeRotation
+    if not scale or not rotation then return result end
+    for _,axis in ipairs({"X","Y","Z"}) do
+        if not witness.point or witness.point[axis]~=point[axis] or not witness.rootScale
+            or witness.rootScale[axis]~=scale[axis] then return result end
+    end
+    for _,axis in ipairs({"Pitch","Yaw","Roll"}) do
+        if not witness.rootRotation or witness.rootRotation[axis]~=rotation[axis] then return result end
+    end
+    local component=witness.component
+    if not self.a.valid(component) or not component:IsA("/Script/Engine.PrimitiveComponent") or not self.a.valid(witness.owner) then return result end
+    local owner=self:_call("support-association-owner",component,"GetOwner")
+    if not self.a.same(owner,witness.owner) or not owner:IsA("/Script/Engine.Actor")
+        or not self.a.same(self:_call("support-association-world",component,"GetWorld"),self.world)
+        or not self.a.same(self.native:actor_world(owner),self.world) then return result end
+    local ground=self:_call("support-association-ground-channel",self.native.utility,"GetEngineCollisionChannelByPalTraceType",3)
+    if ground~=witness.groundChannel or not util.is_integer(ground) or ground<0 or ground>31 then return result end
+    local enabled=self:_call("support-association-enabled",component,"GetCollisionEnabled")
+    local response=self:_call("support-association-ground-response",component,"GetCollisionResponseToChannel",ground)
+    if enabled~=witness.enabled or (enabled~=1 and enabled~=3) or response~=2 or witness.groundResponse~=2 then return result end
+    result.witnessQualified=true
+    result.trace={}
+    for _,key in ipairs({"time","distanceCm","traceLengthCm","reconstructionErrorCm","distanceTimeErrorCm","signedProposedMinusHitZ"}) do
+        local value=witness.metrics and witness.metrics[key]
+        if finite(value) and math.abs(value)<=100 then result.trace[key]=value end
+    end
+    for _,key in ipairs({"positiveTimeDistance","traceEchoAvailable","traceEchoAgreement","reconstructionAgreement",
+        "distanceTimeAgreement","sameXY","atOrBeforeReportedTOI"}) do
+        local value=witness.metrics and witness.metrics[key]
+        if type(value)=="boolean" then result.trace[key]=value end
+    end
+    self.associationComponent=component
+    return result
+end
+
+function Survey:_classify_contacts(components,physical,association)
     local contacts,blockers,unknown,unsupported=0,0,0,nil
-    local result={components=#components,componentCategories={},nonWaterContacts=0}
+    local result={components=#components,componentCategories={},nonWaterContacts=0,distinctComponents=0,distinctMutualBlockers=0}
+    local seen_components,seen_blockers={},{}
+    local function first(values,component)
+        for _,previous in ipairs(values) do if self.a.same(previous,component) then return false end end
+        values[#values+1]=component
+        return true
+    end
     for _,wrapped in ipairs(components) do
         local component=self.a.unwrap(wrapped)
         local info,why=self:_component(component)
         local category=component_category(component)
         local counts=result.componentCategories[category] or
-            {components=0,waterContacts=0,mutualBlockers=0,unqualifiedBodies=0,nonWaterContacts=0}
+            {components=0,waterContacts=0,mutualBlockers=0,unqualifiedBodies=0,nonWaterContacts=0,
+                distinctComponents=0,distinctMutualBlockers=0,matchingSupportBlockers=0,otherBlockers=0}
         result.componentCategories[category]=counts
         counts.components=counts.components+1
+        if first(seen_components,component) then
+            result.distinctComponents=result.distinctComponents+1
+            counts.distinctComponents=counts.distinctComponents+1
+        end
         local kind=info and self:_water(component,info.owner,true)
         if not info or kind=="unsupported" then
             unknown,counts.unqualifiedBodies=unknown+1,counts.unqualifiedBodies+1
@@ -314,10 +378,46 @@ function Survey:_classify_contacts(components,physical)
             elseif physical and self.effectiveSourceCollision.responses[info.objectType+1]==2
                 and self:_response(component,self.sourceCollision.objectType)==2 then
                 blockers,counts.mutualBlockers=blockers+1,counts.mutualBlockers+1
+                if first(seen_blockers,component) then
+                    result.distinctMutualBlockers=result.distinctMutualBlockers+1
+                    counts.distinctMutualBlockers=counts.distinctMutualBlockers+1
+                    if association then
+                        if not association.witnessQualified then
+                            association.unassociatedBlockers=association.unassociatedBlockers+1
+                        elseif self.a.same(component,self.associationComponent) then
+                            association.matchingSupportBlockers=association.matchingSupportBlockers+1
+                            counts.matchingSupportBlockers=counts.matchingSupportBlockers+1
+                        else
+                            association.otherBlockers=association.otherBlockers+1
+                            counts.otherBlockers=counts.otherBlockers+1
+                        end
+                    end
+                end
             end
         end
     end
     result.waterContacts,result.mutualBlockers,result.unqualifiedBodies=contacts,blockers,unknown
+    result.duplicateComponents=result.components-result.distinctComponents
+    result.duplicateMutualBlockers=result.mutualBlockers-result.distinctMutualBlockers
+    if association then
+        if association.witnessQualified then
+            local now=self.native.bridge.clock()
+            if not finite(now) or now<self.supportWitness.createdAt or now>self.supportWitness.createdAt+2 then
+                association.witnessQualified=false
+                association.label="STALE_SUPPORT_WITNESS"
+            end
+        end
+        if association.witnessQualified then
+            local trace=association.trace
+            if association.otherBlockers>0 then association.label="OTHER_BLOCKERS"
+            elseif association.matchingSupportBlockers==0 then association.label="NO_ROOT_BLOCKERS"
+            elseif trace.signedProposedMinusHitZ and trace.signedProposedMinusHitZ<0 then association.label="PAST_TOI_AMBIGUOUS"
+            elseif trace.positiveTimeDistance and trace.traceEchoAgreement and trace.reconstructionAgreement
+                and trace.distanceTimeAgreement and trace.atOrBeforeReportedTOI then association.label="CONTACT_CANDIDATE"
+            else association.label="UNQUALIFIED_CONTACT_DATA" end
+        end
+        result.supportAssociation=association
+    end
     return result,unsupported
 end
 
@@ -342,7 +442,8 @@ function Survey:_local_proxy(point,shape)
     roots,reason=self:_query("CapsuleOverlapComponents","rootCapsule",point,shape.radius,shape.halfHeight,queries,nil,{})
     if not roots then return self:_stop(reason) end
     local root_reason,proxy_reason
-    self.result.rootClearance,root_reason=self:_classify_contacts(roots,true)
+    local association=self:_support_association(point,shape)
+    self.result.rootClearance,root_reason=self:_classify_contacts(roots,true,association)
     center.Z=center.Z+proxy.centerOffsetZ
     local components
     components,reason=self:_query("CapsuleOverlapComponents","waterProxy",center,proxy.radius,proxy.halfHeight,queries,nil,{})
