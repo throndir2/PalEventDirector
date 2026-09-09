@@ -302,6 +302,9 @@ end
 
 function Test:_save(kind)
     if self.journalFailed then return false end
+    local hooks=self.engine.bridge and self.engine.bridge.hook_observed or {}
+    self.state.damageHookCalls,self.state.deathHookCalls=hooks.damage or 0,hooks.death or 0
+    self.state.pendingDamageReceipts=#self.damageQueue
     local called, ok = pcall(self.store.append, self.store, kind, { stage = self.state.stage, status = self.state.status }, self.state)
     if not called or not ok then
         self.state.status, self.state.code = "failed", "journal-write"
@@ -717,8 +720,6 @@ function Test:_tick()
                         if self.stopped then return end
                         if not observed then return self:halt(details) end
                         member.combatObservation = details
-                        self.state.damageHookCalls = self.engine.bridge and self.engine.bridge.hook_observed
-                            and self.engine.bridge.hook_observed.damage or 0
                         if not self:_save(dispatched and "startup_engagement_returned" or "startup_combat_observed") then return end
                     end
                     if result == "unavailable" then

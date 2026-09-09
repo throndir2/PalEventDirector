@@ -458,6 +458,24 @@ return function(test, equal, truthy)
         equal(f.runner.state.cadence.status,"UNRESOLVED"); equal(f.despawns,0); equal(f.helper_closes,nil)
     end)
 
+    test("terminal startup checkpoints retain hook counts and uncredited pending receipts",function()
+        local f=fixture(Cadence.CASE)
+        f.physical_ready=true
+        f:tick(20)
+        equal(f.runner.state.damageHookCalls,0); equal(f.runner.state.deathHookCalls,0)
+        f.runner.engine.bridge.hook_observed={damage=4,death=1}
+        f.legal_target={}
+        f.runner:on_damage({},f.actors[1],10)
+        f.runner:on_damage(f.actors[1],f.legal_target,1)
+        f.phases[1]="dead"
+        f:tick(5)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"unexpected-member-dead")
+        equal(f.saved.damageHookCalls,4); equal(f.saved.deathHookCalls,1)
+        equal(f.saved.pendingDamageReceipts,2)
+        equal(f.saved.dealtDamageEvents,nil); equal(f.saved.receivedDamageEvents,nil)
+        equal(f.runner.state.cleanupComplete,true)
+    end)
+
     test("qualified engagement waits for two samples and an arm before dispatch without fabricated movement",function()
         local f=fixture(Shape.ENGAGEMENT_CASE)
         f.physical_ready=true
