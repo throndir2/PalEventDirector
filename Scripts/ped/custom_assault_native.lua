@@ -934,9 +934,11 @@ function Native:_placement_support(scope, member, position)
     if normal.Z<shape.walkableZ then return outcome(false,"support-not-walkable") end
     if math.abs(location.X-position.X)>10 or math.abs(location.Y-position.Y)>10 or math.abs(location.Z-position.Z)>10
         or distance_squared(location,position)>10^2 then return outcome(false,"support-moved") end
-    local weak = self.a.unwrap(hit.Component)
+    -- The copied weak pointer already exposes Get/get; generic unwrap would resolve it twice.
+    local weak = hit.Component
     if weak==nil then return outcome(false,"support-component-unavailable") end
-    local component = weak:Get()
+    local resolved,component=self.bridge:_native_step("custom-support-hit-component",function() return weak:Get() end)
+    if not resolved then error(component,0) end
     if not self.a.valid(component) or not component:IsA("/Script/Engine.PrimitiveComponent") then
         return outcome(false,"support-component-unavailable")
     end

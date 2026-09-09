@@ -151,6 +151,39 @@ function Test.finalize_pending_cleanup(store, evidence)
     return store:save_snapshot(state)
 end
 
+function Test.finalize_shape_support_fault(store,evidence)
+    local last=store.records[#store.records]
+    local previous=last and last.state
+    assert(previous,"No startup support state is available")
+    Test.validate_state(previous,previous.runId)
+    assert(previous.runId=="20260909-074037-19fcb48d81ce4063b5c8fe64017c1b9c"
+        and previous.sourceRevision=="10fb2eb52a351eed9b8ec5432d30a47991149e4d"
+        and previous.artifactSha256=="6c90bc5493830d7178cdb444426fde15feab416afdd21aba856a3fc538b95c0a"
+        and previous.case==Shape.CASE and previous.experiment==Shape.CONTRACT
+        and previous.status=="failed" and previous.stage=="spawn" and previous.code=="unclassified-lua-error"
+        and previous.spawned==0 and previous.initialized==0 and previous.cleaned==0
+        and previous.helpersCreated==1 and previous.helpersCleaned==0 and #previous.members==1
+        and not previous.members[1].spawnRequested and previous.mutationStarted and not previous.cleanupComplete,
+        "This failure is outside the audited shape-support finalization scope")
+    for _,record in ipairs(store.records) do
+        assert(record.kind~="startup_spawn_intent","NPC work prevents support-only finalization")
+    end
+    assert(type(evidence)=="table" and evidence.processExitVerified==true and evidence.runId==previous.runId
+        and evidence.certificateSha256=="47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f"
+        and evidence.serverExecutableSha256=="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02"
+        and evidence.serverPakSha256=="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe",
+        "Verified old-world exit and pinned support-only evidence are required")
+    local state=util.deep_copy(previous)
+    state.status,state.code,state.cleanupComplete="blocked","shape-support-runtime-finalized",true
+    state.failedArtifactSha256=previous.artifactSha256
+    state.helpersFinalized=1
+    state.finalization=util.deep_copy(evidence)
+    state.finalization.disposition="noncharacter-support-world-ended; no-NPC-intent"
+    local ok,reason=store:append("startup_shape_support_runtime_finalized",{disposition=state.finalization.disposition},state)
+    if not ok then return false,reason end
+    return store:save_snapshot(state)
+end
+
 function Test.new(options)
     local plan = assert(options.plan)
     assert(plan.schemaVersion == 1 and CASES[plan.case], "Startup test plan is invalid")

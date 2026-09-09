@@ -273,6 +273,34 @@ return function(test, equal, truthy)
         equal(f.runner.state.code, "custom-assault-initialization")
     end)
 
+    test("shape helper finalization is pinned to the no-NPC fault and preserves its failed artifact",function()
+        local state={schemaVersion=1,runId="20260909-074037-19fcb48d81ce4063b5c8fe64017c1b9c",
+            sourceRevision="10fb2eb52a351eed9b8ec5432d30a47991149e4d",
+            artifactSha256="6c90bc5493830d7178cdb444426fde15feab416afdd21aba856a3fc538b95c0a",
+            case=Shape.CASE,experiment=Shape.CONTRACT,status="failed",stage="spawn",code="unclassified-lua-error",
+            spawned=0,initialized=0,cleaned=0,moved=0,helpersCreated=1,helpersCleaned=0,
+            mutationStarted=true,cleanupComplete=false,members={{phase="planned"}}}
+        local written
+        local store={records={{kind="startup_test_failed",state=state}},
+            append=function(_,kind,_,value) equal(kind,"startup_shape_support_runtime_finalized"); written=value; return true end,
+            save_snapshot=function() return true end}
+        local proof={processExitVerified=true,runId=state.runId,
+            certificateSha256="47eb24443003b8795e2c3a246a4d0728ddb0c2076fdc76db615c299e1fc4ee8f",
+            serverExecutableSha256="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02",
+            serverPakSha256="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"}
+        truthy(Startup.finalize_shape_support_fault(store,proof))
+        equal(written.helpersCleaned,0); equal(written.helpersFinalized,1); equal(written.spawned,0)
+        equal(written.cleanupComplete,true); equal(written.failedArtifactSha256,state.artifactSha256)
+        equal(state.status,"failed"); equal(state.cleanupComplete,false)
+        proof.processExitVerified=false
+        equal(pcall(Startup.finalize_shape_support_fault,store,proof),false)
+        proof.processExitVerified=true
+        store.records[1].kind="startup_spawn_intent"
+        equal(pcall(Startup.finalize_shape_support_fault,store,proof),false)
+        store.records[1].kind="startup_test_failed"; state.members[1].spawnRequested=true
+        equal(pcall(Startup.finalize_shape_support_fault,store,proof),false)
+    end)
+
     test("startup durability failure prevents the corresponding native call", function()
         local f = fixture()
         f.fail_record = "startup_spawn_intent"

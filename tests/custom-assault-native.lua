@@ -318,7 +318,8 @@ return function(test, equal, truthy)
                 hit.bBlockingHit,hit.bStartPenetrating=shared_byte~=0,shared_byte~=0
                 hit.ImpactNormal={X=0,Y=0,Z=f.normal or 1}
                 hit.Location=f.contact or util.shallow_copy(f.point)
-                hit.Component={Get=function() return not f.missingComponent and hit_component or nil end}
+                local function resolve() return not f.missingComponent and hit_component or nil end
+                hit.Component={Get=resolve,get=resolve}
                 hit.ActorName="private-hit-name"
                 return f.sweepFound~=false
             end}
@@ -1172,6 +1173,23 @@ return function(test, equal, truthy)
             ok,result=f:probe()
             truthy(ok,result); equal(result.ready,true)
             equal(result.support.copiedHitFlags.blockingHit,false)
+        end)
+
+        test("copied weak hit components are resolved once without the generic unwrap helper",function()
+            support_fixture(function(engine,f)
+                local previous=engine.a.unwrap
+                local weak_unwraps=0
+                engine.a.unwrap=function(value)
+                    if type(value)=="table" and type(value.get)=="function" then
+                        weak_unwraps=weak_unwraps+1
+                        return value:get()
+                    end
+                    return previous(value)
+                end
+                local ok,result=f:probe()
+                truthy(ok,result); equal(result.ready,true); equal(weak_unwraps,0)
+                equal(f.clearanceQueries,1)
+            end)
         end)
     end)
 
