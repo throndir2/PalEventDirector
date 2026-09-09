@@ -71,6 +71,7 @@ function Shape.new(native,runner,scope,member)
     local state=runner.state
     local self=setmetatable({native=native,a=native.a,runner=runner,scope=scope,member=member,
         case=state.case,contract=CONTRACTS[state.case],receipts={},
+        baseOrdinal=state.baseOrdinal,
         runId=state.runId,artifact=state.artifactSha256,source=state.sourceRevision,
         base=scope.base,world=scope.world,baseId=scope.baseId,guildId=scope.guildId,
         origin=vector(scope.origin),range=scope.range,leashRadius=scope.leashRadius,
@@ -87,6 +88,7 @@ function Shape:_validate(scope,member,spawning)
     if n.bridge.startup_test~=runner or runner.engine~=n or runner.stopped or state.status~="running"
         or not self.contract or state.case~=self.case or state.experiment~=self.contract
         or state.runId~=self.runId or state.artifactSha256~=self.artifact or state.sourceRevision~=self.source
+        or state.baseOrdinal~=self.baseOrdinal
         or n.bridge.delivery_profile~="laboratory-native-test" or n.bridge.config.mode~="laboratory"
         or n.bridge.config.capabilities.startAllInvasions~=true
         or os.getenv("COMPUTERNAME")~="IMOUTO" or os.getenv("PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN")~=self.runId

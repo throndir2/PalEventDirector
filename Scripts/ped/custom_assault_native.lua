@@ -323,7 +323,16 @@ function Native:prepare(world)
     return true
 end
 
-function Native:startup_prepare(count)
+function Native.startup_base_ids(ids,count,ordinal)
+    if ordinal==nil then return ids end
+    if not util.is_integer(ordinal) or ordinal<1 or ordinal>64 or not util.is_integer(count) or count<1 then error(SCOPE,0) end
+    if ordinal+count-1>#ids then return nil end
+    local selected={}
+    for index=ordinal,ordinal+count-1 do selected[#selected+1]=ids[index] end
+    return selected
+end
+
+function Native:startup_prepare(count,ordinal)
     return self.bridge:_native_step("startup-world-and-bases", function()
         local find = rawget(_G, "FindAllOf")
         if type(find) ~= "function" then error(SCOPE, 0) end
@@ -357,12 +366,14 @@ function Native:startup_prepare(count)
         if #ids < count then return nil end
         if #ids > self.bridge.config.limits.maxBases then error(SCOPE, 0) end
         table.sort(ids)
+        local selected=Native.startup_base_ids(ids,count,ordinal)
+        if not selected then return {blockedCode="selected-base-unavailable",availableBases=#ids,candidates={}} end
         self:prepare(world)
         self.startupPawnClass = self:_class(STARTUP_PAWN)
         if not self.a.valid(self:_call("startup-pawn-cdo", self.startupPawnClass, "GetCDO")) then error(SCOPE, 0) end
         local scopes, candidates = {}, {}
         local physical = { sampled = 0, floor = 0, centerFloor = 0, centerTrace = 0, spawnNav = 0, goalNav = 0 }
-        for _, id in ipairs(ids) do
+        for _, id in ipairs(selected) do
             local target, reason = self.bridge:_resolve_dispatch_target(manager, id)
             if not target then error(reason, 0) end
             local scope = self:prepare_base(id, target, world, {})

@@ -20,7 +20,8 @@ return function(test, equal, truthy)
             f.surveys=(f.surveys or 0)+1
             return true,{complete=not f.survey_blocked,spawnQualified=false,code="fixture-survey"}
         end
-        function engine:startup_prepare(count)
+        function engine:startup_prepare(count,ordinal)
+            f.selectedOrdinal=ordinal
             if f.not_ready then return true, nil end
             if f.prepare_fault then return false, "Native operation stopped [custom-assault-scope]" end
             if f.physical_block then return true, {blockedCode="floor-or-navigation-unavailable",physical={floor=0},
@@ -153,6 +154,16 @@ return function(test, equal, truthy)
         f:tick()
         equal(f.runner.state.status, "blocked")
         equal(f.runner.state.cleanupComplete, true)
+    end)
+
+    test("startup discovery receives the explicitly recorded base ordinal",function()
+        local f=fixture()
+        f.runner.state.baseOrdinal=2
+        f:tick()
+        equal(f.selectedOrdinal,2)
+        equal(f.runner.state.baseOrdinal,2)
+        f.runner.state.baseOrdinal=0
+        equal(pcall(Startup.validate_state,f.runner.state,"fixture-run"),false)
     end)
 
     test("startup spawn smoke requires initialized actors and confirmed cleanup", function()

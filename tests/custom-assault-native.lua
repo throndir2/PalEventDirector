@@ -7,6 +7,17 @@ return function(test, equal, truthy)
         return engine:cleanup_recovered(members, function() return true end)
     end
 
+    test("explicit startup base selection never substitutes a later available base",function()
+        local ids={"first","second","third"}
+        local selected=Native.startup_base_ids(ids,1,2)
+        equal(#selected,1); equal(selected[1],"second")
+        equal(Native.startup_base_ids(ids,2,3),nil)
+        selected=Native.startup_base_ids(ids,2,2)
+        equal(selected[1],"second"); equal(selected[2],"third")
+        equal(Native.startup_base_ids(ids,1,nil),ids)
+        equal(pcall(Native.startup_base_ids,ids,1,0),false)
+    end)
+
     local function fixture(callback)
         local f = { initialized = true, active = true, dead = false, capturing = false, calls = {}, spawns = 0 }
         local zero = { A = 0, B = 0, C = 0, D = 0 }

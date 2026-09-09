@@ -20,6 +20,8 @@ function Test.validate_state(state, run_id)
         and type(state.mutationStarted) == "boolean" and type(state.cleanupComplete) == "boolean"
         and type(state.artifactSha256) == "string" and #state.artifactSha256 == 64 and state.artifactSha256:match("^%x+$"),
         "Startup test outcome is invalid")
+    assert(state.baseOrdinal==nil or (util.is_integer(state.baseOrdinal) and state.baseOrdinal>=1
+        and state.baseOrdinal<=64 and state.case~="class-catalog"),"Startup test base selection is invalid")
     for _, field in ipairs({ "spawned", "initialized", "cleaned", "moved" }) do
         assert(util.is_integer(state[field]) and state[field] >= 0 and state[field] <= CASES[state.case], "Startup test counts are invalid")
     end
@@ -208,12 +210,15 @@ function Test.new(options)
     assert(type(plan.runId) == "string" and plan.runId:match("^[a-z0-9%-]+$") and #plan.runId <= 80, "Startup test run identity is invalid")
     assert(type(plan.sourceRevision) == "string" and #plan.sourceRevision == 40 and plan.sourceRevision:match("^%x+$"), "Startup test source is invalid")
     assert(type(plan.artifactSha256) == "string" and #plan.artifactSha256 == 64 and plan.artifactSha256:match("^%x+$"), "Startup test artifact is invalid")
+    assert(plan.baseOrdinal==nil or (util.is_integer(plan.baseOrdinal) and plan.baseOrdinal>=1 and plan.baseOrdinal<=64
+        and plan.case~="class-catalog"),"Startup test base selection is invalid")
     assert(plan.experiment==Shape.contract(plan.case), "Startup shape experiment contract is invalid")
     local self = setmetatable({
         engine = assert(options.engine), store = assert(options.store), logger = assert(options.logger),
         clock = options.clock or util.now_seconds, runtime = {}, cursor = 1, damageQueue = {},
         state = { schemaVersion = 1, runId = plan.runId, case = plan.case, sourceRevision = plan.sourceRevision,
             artifactSha256 = plan.artifactSha256,
+            baseOrdinal=plan.baseOrdinal,
             experiment=plan.experiment, experimentalPremise=Shape.contract(plan.case) and Shape.PREMISE or nil,
             status = "running", stage = plan.case == "class-catalog" and "class-catalog" or "world",
             startedAt = (options.clock or util.now_seconds)(),
@@ -378,7 +383,7 @@ function Test:_tick()
         if not self:_save("startup_catalog_class_qualified") then return end
         self.cursor = self.cursor + 1
     elseif stage == "world" then
-        local ok, result = self.engine:startup_prepare(CASES[self.state.case])
+        local ok, result = self.engine:startup_prepare(CASES[self.state.case],self.state.baseOrdinal)
         if not ok then return self:halt(result) end
         if not result then
             if now >= self.state.startedAt + 120 then self:_finish("blocked", "world-or-bases-not-ready") end

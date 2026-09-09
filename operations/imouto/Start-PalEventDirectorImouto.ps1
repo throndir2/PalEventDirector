@@ -11,6 +11,9 @@ param(
     [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey', 'ShapeQualification', 'QualifiedEngagement')]
     [string]$StartupTest = 'None',
 
+    [ValidateRange(0,64)]
+    [int]$StartupTestBaseIndex = 0,
+
     [Parameter(DontShow)]
     [string]$ServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer',
 
@@ -23,6 +26,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if ($StartupTestBaseIndex -gt 0 -and $StartupTest -in @('None','ClassCatalog')) {
+    throw 'An explicit base index requires a world-based startup scenario.'
+}
 
 $CanonicalServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer'
 $ExpectedAppId = '2394010'
@@ -207,6 +213,7 @@ $launch = [ordered]@{
     Ue4ssTag = $ExpectedRuntimeTag
     Ue4ssApiVersion = $ExpectedRuntimeApi
     StartupTest = $StartupTest
+    StartupTestBaseIndex = $StartupTestBaseIndex
 }
 $testRoot = Join-Path $DataDirectory 'startup-tests'
 $activeTestPath = Join-Path $testRoot 'active.json'
@@ -354,6 +361,7 @@ try {
         $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey'; ShapeQualification='shape-qualification'; QualifiedEngagement='qualified-engagement' }
         $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
             artifactSha256=[string]$deployment.artifactSha256 }
+        if ($StartupTestBaseIndex -gt 0) { $plan['baseOrdinal'] = $StartupTestBaseIndex }
         if ($StartupTest -eq 'ShapeQualification') { $plan['experiment'] = 'hunter-level30-one-instance-v1' }
         if ($StartupTest -eq 'QualifiedEngagement') { $plan['experiment'] = 'hunter-level30-qualified-engagement-v1' }
         if ($previousTestRunId) { $plan['previousRunId'] = $previousTestRunId }

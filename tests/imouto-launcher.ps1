@@ -274,9 +274,10 @@ try {
         & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest QualifiedEngagement -ValidateOnly | Out-Null
         $activeAfterValidate = Get-Content (Join-Path $testRoot 'active.json') -Raw | ConvertFrom-Json
         if ($activeAfterValidate.runId -ne $shapeLaunch.StartupTestRunId) { throw 'Qualified engagement validation armed a test.' }
-        $qualifiedLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest QualifiedEngagement
+        $qualifiedLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest QualifiedEngagement -StartupTestBaseIndex 2
         $qualifiedPlan = Get-Content (Join-Path $qualifiedLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
         if ($qualifiedPlan.case -cne 'qualified-engagement' -or $qualifiedPlan.experiment -cne 'hunter-level30-qualified-engagement-v1' -or
+            $qualifiedPlan.baseOrdinal -ne 2 -or $qualifiedLaunch.StartupTestBaseIndex -ne 2 -or
             $qualifiedPlan.previousRunId -cne $shapeLaunch.StartupTestRunId -or $qualifiedPlan.runId -ceq $shapeLaunch.StartupTestRunId) {
             throw 'Qualified engagement reused a shape run or omitted its distinct contract.'
         }
