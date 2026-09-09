@@ -64,6 +64,7 @@ const packageFiles = [
   'Scripts/ped/startup_test.lua',
   'Scripts/ped/startup_support.lua',
   'Scripts/ped/surface_survey.lua',
+  'Scripts/ped/shape_qualification.lua',
   'Scripts/ped/util.lua',
   'Scripts/ped/version.lua',
 ];

@@ -1,5 +1,6 @@
 return function(test, equal, truthy)
     local Startup = require("ped.startup_test")
+    local Shape = require("ped.shape_qualification")
     local util = require("ped.util")
     local function fixture(case)
         local f = { now = 1000, records = {}, spawns = 0, despawns = 0, travels = 0, phases = {}, actors = {} }
@@ -29,6 +30,10 @@ return function(test, equal, truthy)
             return true, { scopes = scopes, availableBases = 10 }
         end
         function engine:prepare_spawn(_, member)
+            if f.runner.state.case==Shape.CASE then
+                return true,{ready=not f.shape_placement_blocked,pending=false,spawnQualified=false,experiment=Shape.CONTRACT,
+                    reason="shape-fixture-blocked",surfaceSurvey={spawnQualified=false,templateOnly=true},plannedGeometry={fixture=true}}
+            end
             if f.placement_pending then return true,{ready=false,pending=true,reason="floor-unavailable"} end
             if f.in_base then return true,{ready=true,mode="in-base",position={X=500,Y=0,Z=0},goal={X=0,Y=0,Z=0}} end
             return true,{ready=member.index ~= f.unavailablePlacement,reason="floor-unavailable"}
@@ -45,12 +50,21 @@ return function(test, equal, truthy)
         end
         function engine:startup_support()
             return {
+                native=engine,
                 prepare=function() return true,true end,
                 begin=function() f.helpers=(f.helpers or 0)+1; return true,{actorAddress="private-address"} end,
                 finish=function() return true,true end,
                 poll=function() return true,{enabled=true,streamingComplete=true,ready=f.physical_ready==true} end,
                 close=function() f.helper_closes=(f.helper_closes or 0)+1; return true,not f.helper_pending end,
             }
+        end
+        function engine:startup_shape_observation()
+            equal(f.records[#f.records],"startup_shape_observation_intent")
+            equal(f.runner.state.helpersCleaned,0)
+            f.shape_observations=(f.shape_observations or 0)+1
+            if f.capture_at_observation then f.phases[1]="capturing" end
+            return true,{comparison=f.shape_result or "MATCH",instanceOnly=true,spawnQualified=false,
+                actual={root={radius=30,halfHeight=30},body={radius=30,halfHeight=95}}}
         end
         function engine:inspect(_, member)
             f.actors[member.index]=f.actors[member.index] or {}
@@ -82,6 +96,7 @@ return function(test, equal, truthy)
             return true, f.pending_cleanup and "pending" or "despawned"
         end
         f.runner = Startup.new({ plan = { schemaVersion=1, runId="fixture-run", case=case or "spawn-cleanup",
+            experiment=case==Shape.CASE and Shape.CONTRACT or nil,
             sourceRevision=string.rep("1",40), artifactSha256=string.rep("2",64) }, store=store, engine=engine, clock=function() return f.now end,
             logger={ info=function() end, error=function() end } })
         function f:tick(count)
@@ -286,6 +301,108 @@ return function(test, equal, truthy)
         equal(f.surveys,1); equal(f.runner.state.helpersCleaned,1)
         equal(f.runner.state.surfaceSurvey.spawnQualified,false)
         f:tick(5); equal(f.surveys,1)
+    end)
+
+    test("shape qualification always retains a helper for one NPC and two read-only samples",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready=true
+        f:tick(25)
+        equal(f.spawns,1); equal(f.shape_observations,2); equal(f.despawns,1)
+        equal(f.travels,0); equal(f.engages,nil)
+        equal(f.runner.state.status,"passed"); equal(f.runner.state.code,"shape-instance-only")
+        equal(f.runner.state.helpersCreated,1); equal(f.runner.state.helpersCleaned,1)
+        equal(f.runner.state.surfaceSurvey.spawnQualified,false)
+        truthy(Startup.validate_state(f.runner.state,"fixture-run"))
+        f.runner:on_damage(f.actors[1],{},100)
+        f:tick(10)
+        equal(f.spawns,1); equal(f.shape_observations,2); equal(f.runner.state.dealtDamageEvents,nil)
+    end)
+
+    test("shape mismatch cleans only its owned NPC and holds support until pending cleanup completes",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.pending_cleanup,f.shape_result=true,true,"MISMATCH"
+        f:tick(25)
+        equal(f.spawns,1); equal(f.shape_observations,1); equal(f.despawns,1)
+        equal(f.runner.state.stage,"cleanup"); equal(f.runner.state.helpersCleaned,0)
+        f.phases[1]="missing"
+        f:tick(3)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"shape-mismatch")
+        equal(f.runner.state.cleanupComplete,true); equal(f.helper_closes,1)
+        equal(f.travels,0); equal(f.engages,nil)
+    end)
+
+    test("unsupported actual shape and failed scene evidence never promote normal readiness",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.shape_result=true,"UNSUPPORTED"
+        f:tick(25)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"shape-unsupported")
+        equal(f.despawns,1); equal(f.shape_observations,1)
+        f=fixture(Shape.CASE)
+        f.physical_ready,f.shape_placement_blocked=true,true
+        f:tick(25)
+        equal(f.spawns,0); equal(f.shape_observations,nil); equal(f.runner.state.helpersCleaned,1)
+        equal(f.runner.state.code,"shape-fixture-blocked")
+    end)
+
+    test("shape startup waits for an assigned identity without duplicate NPC requests",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.id_pending,f.phases[1]=true,true,"pending"
+        f:tick(25)
+        equal(f.spawns,1); equal(f.despawns,0); equal(f.shape_observations,nil)
+        equal(f.runner.state.helpersCleaned,0); equal(f.runner.state.members[1].instanceGuid,nil)
+        f.id_pending,f.phases[1]=false,"alive"
+        f:tick(15)
+        equal(f.runner.state.status,"passed"); equal(f.spawns,1)
+        equal(f.runner.state.members[1].instanceGuid.A,1)
+    end)
+
+    test("shape timeout keeps the original pending handle and waits for identity before cleanup",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.id_pending,f.phases[1]=true,true,"pending"
+        f:tick(85)
+        equal(f.runner.state.stage,"cleanup"); equal(f.spawns,1); equal(f.despawns,0)
+        equal(f.runner.state.helpersCleaned,0)
+        f.id_pending,f.phases[1]=false,"alive"
+        f:tick(5)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"initialize-timeout")
+        equal(f.despawns,1); equal(f.shape_observations,nil); equal(f.runner.state.cleanupComplete,true)
+    end)
+
+    test("shape cleanup pauses during capture processing without another spawn or despawn",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.capture_at_observation,f.shape_result=true,true,"MISMATCH"
+        f:tick(25)
+        equal(f.runner.state.stage,"cleanup"); equal(f.despawns,0); equal(f.runner.state.helpersCleaned,0)
+        f.phases[1]="alive"
+        f:tick(5)
+        equal(f.despawns,1); equal(f.runner.state.status,"blocked")
+        equal(f.spawns,1); equal(f.shape_observations,1)
+    end)
+
+    test("failed shape observation intent prevents native observation and automatic cleanup",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.fail_record=true,"startup_shape_observation_intent"
+        f:tick(25)
+        equal(f.runner.state.status,"failed"); equal(f.runner.state.cleanupComplete,false)
+        equal(f.spawns,1); equal(f.shape_observations,nil); equal(f.despawns,0)
+        equal(f.helper_closes,nil)
+    end)
+
+    test("shape outcomes cannot claim a pass from one sample a mismatch or a gameplay certificate",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready=true
+        f:tick(25)
+        for _,change in ipairs({
+            function(state) state.shapeObservations[2]=nil end,
+            function(state) state.shapeObservations[2].comparison="MISMATCH" end,
+            function(state) state.shapeObservations[2].spawnQualified=true end,
+            function(state) state.moved=1 end,
+            function(state) state.experiment=nil end,
+        }) do
+            local state=util.deep_copy(f.runner.state)
+            change(state)
+            equal(pcall(Startup.validate_state,state,"fixture-run"),false)
+        end
     end)
 
     test("startup physical placement failure blocks before any NPC request", function()

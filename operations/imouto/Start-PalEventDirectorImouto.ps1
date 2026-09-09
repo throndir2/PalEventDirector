@@ -8,7 +8,7 @@ param(
 
     [switch]$ValidateOnly,
 
-    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey')]
+    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey', 'ShapeQualification')]
     [string]$StartupTest = 'None',
 
     [Parameter(DontShow)]
@@ -255,6 +255,21 @@ function Read-StartupTestOutcome {
         $state.status -notin @('running','passed','blocked','failed') -or
         $state.mutationStarted -isnot [bool] -or $state.cleanupComplete -isnot [bool] -or
         [string]$state.artifactSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Startup test outcome schema is invalid.' }
+    if ($state.case -eq 'shape-qualification') {
+        if ($null -eq $state.PSObject.Properties['experiment'] -or $state.experiment -cne 'hunter-level30-one-instance-v1' -or
+            $state.moved -ne 0 -or $state.spawned -gt 1) { throw 'Startup shape experiment outcome is invalid.' }
+        if ($state.status -eq 'passed') {
+            if ($state.spawned -ne 1 -or $state.initialized -ne 1 -or $state.cleaned -ne 1 -or
+                $state.helpersCreated -ne 1 -or $state.helpersCleaned -ne 1 -or
+                $null -eq $state.PSObject.Properties['shapeObservations']) { throw 'Startup shape evidence is incomplete.' }
+            $shapeObservations = @($state.shapeObservations | ForEach-Object { $_ })
+            if ($shapeObservations.Count -ne 2) { throw 'Startup shape evidence is incomplete.' }
+            foreach ($observation in $shapeObservations) {
+                if ($observation.comparison -cne 'MATCH' -or $observation.instanceOnly -ne $true -or
+                    $observation.spawnQualified -ne $false) { throw 'Startup shape evidence is not a qualification.' }
+            }
+        }
+    }
     $finalizedNpcs = 0
     if ($null -ne $state.PSObject.Properties['npcsFinalized']) { $finalizedNpcs = $state.npcsFinalized }
     if ($state.cleanupComplete -and $state.mutationStarted -and
@@ -311,9 +326,10 @@ try {
         $testDirectory = Join-Path $testRoot $testRunId
         Assert-StartupTestPath $testDirectory
         New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop | Out-Null
-        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey' }
+        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey'; ShapeQualification='shape-qualification' }
         $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
             artifactSha256=[string]$deployment.artifactSha256 }
+        if ($StartupTest -eq 'ShapeQualification') { $plan['experiment'] = 'hunter-level30-one-instance-v1' }
         if ($previousTestRunId) { $plan['previousRunId'] = $previousTestRunId }
         [IO.File]::WriteAllText((Join-Path $testDirectory 'plan.json'), ($plan | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText($activeTestPath, (@{ runId=$testRunId } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))

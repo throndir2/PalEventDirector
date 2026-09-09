@@ -5,12 +5,13 @@ local filesystem = require("ped.filesystem")
 local Store = require("ped.store")
 local Diagnostic = require("ped.preflight_diagnostic")
 local bounties = require("ped.bounties")
+local Shape = require("ped.shape_qualification")
 
 local Test = {}
 Test.__index = Test
 
 local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1,
-    ["class-catalog"] = 1, ["surface-survey"] = 1 }
+    ["class-catalog"] = 1, ["surface-survey"] = 1, [Shape.CASE] = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -26,6 +27,18 @@ function Test.validate_state(state, run_id)
         and (state.mutationStarted or state.spawned == 0), "Startup test ownership counts are inconsistent")
     assert(util.is_integer(state.npcsFinalized or 0) and (state.npcsFinalized or 0) >= 0
         and state.cleaned + (state.npcsFinalized or 0) <= state.spawned, "Startup NPC finalization counts are invalid")
+    if state.case==Shape.CASE then
+        assert(state.experiment==Shape.CONTRACT and state.moved==0 and #state.members<=1
+            and #(state.shapeObservations or {})<=2, "Startup shape experiment outcome is invalid")
+        if state.status=="passed" then
+            assert(state.spawned==1 and state.initialized==1 and state.cleaned==1 and state.helpersCreated==1
+                and state.helpersCleaned==1 and #(state.shapeObservations or {})==2, "Startup shape evidence is incomplete")
+            for _,observation in ipairs(state.shapeObservations) do
+                assert(observation.comparison=="MATCH" and observation.instanceOnly==true
+                    and observation.spawnQualified==false, "Startup shape evidence is not a qualification")
+            end
+        end
+    end
     if state.cleanupComplete and state.mutationStarted then
         assert((state.status == "passed" or state.status == "blocked") and state.cleaned + (state.npcsFinalized or 0) == state.spawned,
             "Startup test cleanup outcome is inconsistent")
@@ -144,11 +157,14 @@ function Test.new(options)
     assert(type(plan.runId) == "string" and plan.runId:match("^[a-z0-9%-]+$") and #plan.runId <= 80, "Startup test run identity is invalid")
     assert(type(plan.sourceRevision) == "string" and #plan.sourceRevision == 40 and plan.sourceRevision:match("^%x+$"), "Startup test source is invalid")
     assert(type(plan.artifactSha256) == "string" and #plan.artifactSha256 == 64 and plan.artifactSha256:match("^%x+$"), "Startup test artifact is invalid")
+    assert((plan.case==Shape.CASE and plan.experiment==Shape.CONTRACT)
+        or (plan.case~=Shape.CASE and plan.experiment==nil), "Startup shape experiment contract is invalid")
     local self = setmetatable({
         engine = assert(options.engine), store = assert(options.store), logger = assert(options.logger),
         clock = options.clock or util.now_seconds, runtime = {}, cursor = 1, damageQueue = {},
         state = { schemaVersion = 1, runId = plan.runId, case = plan.case, sourceRevision = plan.sourceRevision,
             artifactSha256 = plan.artifactSha256,
+            experiment=plan.experiment, experimentalPremise=plan.case==Shape.CASE and Shape.PREMISE or nil,
             status = "running", stage = plan.case == "class-catalog" and "class-catalog" or "world",
             startedAt = (options.clock or util.now_seconds)(),
             mutationStarted = false, cleanupComplete = false, members = {},
@@ -250,16 +266,20 @@ end
 
 function Test:_cleaned_npcs()
     if self.state.helpersCreated > self.state.helpersCleaned then return self:_stage("support-cleanup") end
-    return self:_finish(self.state.failure and "blocked" or "passed", self.state.failure or "complete")
+    return self:_finish(self.state.failure and "blocked" or "passed",
+        self.state.failure or (self.state.case==Shape.CASE and "shape-instance-only" or "complete"))
 end
 
 function Test:_update_identity(member)
-    if member.instanceGuid then return true end
+    if member.instanceGuid and (self.state.case~=Shape.CASE or member.actorAddress) then return true end
     local identity = self.engine:startup_identity(member)
-    if identity.instanceGuid then
+    local changed=false
+    if identity.instanceGuid and not member.instanceGuid then
         member.instanceGuid, member.playerGuid = identity.instanceGuid, identity.playerGuid
-        return self:_save("startup_identity_assigned")
+        changed=true
     end
+    if identity.actorAddress and not member.actorAddress then member.actorAddress=identity.actorAddress; changed=true end
+    if changed then return self:_save("startup_identity_assigned") end
     return true
 end
 
@@ -290,9 +310,11 @@ function Test:_tick()
         end
         self.state.physical = result.physical
         self.state.availableBases = result.availableBases
-        if result.blockedCode then
-            self.scopes = result.candidates
-            if type(self.scopes) ~= "table" or #self.scopes ~= CASES[self.state.case] then return self:_finish("blocked", result.blockedCode) end
+        if result.blockedCode or self.state.case==Shape.CASE then
+            self.scopes = result.scopes or result.candidates
+            if type(self.scopes) ~= "table" or #self.scopes ~= CASES[self.state.case] then
+                return self:_finish("blocked", result.blockedCode or "shape-base-unavailable")
+            end
             self.support = self.engine:startup_support(self.scopes)
             local prepared, available = self.support:prepare()
             if not prepared then return self:halt(available) end
@@ -389,6 +411,16 @@ function Test:_tick()
         end
         member.placementMode, member.placementAttempts = placement.mode, placement.attempts
         member.placementReason, member.fallbackReason = placement.reason, placement.fallbackReason
+        if self.state.case==Shape.CASE then
+            if placement.spawnQualified~=false or placement.experiment~=Shape.CONTRACT or placement.pending==true then
+                return self:halt("Custom assault scope is invalid")
+            end
+            self.state.surfaceSurvey=placement.surfaceSurvey
+            member.plannedGeometry=placement.plannedGeometry
+            member.defaultNavDataUsed=placement.defaultNavDataUsed
+            member.pathPoints,member.pathLength=placement.pathPoints,placement.pathLength
+            if not self:_save("startup_shape_placement_observed") then return end
+        end
         if placement.pending == true and placement.ready == false then
             if now < member.placementStartedAt + 120 then
                 return self:_save("startup_placement_pending")
@@ -399,7 +431,7 @@ function Test:_tick()
             return self:halt("Custom assault placement is unavailable")
         end
         if not placement.ready then
-            self.state.failure = "spawn-physical-unavailable"
+            self.state.failure = self.state.case==Shape.CASE and (placement.reason or "shape-placement-unavailable") or "spawn-physical-unavailable"
             member.placementReason = placement.reason
             return self:_stage("cleanup")
         end
@@ -418,6 +450,33 @@ function Test:_tick()
         self.state.spawned = self.state.spawned + 1
         if not self:_save("startup_spawn_returned") then return end
         self.cursor = self.cursor + 1
+        return
+    elseif stage=="shape-observe" then
+        if self.state.case~=Shape.CASE or #self.state.members~=1 then return self:halt("Custom assault scope is invalid") end
+        if now>self.state.stageStartedAt+10 then
+            self.state.failure="shape-observation-timeout"
+            return self:_stage("cleanup")
+        end
+        if now<(self.nextShapeObservationAt or 0) then return end
+        self.nextShapeObservationAt=now+1
+        local member=self.state.members[1]
+        local plan=util.shallow_copy(member)
+        plan.handle=self.runtime[1].handle
+        if not self:_save("startup_shape_observation_intent") then return end
+        local ok,result=self.engine:startup_shape_observation(self.scopes[1],plan)
+        if not ok then return self:halt(result) end
+        if type(result)~="table" or result.spawnQualified~=false or result.instanceOnly~=true
+            or (result.comparison~="MATCH" and result.comparison~="MISMATCH" and result.comparison~="UNSUPPORTED") then
+            return self:halt("Custom assault scope is invalid")
+        end
+        self.state.shapeObservations=self.state.shapeObservations or {}
+        self.state.shapeObservations[#self.state.shapeObservations+1]=result
+        if not self:_save("startup_shape_observed") then return end
+        if result.comparison~="MATCH" then
+            self.state.failure="shape-"..result.comparison:lower()
+            return self:_stage("cleanup")
+        end
+        if #self.state.shapeObservations==2 then return self:_stage("cleanup") end
         return
     elseif stage == "initialize" or stage == "movement" or stage == "engagement" then
         local ready, arrived = 0, 0
@@ -439,6 +498,7 @@ function Test:_tick()
                 if not member.initialized then
                     member.initialized, member.healthBudget = true, observation.healthBudget
                     member.targetId = observation.targetId
+                    member.actorAddress = observation.actorAddress
                     runtime.initialLocation = util.shallow_copy(observation.location)
                     member.initialLocation = util.shallow_copy(observation.location)
                     self.state.initialized = self.state.initialized + 1
@@ -512,6 +572,7 @@ function Test:_tick()
         if ready == #self.state.members then
             self.state.simultaneous = #self.state.members > 1
             if stage == "initialize" then
+                if self.state.case==Shape.CASE then return self:_stage("shape-observe") end
                 if self.state.case == "engagement" and self.state.members[1].placementMode == "in-base" then
                     return self:_stage("engagement")
                 end
@@ -554,7 +615,7 @@ function Test:_tick()
                     local inspected, state = self.engine:inspect(plan.handle, plan)
                     if not inspected then return self:halt(state) end
                     if not self:_update_identity(member) then return end
-                    if state.phase == "pending" then
+                    if state.phase == "pending" or state.phase=="capturing" then
                         if not member.cleanupWaitingAt then
                             member.cleanupWaitingAt = now
                             if not self:_save("startup_cleanup_awaiting_identity") then return end

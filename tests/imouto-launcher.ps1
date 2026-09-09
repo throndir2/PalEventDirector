@@ -241,6 +241,34 @@ try {
         if ($surveyPlan.case -ne 'surface-survey' -or $surveyPlan.previousRunId -ne $testLaunch.StartupTestRunId) {
             throw 'Surface survey plan did not preserve explicit case selection and prior outcome identity.'
         }
+        $surveyState = @{ schemaVersion=1; runId=$surveyLaunch.StartupTestRunId; case='surface-survey'; status='passed'; mutationStarted=$false;
+            cleanupComplete=$true; sourceRevision=$surveyPlan.sourceRevision; artifactSha256=$surveyPlan.artifactSha256;
+            spawned=0; cleaned=0; initialized=0; moved=0 }
+        Write-StartupTestFixtureOutcome (Join-Path $surveyLaunch.StartupTestDirectory 'snapshot.json') $surveyState
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest ShapeQualification -ValidateOnly | Out-Null
+        $activeAfterValidate = Get-Content (Join-Path $testRoot 'active.json') -Raw | ConvertFrom-Json
+        if ($activeAfterValidate.runId -ne $surveyLaunch.StartupTestRunId) { throw 'Shape validation armed a new experiment.' }
+        $shapeLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest ShapeQualification
+        $shapePlan = Get-Content (Join-Path $shapeLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
+        if ($shapePlan.case -ne 'shape-qualification' -or $shapePlan.experiment -cne 'hunter-level30-one-instance-v1' -or
+            $shapePlan.previousRunId -ne $surveyLaunch.StartupTestRunId -or $shapePlan.artifactSha256 -ne $surveyPlan.artifactSha256) {
+            throw 'Shape qualification did not preserve the explicit experiment and artifact/run binding.'
+        }
+        $shapeState = @{ schemaVersion=1; runId=$shapeLaunch.StartupTestRunId; case='shape-qualification'; status='passed'; mutationStarted=$true;
+            cleanupComplete=$true; sourceRevision=$shapePlan.sourceRevision; artifactSha256=$shapePlan.artifactSha256;
+            experiment=$shapePlan.experiment; spawned=1; cleaned=1; initialized=1; moved=0; helpersCreated=1; helpersCleaned=1;
+            shapeObservations=@(@{comparison='MATCH';instanceOnly=$true;spawnQualified=$false},@{comparison='MATCH';instanceOnly=$true;spawnQualified=$false}) }
+        $shapeStatePath = Join-Path $shapeLaunch.StartupTestDirectory 'snapshot.json'
+        Write-StartupTestFixtureOutcome $shapeStatePath $shapeState
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest ShapeQualification -ValidateOnly | Out-Null
+        $shapeState.shapeObservations[1].comparison = 'MISMATCH'
+        Write-StartupTestFixtureOutcome $shapeStatePath $shapeState
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest ShapeQualification -ValidateOnly | Out-Null
+            throw 'A fabricated shape pass was accepted.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'shape evidence is not a qualification') { throw }
+        }
         if ($env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID -ne 'parent-build' -or $env:PAL_EVENT_DIRECTOR_DATA_DIR -ne 'parent-data') {
             throw 'Launcher did not restore the parent process environment.'
         }

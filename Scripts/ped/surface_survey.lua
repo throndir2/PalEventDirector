@@ -37,6 +37,7 @@ end
 
 function Survey.new(native,scope,options)
     return setmetatable({native=native,a=native.a,bridge=native.bridge,scope=scope,world=scope.world,
+        requestedPoint=options and options.point and vector(options.point),
         clock=options and options.clock or os.clock,
         result={complete=false,spawnQualified=false,templateOnly=true,queries=0},waters={}},Survey)
 end
@@ -236,10 +237,15 @@ function Survey:run()
     local ready,reason=self:_environment()
     if not ready then return self:_stop(reason) end
     if not shape or not shape.bodyProxy then return self:_stop(self.result.bodyProxyReason or "body-proxy-unavailable") end
-    local candidate=self.scope.positions[1] or self.scope.origin
+    local candidate=self.requestedPoint or self.scope.positions[1] or self.scope.origin
     local point=self.native:startup_floor(self.world,candidate,"BOSS_Hunter_Rifle")
-    if not point then point=self.native:startup_floor(self.world,self.scope.origin,"BOSS_Hunter_Rifle") end
+    if not point and not self.requestedPoint then point=self.native:startup_floor(self.world,self.scope.origin,"BOSS_Hunter_Rifle") end
     if not point then return self:_stop("survey-floor-unavailable") end
+    if self.requestedPoint then
+        for _,key in ipairs({"X","Y","Z"}) do
+            if math.abs(point[key]-self.requestedPoint[key])>0.1 then return self:_stop("survey-floor-moved") end
+        end
+    end
     local proxy=shape.bodyProxy
     if proxy.radius>1000 or proxy.halfHeight>2000 then return self:_stop("survey-proxy-limit") end
     local queries={}
@@ -277,6 +283,8 @@ function Survey:run()
     local source_type=channel(self:_call("source-type",shape.capsule,"GetCollisionObjectType"))
     local responses={}
     for to=0,31 do responses[to]=self:_response(shape.capsule,to) end
+    self.sourceCollision={enabled=source,objectType=source_type,responses={}}
+    for to=0,31 do self.sourceCollision.responses[to+1]=responses[to] end
     components,reason=self:_query("CapsuleOverlapComponents","capsule",center,proxy.radius,proxy.halfHeight,queries,nil,{})
     if not components then return self:_stop(reason) end
     local contacts,blockers,unknown=0,0,0
@@ -298,6 +306,8 @@ function Survey:run()
         or blockers>0 and "blocked" or unknown>0 and "unsupported" or "proxy-clear"
     self.result.complete=true
     self.result.code="proxy-survey-observed"
+    -- Private, same-call inputs for the one-instance experiment; never serialized as a spawn certificate.
+    self.point,self.shape=vector(point),shape
     return self.result
 end
 

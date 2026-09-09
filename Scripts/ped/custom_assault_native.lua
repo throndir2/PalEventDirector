@@ -438,7 +438,8 @@ function Native:startup_identity(member)
     local record = self.records[member_key(member)]
     if not record then error(IDENTITY, 0) end
     if not record.id then return { handleAddress = self.a.address and self.a.address(record.handle) or nil } end
-    return { instanceGuid = guid(record.id.InstanceId, false), playerGuid = guid(record.id.PlayerUId, true) }
+    return { instanceGuid = guid(record.id.InstanceId, false), playerGuid = guid(record.id.PlayerUId, true),
+        actorAddress=record.actor and self.a.address and self.a.address(record.actor) or nil }
 end
 
 function Native:startup_behavior(member)
@@ -830,7 +831,7 @@ function Native:_placement_path(scope, member, position, goal)
     return {ready=true,pathPoints=count,pathLength=length,defaultNavDataUsed=shape.navContext==nil}
 end
 
-function Native:_placement_surface(scope, member, position)
+function Native:_placement_support(scope, member, position)
     local shape, reason = self:_placement_shape(member.characterId)
     if not shape then return {ready=false,reason=reason} end
     if scope.leashRadius<=shape.halfHeight
@@ -864,6 +865,12 @@ function Native:_placement_surface(scope, member, position)
         scope.world,start,finish,shape.radius,shape.halfHeight,3,false,false,false,hit,0,color,color,0)
     if type(blocked)~="boolean" then error(SCOPE,0) end
     if blocked then return {ready=false,reason="capsule-obstructed"} end
+    return {ready=true}
+end
+
+function Native:_placement_surface(scope, member, position)
+    local support=self:_placement_support(scope,member,position)
+    if not support.ready then return support end
     -- A clear ground-channel sweep alone does not qualify pawn responses or water containment.
     return {ready=false,reason="dry-clearance-unqualified"}
 end
@@ -914,6 +921,20 @@ function Native:prepare_spawn(scope, member)
         self.placements[key] = nil
         if self.records[key] then error(IDENTITY, 0) end
         self:_validate_spawn_scope(scope,member)
+        local runner=self.bridge.startup_test
+        if runner and runner.state.case=="shape-qualification" then
+            if self.shapeQualification or next(self.records) or next(self.placements) or next(self.placementSearches) then
+                error(SCOPE,0)
+            end
+            local experiment=require("ped.shape_qualification").new(self,runner,scope,member)
+            self.shapeQualification=experiment
+            local result=experiment:prepare()
+            if not result.ready then return result end
+            scope.positions[member.slot]=vector(result.position)
+            self.placements[key]={scope=scope,characterId=member.characterId,level=member.level,slot=member.slot,
+                position=vector(result.position),goal=vector(result.goal),mode="in-base",shapeQualification=experiment}
+            return result
+        end
         local pending = self.placementSearches[key]
         if pending and (pending.scope ~= scope or pending.characterId ~= member.characterId
             or pending.slot ~= member.slot or pending.level ~= member.level) then error(SCOPE,0) end
@@ -939,7 +960,12 @@ function Native:spawn(scope, member)
         if self.records[key] or not placement or placement.scope ~= scope or placement.characterId ~= member.characterId
             or placement.level ~= member.level or placement.slot ~= member.slot
             or distance_squared(placement.position, position) ~= 0 then error(SCOPE, 0) end
+        if placement.shapeQualification~=self.shapeQualification
+            or (placement.shapeQualification and placement.shapeQualification.native~=self)
+            or (self.bridge.startup_test and self.bridge.startup_test.state.case=="shape-qualification"
+                and not placement.shapeQualification) then error(SCOPE,0) end
         self.placements[key] = nil
+        if placement.shapeQualification then placement.shapeQualification:consume(scope,member,placement) end
         local constructor = self.a.fname()
         if not constructor then error("FName constructor unavailable", 0) end
         local angle = math.deg(math.atan(scope.origin.Y - position.Y, scope.origin.X - position.X))
@@ -950,8 +976,22 @@ function Native:spawn(scope, member)
         if not self.a.valid(handle) then error(INITIALIZATION, 0) end
         self.records[key] = { world = scope.world, characterId = member.characterId, handle = handle, scope = scope,
             spawnPosition = vector(position), goal = placement.goal and vector(placement.goal) or vector(scope.origin),
-            placementMode = placement.mode }
+            placementMode = placement.mode, shapeQualification=placement.shapeQualification }
         return handle
+    end)
+end
+
+function Native:startup_shape_observation(scope,member)
+    return self.bridge:_native_step("startup-shape-observation",function()
+        local record=self.records[member_key(member)]
+        if not record or not record.shapeQualification then error(SCOPE,0) end
+        record.shapeQualification:validate_observation(scope,member)
+        if not self.a.same(member.handle,record.handle) or not record.id
+            or not same_id(record.id,{InstanceId=guid(member.instanceGuid,false),PlayerUId=guid(member.playerGuid,true)}) then
+            error(IDENTITY,0)
+        end
+        local state=self:_owned_state(member.handle,member)
+        return record.shapeQualification:observe(state)
     end)
 end
 
@@ -1036,6 +1076,7 @@ function Native:_owned_state(handle, member)
     if not self.a.valid(actor) then return self:_absent_state(record) end
     if not actor:IsA("/Script/Pal.PalCharacter")
         or not self.a.same(self:actor_world(actor), record.world) then error(SCOPE, 0) end
+    if record.shapeQualification then record.actor,record.parameter=actor,parameter end
     local component = self:_call("parameter-component", actor, "GetCharacterParameterComponent")
     if not self.a.valid(component) then return { phase = "pending" } end
     local captured = self:_call("capture-processing", component, "GetIsCapturedProcessing")
@@ -1071,6 +1112,13 @@ function Native:_owned_state(handle, member)
         state.heightFromBase = location.Z - record.scope.origin.Z
         if state.distanceFromBase > record.scope.leashRadius then state.phase, state.scopeReason = "escaped", "outside-leash" end
         state.location = location
+        -- The experiment never dispatches gameplay, but stock AI must still remain in its base scope.
+        if record.shapeQualification then
+            if self:_combat_targets_scoped(actions,record.scope)==false then
+                state.phase,state.scopeReason="escaped","combat-target"
+            end
+            return state
+        end
         local scoped = self:_combat_targets_scoped(actions, record.scope)
         if scoped == false then
             state.phase, state.scopeReason = "escaped", "combat-target"
@@ -1101,6 +1149,10 @@ function Native:inspect(handle, member)
         if record and record.id and state.phase == "pending" then
             state.instanceGuid, state.playerGuid = guid(record.id.InstanceId, false), guid(record.id.PlayerUId, true)
             state.characterId = member.characterId
+        end
+        if record and record.shapeQualification and state.actor then
+            state.actorAddress=self.a.address(state.actor)
+            if not state.actorAddress then error(OWNERSHIP,0) end
         end
         return state
     end)
@@ -1261,6 +1313,7 @@ function Native:_behavior(record, member, mode, target)
 end
 
 function Native:_configure_movement(record, state, scope)
+    if record.shapeQualification then error(SCOPE,0) end
     if record.configured then return end
     local blackboard = self:_call("ai-blackboard", state.controller, "GetMyPalBlackboard")
     if not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
@@ -1275,6 +1328,8 @@ end
 
 function Native:startup_travel(scope, member)
     return self.bridge:_native_step("startup-travel", function()
+        local record=self.records[member_key(member)]
+        if record and record.shapeQualification then error(SCOPE,0) end
         local state = self:_owned_state(member.handle, member)
         if state.phase ~= "alive" then error(INITIALIZATION, 0) end
         self:_configure_movement(self.records[member_key(member)], state, scope)
@@ -1312,6 +1367,8 @@ end
 
 function Native:engage(scope, member)
     return self.bridge:_native_step("custom-engage", function()
+        local owned=self.records[member_key(member)]
+        if owned and owned.shapeQualification then error(SCOPE,0) end
         local state = self:_owned_state(member.handle, member)
         if state.phase ~= "alive" then error(OWNERSHIP, 0) end
         local record, actor, controller = self.records[member_key(member)], state.actor, state.controller
