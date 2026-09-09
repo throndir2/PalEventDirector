@@ -440,11 +440,22 @@ function Test:_tick()
                     local target = member.goalLocation or self.scopes[index].origin
                     if distance2(observation.location, runtime.initialLocation) >= 300 ^ 2
                         and distance2(observation.location, target) <= 1100 ^ 2 then
-                        arrived = arrived + 1
-                        if not member.arrived then
-                            member.arrived = true
-                            self.state.moved = self.state.moved + 1
-                            if not self:_save("startup_movement_observed") then return end
+                        local checked, arrival = self.engine:startup_arrival(self.scopes[index],plan)
+                        if not checked then return self:halt(arrival) end
+                        if type(arrival)~="table" or type(arrival.arrived)~="boolean" then
+                            return self:halt("Custom assault scope is invalid")
+                        end
+                        member.arrivalObservation = arrival
+                        if arrival.arrived then
+                            arrived = arrived + 1
+                            if not member.arrived then
+                                member.arrived = true
+                                self.state.moved = self.state.moved + 1
+                                if not self:_save("startup_movement_observed") then return end
+                            end
+                        elseif now >= (member.nextArrivalCheckpoint or 0) then
+                            member.nextArrivalCheckpoint = now + 5
+                            if not self:_save("startup_arrival_pending") then return end
                         end
                     end
                 elseif stage == "engagement" then

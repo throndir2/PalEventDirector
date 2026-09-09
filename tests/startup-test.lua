@@ -67,6 +67,9 @@ return function(test, equal, truthy)
             f.travels = f.travels + 1
             return true
         end
+        function engine:startup_arrival()
+            return true,{arrived=not f.airborne,grounded=not f.airborne}
+        end
         function engine:despawn(_, member)
             equal(f.records[#f.records], "startup_cleanup_intent")
             f.despawns = f.despawns + 1
@@ -171,6 +174,20 @@ return function(test, equal, truthy)
         f:tick(3)
         equal(f.runner.state.status, "passed")
         equal(f.runner.state.moved, 1)
+    end)
+
+    test("startup movement rejects planar proximity while airborne or on the wrong level", function()
+        local f=fixture("movement")
+        f:tick(6)
+        f.arrived,f.airborne=true,true
+        f:tick(3)
+        equal(f.runner.state.moved,0)
+        equal(f.runner.state.status,"running")
+        equal(f.runner.state.members[1].arrivalObservation.grounded,false)
+        f.airborne=false
+        f:tick(3)
+        equal(f.runner.state.status,"passed")
+        equal(f.runner.state.moved,1)
     end)
 
     test("startup multi-base qualification observes both actors before cleanup", function()

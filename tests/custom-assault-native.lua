@@ -812,6 +812,28 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("startup arrival requires grounded feet near the actual navigation goal, not just matching XY", function()
+        fixture(function(engine,member,f,_,actor,scope)
+            scope.leashRadius=10000
+            local capsule={IsValid=function() return true end,IsA=function() return true end,
+                GetScaledCapsuleHalfHeight=function() return 80 end}
+            actor.CapsuleComponent,actor.RootComponent=capsule,capsule
+            engine._movement_observation=function()
+                return {available=true,updatedRoot=true,grounded=not f.airborne,falling=f.airborne==true,flying=false}
+            end
+            f.location={X=500,Y=0,Z=1600}
+            local ok,result=engine:startup_arrival(scope,member)
+            truthy(ok,result); equal(result.arrived,false); equal(result.feetHeightDelta,1520)
+            f.location.Z=80
+            f.airborne=true
+            ok,result=engine:startup_arrival(scope,member)
+            truthy(ok,result); equal(result.arrived,false)
+            f.airborne=false
+            ok,result=engine:startup_arrival(scope,member)
+            truthy(ok,result); equal(result.arrived,true); equal(result.feetHeightDelta,0)
+        end)
+    end)
+
     test("native spawns require exact class-specific floor and navigation approval and consume it once", function()
         fixture(function(engine, member, f, _, _, scope)
             local plan=util.shallow_copy(member)

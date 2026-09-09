@@ -1173,6 +1173,31 @@ function Native:startup_travel(scope, member)
     end)
 end
 
+function Native:startup_arrival(scope, member)
+    return self.bridge:_native_step("startup-arrival",function()
+        local state = self:_owned_state(member.handle,member)
+        if state.phase~="alive" then return {arrived=false,phase=state.phase} end
+        local record = self.records[member_key(member)]
+        if record.scope~=scope then error(SCOPE,0) end
+        local movement = self:_movement_observation(state)
+        if not movement.available then return {arrived=false,movementAvailable=false} end
+        local capsule = self.a.unwrap(state.actor.CapsuleComponent)
+        if not self.a.valid(capsule) or not capsule:IsA("/Script/Engine.CapsuleComponent")
+            or not self.a.same(capsule,self.a.unwrap(state.actor.RootComponent)) then
+            return {arrived=false,movementAvailable=true,capsuleAvailable=false}
+        end
+        local half_height = self:_call("arrival-capsule-height",capsule,"GetScaledCapsuleHalfHeight")
+        if not finite(half_height) or half_height<=0 or half_height>1000 then error(SCOPE,0) end
+        local goal = record.goal
+        local feet_delta = state.location.Z-half_height-goal.Z
+        local distance = math.sqrt(distance_squared(state.location,goal))
+        return {arrived=movement.updatedRoot and movement.grounded and not movement.falling and not movement.flying
+            and distance<=1100 and math.abs(feet_delta)<=150,
+            grounded=movement.grounded,falling=movement.falling,flying=movement.flying,
+            feetHeightDelta=feet_delta,distanceToGoal=distance,capsuleHalfHeight=half_height}
+    end)
+end
+
 function Native:engage(scope, member)
     return self.bridge:_native_step("custom-engage", function()
         local state = self:_owned_state(member.handle, member)
