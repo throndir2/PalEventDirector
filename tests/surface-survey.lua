@@ -136,7 +136,10 @@ return function(test,equal,truthy)
 
     test("surface survey refuses missing witnesses changed origins excessive outputs and slow initial queries",function()
         local f=fixture(); f.missingWater=true
-        equal(f.survey:run().code,"water-cohort-incomplete"); equal(f.queries,0)
+        local result=f.survey:run()
+        equal(result.code,"water-cohort-incomplete"); equal(f.queries,0)
+        equal(result.waterActors,9); equal(result.persistentWaterActors,9); equal(result.otherLevelWaterActors,0)
+        truthy(result.bodyProxy)
         f=fixture(); f.origin={X=1,Y=0,Z=0}
         equal(f.survey:run().code,"world-origin-unqualified"); equal(f.queries,0)
         f=fixture()

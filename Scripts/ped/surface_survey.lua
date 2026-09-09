@@ -142,9 +142,23 @@ function Survey:_environment()
     local actors={}
     local water_class=self.native:_class(WATER_CLASS)
     self:_call("water-cohort",self.gameplay,"GetAllActorsOfClass",self.world,water_class,actors)
-    local total=count(actors,10)
-    self.result.waterActors=total or 11
-    if total~=10 then return false,"water-cohort-incomplete" end
+    local total=count(actors,64)
+    if not total then return false,"water-cohort-over-cap" end
+    self.result.waterActors=total
+    local persistent_count,other_count,ocean_count=0,0,0
+    for index=1,total do
+        local actor=self.a.unwrap(actors[index])
+        if not self.a.valid(actor) or not actor:IsA(WATER_CLASS)
+            or not self.a.same(self:_call("cohort-world",actor,"GetWorld"),self.world) then
+            return false,"water-cohort-scope"
+        end
+        if self.a.same(actor:GetOuter(),persistent) then persistent_count=persistent_count+1
+        else other_count=other_count+1 end
+        if type(actor.bWorldOceanPlane)~="boolean" then error(ERROR,0) end
+        if actor.bWorldOceanPlane then ocean_count=ocean_count+1 end
+    end
+    self.result.persistentWaterActors,self.result.otherLevelWaterActors,self.result.oceanActors=persistent_count,other_count,ocean_count
+    if total~=10 or persistent_count~=10 then return false,"water-cohort-incomplete" end
     self.waterChannel=channel(self:_call("water-channel",self.native.utility,"GetEngineCollisionChannelByPalTraceType",4))
     local oceans,instance_counts=0,{}
     for index=1,total do
@@ -205,11 +219,12 @@ end
 
 function Survey:run()
     self:_qualify()
+    local shape,shape_reason=self.native:_placement_shape("BOSS_Hunter_Rifle")
+    self.result.bodyProxy=shape and shape.bodyProxy and util.deep_copy(shape.bodyProxy)
+    self.result.bodyProxyReason=shape_reason or (shape and shape.bodyProxyReason)
     local ready,reason=self:_environment()
     if not ready then return self:_stop(reason) end
-    local shape,shape_reason=self.native:_placement_shape("BOSS_Hunter_Rifle")
-    if not shape or not shape.bodyProxy then return self:_stop(shape_reason or (shape and shape.bodyProxyReason) or "body-proxy-unavailable") end
-    self.result.bodyProxy=util.deep_copy(shape.bodyProxy)
+    if not shape or not shape.bodyProxy then return self:_stop(self.result.bodyProxyReason or "body-proxy-unavailable") end
     local candidate=self.scope.positions[1] or self.scope.origin
     local point=self.native:startup_floor(self.world,candidate,"BOSS_Hunter_Rifle")
     if not point then point=self.native:startup_floor(self.world,self.scope.origin,"BOSS_Hunter_Rifle") end
