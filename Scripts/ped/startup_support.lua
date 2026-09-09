@@ -129,9 +129,12 @@ function Support:poll(index)
         if not enabled or not complete then
             return {enabled=enabled,streamingComplete=complete,physicalQueried=false,ready=false}
         end
-        local placement = n:probe_placement(scope,"BOSS_Hunter_Rifle",1)
-        return {enabled=enabled,streamingComplete=complete,physicalQueried=true,ready=placement.ready,
-            placementMode=placement.mode,placementAttempts=placement.attempts,reason=placement.reason}
+        local floor=scope.positions[1] and n:startup_floor(scope.world,scope.positions[1]) or nil
+        if not floor then floor=n:startup_floor(scope.world,scope.origin) end
+        local nav=floor and n:startup_nav(scope.world,floor) or nil
+        local goal=n:startup_nav(scope.world,scope.origin)
+        return {enabled=enabled,streamingComplete=complete,physicalQueried=true,ready=nav~=nil and goal~=nil,
+            floor=floor~=nil,nav=nav~=nil,goal=goal~=nil,placementQualified=false}
     end)
 end
 

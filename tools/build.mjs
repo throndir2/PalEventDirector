@@ -63,6 +63,7 @@ const packageFiles = [
   'Scripts/ped/store.lua',
   'Scripts/ped/startup_test.lua',
   'Scripts/ped/startup_support.lua',
+  'Scripts/ped/surface_survey.lua',
   'Scripts/ped/util.lua',
   'Scripts/ped/version.lua',
 ];

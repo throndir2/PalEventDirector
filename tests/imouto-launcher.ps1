@@ -235,6 +235,12 @@ try {
         $testState.payload.status = 'passed'
         Write-StartupTestFixtureOutcome $testStatePath $testState.payload
         & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest Movement -ValidateOnly | Out-Null
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest SurfaceSurvey -ValidateOnly | Out-Null
+        $surveyLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest SurfaceSurvey
+        $surveyPlan = Get-Content (Join-Path $surveyLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
+        if ($surveyPlan.case -ne 'surface-survey' -or $surveyPlan.previousRunId -ne $testLaunch.StartupTestRunId) {
+            throw 'Surface survey plan did not preserve explicit case selection and prior outcome identity.'
+        }
         if ($env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID -ne 'parent-build' -or $env:PAL_EVENT_DIRECTOR_DATA_DIR -ne 'parent-data') {
             throw 'Launcher did not restore the parent process environment.'
         }

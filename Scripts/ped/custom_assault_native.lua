@@ -377,7 +377,8 @@ function Native:startup_catalog_entry(character_id)
         return { characterId = character_id, classPath = class_path, cdoAvailable = true,
             shapeQualified=shape~=nil,shapeReason=reason,capsuleRadius=shape and shape.radius,
             capsuleHalfHeight=shape and shape.halfHeight,walkableZ=shape and shape.walkableZ,
-            navAgentQualified=shape~=nil and shape.navContext~=nil }
+            navAgentQualified=shape~=nil and shape.navContext~=nil,
+            bodyProxy=shape and shape.bodyProxy,bodyProxyReason=shape and shape.bodyProxyReason }
     end)
 end
 
@@ -734,7 +735,49 @@ function Native:_placement_shape(character_id)
         and self.a.same(self:_call("placement-agent-movement",cdo,"GetMovementComponent"),movement) then
         nav_context = cdo
     end
-    return {cdo=cdo,capsule=capsule,radius=radius,halfHeight=half_height,walkableZ=walkable,navContext=nav_context}
+    local shape = {cdo=cdo,capsule=capsule,radius=radius,halfHeight=half_height,walkableZ=walkable,navContext=nav_context}
+    local static = self.a.unwrap(cdo.StaticCharacterParameterComponent)
+    local mesh = self.a.unwrap(cdo.Mesh)
+    if not self.a.valid(static) or not self.a.valid(mesh)
+        or not static:IsA("/Script/Pal.PalStaticCharacterParameterComponent")
+        or not mesh:IsA("/Script/Engine.SkeletalMeshComponent") then
+        shape.bodyProxyReason="body-template-unavailable"
+        return shape
+    end
+    if not self.a.same(self:_call("placement-static-owner",static,"GetOwner"),cdo)
+        or not self.a.same(self:_call("placement-mesh-owner",mesh,"GetOwner"),cdo) then
+        shape.bodyProxyReason="body-template-ownership"
+        return shape
+    end
+    local body_radius,body_half = static.MeshCapsuleRadius,static.MeshCapsuleHalfHeight
+    local mesh_offset,mesh_scale = vector(self.a.unwrap(mesh.RelativeLocation)),vector(self.a.unwrap(mesh.RelativeScale3D))
+    local authored_offset = vector(self.a.unwrap(static.MeshRelativeLocation))
+    if not finite(body_radius) or not finite(body_half) then error(SCOPE,0) end
+    if body_radius<=0 or body_radius>500 or body_half<body_radius or body_half>1000 then
+        shape.bodyProxyReason="body-template-dimensions"
+        return shape
+    end
+    if math.abs(mesh_offset.X)>0.001 or math.abs(mesh_offset.Y)>0.001 or math.abs(mesh_offset.Z)>2000 then
+        shape.bodyProxyReason="body-template-offset"
+        return shape
+    end
+    for _,key in ipairs({"X","Y","Z"}) do
+        if math.abs(mesh_scale[key]-1)>0.001 then shape.bodyProxyReason="body-template-scale"; return shape end
+    end
+    local center = mesh_offset.Z+body_half
+    local low = math.min(-half_height+radius,center-body_half+body_radius)
+    local high = math.max(half_height-radius,center+body_half-body_radius)
+    local proxy_radius = math.max(radius,body_radius)
+    shape.bodyProxy = {templateOnly=true,bodyRadius=body_radius,bodyHalfHeight=body_half,meshOffsetZ=mesh_offset.Z,
+        authoredOffsetZ=authored_offset.Z,radius=proxy_radius,halfHeight=(high-low)/2+proxy_radius,
+        centerOffsetZ=(low+high)/2,lowerFootOffsetZ=math.min(-half_height,mesh_offset.Z)}
+    return shape
+end
+
+function Native:startup_surface_survey(scope)
+    return self.bridge:_native_step("startup-surface-survey",function()
+        return require("ped.surface_survey").new(self,scope):run()
+    end)
 end
 
 function Native:_placement_path(scope, member, position, goal)

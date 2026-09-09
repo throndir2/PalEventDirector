@@ -9,7 +9,8 @@ local bounties = require("ped.bounties")
 local Test = {}
 Test.__index = Test
 
-local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1, ["class-catalog"] = 1 }
+local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1,
+    ["class-catalog"] = 1, ["surface-survey"] = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -301,7 +302,19 @@ function Test:_tick()
         self.scopes = result.scopes
         assert(type(self.scopes) == "table" and #self.scopes == CASES[self.state.case], "Startup test returned an invalid base count")
         if self.state.case == "prewarm" then return self:_finish("passed", "physical-ready-without-support") end
+        if self.state.case == "surface-survey" then return self:_stage("surface-survey") end
         return self:_plan_members()
+    elseif stage == "surface-survey" then
+        if not self:_save("startup_surface_survey_intent") then return end
+        local ok,result=self.engine:startup_surface_survey(self.scopes[1])
+        if not ok then return self:halt(result) end
+        if type(result)~="table" or type(result.complete)~="boolean" or result.spawnQualified~=false then
+            return self:halt("Custom assault scope is invalid")
+        end
+        self.state.surfaceSurvey=result
+        if not result.complete then self.state.failure=result.code or "surface-survey-unavailable" end
+        if not self:_save("startup_surface_survey_observed") then return end
+        return self:_cleaned_npcs()
     elseif stage == "support-spawn" then
         local index = self.cursor
         if index > #self.scopes then return self:_stage("support-configure") end
@@ -334,6 +347,7 @@ function Test:_tick()
         if ready == self.state.helpersCreated then
             self.state.physicalPrewarmPassed = true
             if self.state.case == "prewarm" then return self:_stage("support-cleanup") end
+            if self.state.case == "surface-survey" then return self:_stage("surface-survey") end
             return self:_plan_members()
         end
         if now >= self.state.stageStartedAt + 120 then

@@ -1008,9 +1008,16 @@ return function(test, equal, truthy)
                 K2_GetRootComponent=function() return capsule end,GetMovementComponent=function() return movement end})
             capsule.GetOwner=function() return cdo end
             movement.GetOwner=function() return cdo end
+            cdo.StaticCharacterParameterComponent=object({MeshCapsuleRadius=30,MeshCapsuleHalfHeight=95,
+                MeshRelativeLocation={X=0,Y=0,Z=-97},GetOwner=function() return cdo end})
+            cdo.Mesh=object({RelativeLocation={X=0,Y=0,Z=-33},RelativeScale3D={X=1,Y=1,Z=1},
+                GetOwner=function() return cdo end})
             engine._class=function() return object({GetCDO=function() return cdo end}) end
             local shape=engine:_placement_shape(member.characterId)
             equal(shape.radius,30); equal(shape.halfHeight,80); equal(shape.navContext,cdo)
+            equal(shape.bodyProxy.centerOffsetZ,38.5); equal(shape.bodyProxy.halfHeight,118.5)
+            equal(shape.bodyProxy.meshOffsetZ,-33); equal(shape.bodyProxy.authoredOffsetZ,-97)
+            equal(shape.bodyProxy.lowerFootOffsetZ,-80); equal(shape.bodyProxy.templateOnly,true)
             movement.NavAgentProps.AgentHeight=100
             shape=engine:_placement_shape(member.characterId)
             equal(shape.navContext,nil); equal(shape.halfHeight,80)

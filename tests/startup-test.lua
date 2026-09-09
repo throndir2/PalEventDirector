@@ -14,6 +14,11 @@ return function(test, equal, truthy)
         function store:save_snapshot() return not f.fail_snapshot end
         local engine = {}
         function engine:startup_catalog_entry(id) return true,{characterId=id,cdoAvailable=true} end
+        function engine:startup_surface_survey()
+            equal(f.records[#f.records],"startup_surface_survey_intent")
+            f.surveys=(f.surveys or 0)+1
+            return true,{complete=not f.survey_blocked,spawnQualified=false,code="fixture-survey"}
+        end
         function engine:startup_prepare(count)
             if f.not_ready then return true, nil end
             if f.prepare_fault then return false, "Native operation stopped [custom-assault-scope]" end
@@ -273,6 +278,16 @@ return function(test, equal, truthy)
         equal(f.runner.state.mutationStarted,false)
     end)
 
+    test("surface survey executes once with owned support but never requests an NPC", function()
+        local f=fixture("surface-survey")
+        f.physical_block,f.physical_ready=true,true
+        f:tick(15)
+        equal(f.runner.state.status,"passed"); equal(f.spawns,0); equal(f.despawns,0)
+        equal(f.surveys,1); equal(f.runner.state.helpersCleaned,1)
+        equal(f.runner.state.surfaceSurvey.spawnQualified,false)
+        f:tick(5); equal(f.surveys,1)
+    end)
+
     test("startup physical placement failure blocks before any NPC request", function()
         local f = fixture("movement")
         f.physical_block = true
@@ -412,18 +427,20 @@ return function(test, equal, truthy)
         truthy(support:finish(1))
         equal(source.Shapes[1].bIsSector,false)
         local queries=0
-        native.probe_placement=function(_,actual,character,slot)
-            equal(actual,scope); equal(character,"BOSS_Hunter_Rifle"); equal(slot,1)
+        native.startup_floor=function(_,actual)
+            equal(actual,world)
             queries=queries+1
-            return {ready=false,pending=true,reason="floor-unavailable",attempts=2}
+            return nil
         end
+        native.startup_nav=function() return nil end
         local observed, result = support:poll(1)
         truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,false)
         equal(queries,0)
         source.complete=true
         observed,result=support:poll(1)
         truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,true)
-        equal(queries,1)
+        equal(queries,2)
+        equal(result.placementQualified,false)
         truthy(support:close(1))
         truthy(support:close(1))
         equal(destroyed,1)

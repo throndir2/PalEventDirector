@@ -2299,6 +2299,7 @@ dofile(join(root, "tests", "custom-assault-native.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "custom-assault-director.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "startup-test.lua"))(test, equal, truthy)
 dofile(join(root, "tests", "placement-search.lua"))(test, equal, truthy)
+dofile(join(root, "tests", "surface-survey.lua"))(test, equal, truthy)
 
 for _, entry in ipairs(tests) do
     local ok, failure = xpcall(entry.callback, debug.traceback)
