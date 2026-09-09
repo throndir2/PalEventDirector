@@ -55,6 +55,7 @@ const packageFiles = [
   'Scripts/ped/native_raid.lua',
   'Scripts/ped/palworld.lua',
   'Scripts/ped/path.lua',
+  'Scripts/ped/placement_search.lua',
   'Scripts/ped/preflight_diagnostic.lua',
   'Scripts/ped/rewards.lua',
   'Scripts/ped/scheduler.lua',

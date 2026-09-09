@@ -1,6 +1,8 @@
 local Layout = require("ped.native_layout")
 local util = require("ped.util")
 local bounties = require("ped.bounties")
+local PlacementSearch = require("ped.placement_search")
+local invoke_function = require("ped.native_observer").invoke
 
 local Native = {}
 Native.__index = Native
@@ -73,11 +75,11 @@ local function member_key(member)
 end
 
 function Native.new(bridge, access)
-    return setmetatable({ bridge = bridge, a = access, records = {}, classes = {}, placements = {} }, Native)
+    return setmetatable({ bridge = bridge, a = access, records = {}, classes = {}, placements = {}, placementSearches = {} }, Native)
 end
 
 function Native:release_tracking()
-    self.records, self.placements = {}, {}
+    self.records, self.placements, self.placementSearches = {}, {}, {}
     self.recoveryPending, self.recoveryStartedAt = nil, nil
     self.recoveryCursor, self.recoveryCompleted = nil, nil
 end
@@ -199,6 +201,27 @@ function Native:qualify()
         FilterClass = { "ClassProperty", 64 }, QueryExtent = { "StructProperty", 72 },
         ReturnValue = { "BoolProperty", 96 },
     })
+    self:_signature("/Script/NavigationSystem.NavigationSystemV1:FindPathToLocationSynchronously", {
+        WorldContextObject={"ObjectProperty",0},PathStart={"StructProperty",8},PathEnd={"StructProperty",32},
+        PathfindingContext={"ObjectProperty",56},FilterClass={"ClassProperty",64},ReturnValue={"ObjectProperty",72},
+    })
+    for _, method in ipairs({"IsValid","IsPartial"}) do
+        self:_signature("/Script/NavigationSystem.NavigationPath:"..method,{ReturnValue={"BoolProperty",0}})
+    end
+    self:_signature("/Script/NavigationSystem.NavigationPath:GetPathLength",{ReturnValue={"FloatProperty",0}})
+    self:_signature("/Script/Engine.Actor:K2_GetRootComponent",{ReturnValue={"ObjectProperty",0}})
+    self:_signature("/Script/Engine.Pawn:GetMovementComponent",{ReturnValue={"ObjectProperty",0}})
+    for _, method in ipairs({"GetScaledCapsuleRadius","GetScaledCapsuleHalfHeight"}) do
+        self:_signature("/Script/Engine.CapsuleComponent:"..method,{ReturnValue={"FloatProperty",0}})
+    end
+    self:_signature("/Script/Engine.PrimitiveComponent:GetWalkableSlopeOverride",{ReturnValue={"StructProperty",0}})
+    self:_signature("/Script/Pal.PalPhysicsUtility:CapsuleTraceSingleByPalTraceType", {
+        WorldContextObject={"ObjectProperty",0},Start={"StructProperty",8},End={"StructProperty",32},
+        Radius={"FloatProperty",56},HalfHeight={"FloatProperty",60},PalTraceType={"EnumProperty",64},
+        bTraceComplex={"BoolProperty",65},bReturnPhysicalMaterial={"BoolProperty",66},bReturnTraceIndex={"BoolProperty",67},
+        HitResult={"StructProperty",72},DrawDebugType={"ByteProperty",304},TraceColor={"StructProperty",308},
+        TraceHitColor={"StructProperty",324},DrawTime={"FloatProperty",340},ReturnValue={"BoolProperty",344},
+    })
     self:_signature("/Script/Pal.PalPhysicsUtility:LineTraceSingleByPalTraceType", {
         WorldContextObject = { "ObjectProperty", 0 }, Start = { "StructProperty", 8 }, End = { "StructProperty", 32 },
         PalTraceType = { "EnumProperty", 56 }, bTraceComplex = { "BoolProperty", 57 },
@@ -305,7 +328,7 @@ function Native:startup_prepare(count)
                 physical.sampled = physical.sampled + 1
                 if self:startup_floor(world, scope.origin) then physical.centerFloor = physical.centerFloor + 1 end
                 if self:startup_trace(world, scope.origin) then physical.centerTrace = physical.centerTrace + 1 end
-                local floor = self:startup_floor(world, scope.positions[1])
+                local floor = scope.positions[1] and self:startup_floor(world, scope.positions[1]) or nil
                 if floor then
                     physical.floor = physical.floor + 1
                     local spawn_nav = self:startup_nav(world, floor)
@@ -335,12 +358,17 @@ end
 
 function Native:startup_catalog_entry(character_id)
     return self.bridge:_native_step("startup-catalog-class", function()
+        if not self.qualified then self:qualify() end
         local class_path = bounties.pawn_class(character_id)
         if not class_path then error(SCOPE, 0) end
         local class = self:_class(class_path)
         local cdo = self:_call("startup-catalog-cdo", class, "GetCDO")
         if not self.a.valid(cdo) or not cdo:IsA("/Script/Pal.PalCharacter") then error(SCOPE, 0) end
-        return { characterId = character_id, classPath = class_path, cdoAvailable = true }
+        local shape, reason = self:_placement_shape(character_id)
+        return { characterId = character_id, classPath = class_path, cdoAvailable = true,
+            shapeQualified=shape~=nil,shapeReason=reason,capsuleRadius=shape and shape.radius,
+            capsuleHalfHeight=shape and shape.halfHeight,walkableZ=shape and shape.walkableZ,
+            navAgentQualified=shape~=nil and shape.navContext~=nil }
     end)
 end
 
@@ -582,7 +610,7 @@ function Native:prepare_base(base_id, target, world, players)
             if result then
                 local position = vector(projected)
                 local separate = true
-                for _, previous in ipairs(scope.positions) do
+                for _, previous in pairs(scope.positions) do
                     if distance_squared(previous, position) < 250 * 250 then separate = false end
                 end
                 if separate and distance_squared(position, origin) <= (range + 500) ^ 2 and math.abs(position.Z - origin.Z) <= 3000 then
@@ -591,7 +619,7 @@ function Native:prepare_base(base_id, target, world, players)
                 end
             end
         end
-        if not found then
+        if not found and not self.bridge.config.customAssault.allowInBaseFallback then
             scope.unavailable = "No bounded base-local spawn position was available."
             return scope
         end
@@ -600,13 +628,182 @@ function Native:prepare_base(base_id, target, world, players)
     return scope
 end
 
-function Native:_spawn_position(scope, member)
+function Native:_validate_spawn_scope(scope, member)
     if not self.a.valid(scope.base) or not self.a.same(scope.world, self.world)
         or self.a.guid(self:_call("spawn-base-id", scope.base, "GetId")) ~= member.baseId then error(SCOPE, 0) end
     if self.a.guid(self:_call("spawn-base-guild", scope.base, "GetGroupIdBelongTo")) ~= scope.guildId then error(SCOPE, 0) end
+    if not util.is_integer(member.slot) or member.slot < 1 or member.slot > self.bridge.config.customAssault.membersPerBase
+        or scope.unavailable then error(SCOPE, 0) end
+end
+
+function Native:_spawn_position(scope, member)
+    self:_validate_spawn_scope(scope, member)
     local position = scope.positions[member.slot]
     if not position or scope.unavailable then error("Custom assault placement is unavailable", 0) end
     return vector(position)
+end
+
+function Native:_new_placement_search(scope, member)
+    return PlacementSearch.new({origin=scope.origin,range=scope.range,slot=member.slot,
+        rotation=tonumber(util.hash32(scope.baseId),16)%360,preferred=scope.positions[member.slot],
+        allowFallback=self.bridge.config.customAssault.allowInBaseFallback})
+end
+
+function Native:_placement_shape(character_id)
+    local class_path = bounties.pawn_class(character_id)
+    if not class_path then error(SCOPE,0) end
+    local class = self:_class(class_path)
+    local cdo = self:_call("placement-cdo",class,"GetCDO")
+    if not self.a.valid(cdo) or not cdo:IsA("/Script/Pal.PalCharacter") then error(SCOPE,0) end
+    local capsule, movement = self.a.unwrap(cdo.CapsuleComponent), self.a.unwrap(cdo.CharacterMovement)
+    if not self.a.valid(capsule) or not self.a.valid(movement)
+        or not capsule:IsA("/Script/Engine.CapsuleComponent")
+        or not movement:IsA("/Script/Engine.CharacterMovementComponent") then return nil,"pawn-shape-unavailable" end
+    if not self.a.same(self:_call("placement-root",cdo,"K2_GetRootComponent"),capsule)
+        or not self.a.same(self:_call("placement-capsule-owner",capsule,"GetOwner"),cdo)
+        or not self.a.same(self:_call("placement-movement-owner",movement,"GetOwner"),cdo) then
+        return nil,"pawn-shape-ownership"
+    end
+    local scale, offset = vector(self.a.unwrap(capsule.RelativeScale3D)), vector(self.a.unwrap(capsule.RelativeLocation))
+    local rotation = self.a.unwrap(capsule.RelativeRotation)
+    if not rotation or not finite(rotation.Pitch) or not finite(rotation.Roll) then error(SCOPE,0) end
+    if math.abs(rotation.Pitch)>0.001 or math.abs(rotation.Roll)>0.001 then return nil,"pawn-shape-transform" end
+    for _,key in ipairs({"X","Y","Z"}) do
+        if math.abs(scale[key]-1)>0.001 or math.abs(offset[key])>0.001 then return nil,"pawn-shape-transform" end
+    end
+    local radius = self:_call("placement-capsule-radius",capsule,"GetScaledCapsuleRadius")
+    local half_height = self:_call("placement-capsule-height",capsule,"GetScaledCapsuleHalfHeight")
+    local walkable = movement.WalkableFloorZ
+    if not finite(radius) or not finite(half_height) or not finite(walkable) then error(SCOPE,0) end
+    if radius<=0 or radius>500 or half_height<radius or half_height>1000 or walkable<=0 or walkable>1 then
+        return nil,"pawn-shape-dimensions"
+    end
+    local agent = self.a.unwrap(movement.NavAgentProps)
+    local nav_context
+    if agent and finite(agent.AgentRadius) and finite(agent.AgentHeight)
+        and agent.AgentRadius>=radius and agent.AgentHeight>=2*half_height
+        and agent.AgentRadius<=1000 and agent.AgentHeight<=4000
+        and self.a.same(self:_call("placement-agent-movement",cdo,"GetMovementComponent"),movement) then
+        nav_context = cdo
+    end
+    return {cdo=cdo,capsule=capsule,radius=radius,halfHeight=half_height,walkableZ=walkable,navContext=nav_context}
+end
+
+function Native:_placement_path(scope, member, position, goal)
+    local shape, reason = self:_placement_shape(member.characterId)
+    if not shape then return {ready=false,reason=reason} end
+    local function invoke(method, owner, receiver, ...)
+        local fn = self.bridge:_static_find("/Script/NavigationSystem."..owner..":"..method)
+        return invoke_function(self,"custom-placement-"..method:lower(),fn,receiver,...)
+    end
+    local path = invoke("FindPathToLocationSynchronously","NavigationSystemV1",self.navigationLibrary,
+        scope.world,vector(position),vector(goal),shape.navContext,nil)
+    if not self.a.valid(path) then return {ready=false,reason="path-unavailable"} end
+    if not path:IsA("/Script/NavigationSystem.NavigationPath") then error(SCOPE,0) end
+    local valid = invoke("IsValid","NavigationPath",path)
+    if type(valid)~="boolean" then error(SCOPE,0) end
+    if not valid then return {ready=false,reason="path-unreachable"} end
+    local partial = invoke("IsPartial","NavigationPath",path)
+    if type(partial)~="boolean" then error(SCOPE,0) end
+    if partial then return {ready=false,reason="path-partial"} end
+    local length = invoke("GetPathLength","NavigationPath",path)
+    if not finite(length) then error(SCOPE,0) end
+    if length<0 or length>math.min(40000,scope.leashRadius*4) then return {ready=false,reason="path-length-limit"} end
+    local points = self.a.unwrap(path.PathPoints)
+    if points==nil then error(SCOPE,0) end
+    local count = points:GetArrayNum()
+    if not util.is_integer(count) or count<2 or count>64 then return {ready=false,reason="path-point-limit"} end
+    local first,last
+    local extent = scope.leashRadius-shape.halfHeight
+    if extent<=0 then return {ready=false,reason="path-outside-envelope"} end
+    for index=1,count do
+        local location = vector(self.a.unwrap(points[index]))
+        if distance_squared(location,scope.origin)>extent^2 then return {ready=false,reason="path-outside-envelope"} end
+        first,last = first or location,location
+    end
+    local tolerance = math.max(250,shape.halfHeight+100)
+    if distance_squared(first,position)>tolerance^2 or distance_squared(last,goal)>tolerance^2 then
+        return {ready=false,reason="path-endpoint-mismatch"}
+    end
+    return {ready=true,pathPoints=count,pathLength=length,defaultNavDataUsed=shape.navContext==nil}
+end
+
+function Native:_placement_surface(scope, member, position)
+    local shape, reason = self:_placement_shape(member.characterId)
+    if not shape then return {ready=false,reason=reason} end
+    if scope.leashRadius<=shape.halfHeight
+        or distance_squared(position,scope.origin)>(scope.leashRadius-shape.halfHeight)^2 then
+        return {ready=false,reason="capsule-outside-envelope"}
+    end
+    local start, finish, hit = vector(position),vector(position),{}
+    local color = {R=0,G=0,B=0,A=0}
+    start.Z,finish.Z=start.Z+5,finish.Z-5
+    local found = self:_call("placement-support",self.physicsLibrary,"CapsuleTraceSingleByPalTraceType",
+        scope.world,start,finish,shape.radius,shape.halfHeight,3,false,false,false,hit,0,color,color,0)
+    if type(found)~="boolean" then error(SCOPE,0) end
+    if not found then return {ready=false,reason="no-solid-support"} end
+    if type(hit.bBlockingHit)~="boolean" or type(hit.bStartPenetrating)~="boolean" then error(SCOPE,0) end
+    if not hit.bBlockingHit or hit.bStartPenetrating then return {ready=false,reason="support-penetrating"} end
+    local normal,location = vector(self.a.unwrap(hit.ImpactNormal)),vector(self.a.unwrap(hit.Location))
+    if normal.Z<shape.walkableZ then return {ready=false,reason="support-not-walkable"} end
+    if distance_squared(location,position)>10^2 then return {ready=false,reason="support-moved"} end
+    local weak = self.a.unwrap(hit.Component)
+    if weak==nil then return {ready=false,reason="support-component-unavailable"} end
+    local component = weak:Get()
+    if not self.a.valid(component) or not component:IsA("/Script/Engine.PrimitiveComponent") then
+        return {ready=false,reason="support-component-unavailable"}
+    end
+    local slope = self.a.unwrap(self:_call("placement-slope",component,"GetWalkableSlopeOverride"))
+    if not slope or not util.is_integer(slope.WalkableSlopeBehavior) then error(SCOPE,0) end
+    if slope.WalkableSlopeBehavior~=0 then return {ready=false,reason="support-slope-override"} end
+    start,finish,hit=vector(position),vector(position),{}
+    start.Z,finish.Z=start.Z+2,finish.Z+4
+    local blocked = self:_call("placement-ground-clearance",self.physicsLibrary,"CapsuleTraceSingleByPalTraceType",
+        scope.world,start,finish,shape.radius,shape.halfHeight,3,false,false,false,hit,0,color,color,0)
+    if type(blocked)~="boolean" then error(SCOPE,0) end
+    if blocked then return {ready=false,reason="capsule-obstructed"} end
+    -- A clear ground-channel sweep alone does not qualify pawn responses or water containment.
+    return {ready=false,reason="dry-clearance-unqualified"}
+end
+
+function Native:_placement_candidate(scope, member, position, mode)
+    local floor = self:startup_floor(scope.world, position, member.characterId)
+    if not floor then return { ready = false, reason = "floor-unavailable" } end
+    local nav = self:startup_nav(scope.world, floor)
+    local goal = self:startup_nav(scope.world, scope.origin)
+    if not nav or not goal then return { ready = false, reason = "navigation-unavailable" } end
+    local corrected = self:startup_floor(scope.world, nav, member.characterId)
+    if not corrected then return { ready = false, reason = "projected-floor-unavailable" } end
+    if distance_squared(corrected, scope.origin) > scope.leashRadius ^ 2
+        or math.abs(corrected.Z - scope.origin.Z) > (mode == "in-base" and 500 or 3000) then
+        return { ready = false, reason = "placement-outside-envelope" }
+    end
+    if mode == "in-base" and (corrected.X-scope.origin.X)^2+(corrected.Y-scope.origin.Y)^2 > scope.range^2 then
+        return { ready = false, reason = "placement-outside-base" }
+    end
+    for slot, previous in pairs(scope.positions) do
+        if slot ~= member.slot and distance_squared(corrected, previous) < 250 ^ 2 then
+            return { ready = false, reason = "placement-overlap" }
+        end
+    end
+    local surface = self:_placement_surface(scope, member, corrected)
+    if not surface.ready then return surface end
+    local route = self:_placement_path(scope, member, corrected, goal)
+    if not route.ready then return route end
+    return { ready = true, position = vector(corrected), goal = vector(goal),
+        pathPoints=route.pathPoints,pathLength=route.pathLength,defaultNavDataUsed=route.defaultNavDataUsed }
+end
+
+function Native:probe_placement(scope, character_id, slot)
+    local member = {baseId=scope.baseId,characterId=character_id,slot=slot}
+    self:_validate_spawn_scope(scope,member)
+    scope.placementProbes = scope.placementProbes or {}
+    local key = character_id .. ":" .. slot
+    local search = scope.placementProbes[key] or self:_new_placement_search(scope,member)
+    scope.placementProbes[key] = search
+    local result = search:poll(function(position,mode) return self:_placement_candidate(scope,member,position,mode) end,2)
+    if not result.pending then scope.placementProbes[key] = nil end
+    return result
 end
 
 function Native:prepare_spawn(scope, member)
@@ -614,28 +811,22 @@ function Native:prepare_spawn(scope, member)
         local key = member_key(member)
         self.placements[key] = nil
         if self.records[key] then error(IDENTITY, 0) end
-        local position = self:_spawn_position(scope, member)
-        local floor = self:startup_floor(scope.world, position, member.characterId)
-        if not floor then return { ready = false, reason = "floor-unavailable" } end
-        local nav = self:startup_nav(scope.world, floor)
-        if not nav or not self:startup_nav(scope.world, scope.origin) then
-            return { ready = false, reason = "navigation-unavailable" }
+        self:_validate_spawn_scope(scope,member)
+        local pending = self.placementSearches[key]
+        if pending and (pending.scope ~= scope or pending.characterId ~= member.characterId
+            or pending.slot ~= member.slot or pending.level ~= member.level) then error(SCOPE,0) end
+        if not pending then
+            pending = {scope=scope,characterId=member.characterId,slot=member.slot,level=member.level,
+                search=self:_new_placement_search(scope,member)}
+            self.placementSearches[key] = pending
         end
-        local corrected = self:startup_floor(scope.world, nav, member.characterId)
-        if not corrected then return { ready = false, reason = "projected-floor-unavailable" } end
-        if distance_squared(corrected, scope.origin) > scope.leashRadius ^ 2
-            or math.abs(corrected.Z - scope.origin.Z) > 3000 then
-            return { ready = false, reason = "placement-outside-envelope" }
-        end
-        for slot, previous in ipairs(scope.positions) do
-            if slot ~= member.slot and distance_squared(corrected, previous) < 250 ^ 2 then
-                return { ready = false, reason = "placement-overlap" }
-            end
-        end
-        scope.positions[member.slot] = corrected
+        local result = pending.search:poll(function(position,mode) return self:_placement_candidate(scope,member,position,mode) end,2)
+        if not result.ready then return result end
+        self.placementSearches[key] = nil
+        scope.positions[member.slot] = vector(result.position)
         self.placements[key] = { scope = scope, characterId = member.characterId, level = member.level,
-            slot = member.slot, position = vector(corrected) }
-        return { ready = true, position = vector(corrected) }
+            slot = member.slot, position = vector(result.position), goal = vector(result.goal), mode = result.mode }
+        return result
     end)
 end
 
@@ -655,8 +846,9 @@ function Native:spawn(scope, member)
             Level = member.level, Location = vector(position), Yaw = angle,
         }, nil)
         if not self.a.valid(handle) then error(INITIALIZATION, 0) end
-        self.records[key] = { world = scope.world, characterId = member.characterId,
-            handle = handle, scope = scope }
+        self.records[key] = { world = scope.world, characterId = member.characterId, handle = handle, scope = scope,
+            spawnPosition = vector(position), goal = placement.goal and vector(placement.goal) or vector(scope.origin),
+            placementMode = placement.mode }
         return handle
     end)
 end
@@ -962,8 +1154,6 @@ function Native:_configure_movement(record, state, scope)
     if not self.a.valid(blackboard) then error(INITIALIZATION, 0) end
     blackboard.SpawnerLocation_BB, blackboard.SpawnedPosition_BB = vector(scope.origin), vector(state.location)
     blackboard.ReturnTerritoryRadius_BB, blackboard.Disable_ReturnTerritory_WildPal = scope.leashRadius, false
-    local adjusted = self:_call("adjust-floor", self.utility, "AdjustActorToFloor", state.actor, 1000, false, false, false)
-    if not self.a.same(adjusted, state.actor) then error(INITIALIZATION, 0) end
     local invoker = self:_call("nav-invoker", state.actor, "GetComponentByClass", self.classes.invoker)
     if not self.a.valid(invoker) then error(INITIALIZATION, 0) end
     self:_call("activate-nav", invoker, "ActivateInvoker")
@@ -978,7 +1168,7 @@ function Native:startup_travel(scope, member)
         self:_configure_movement(self.records[member_key(member)], state, scope)
         local actions = self:_call("startup-ai-component", state.controller, "GetAIActionComponent")
         if not self.a.valid(actions) then error(INITIALIZATION, 0) end
-        self:_set_action(actions, "travel", scope.origin, nil)
+        self:_set_action(actions, "travel", self.records[member_key(member)].goal, nil)
         return true
     end)
 end
@@ -1057,7 +1247,7 @@ function Native:engage(scope, member)
             end
         end
         if record.mode ~= "travel" then
-            self:_set_action(actions, "travel", scope.origin, nil)
+            self:_set_action(actions, "travel", record.goal, nil)
             self:_behavior(record, member, "travel", nil)
         end
         return true
@@ -1142,7 +1332,8 @@ function Native:cleanup_recovered(members, on_outcome)
                     outcome = phase
                 elseif TERMINAL[returned] or returned == "despawned" or returned == "cancelled" then
                     outcome = returned
-                elseif member.spawnRequested or member.lastTransition then
+                elseif member.spawnRequested or (member.lastTransition and member.lastTransition ~= "custom_placement_intent"
+                    and member.lastTransition ~= "custom_placement_observed") then
                     if not member.instanceGuid or not member.playerGuid then
                         error("Custom assault recovery has an unidentified spawn outcome", 0)
                     end

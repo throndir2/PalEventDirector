@@ -24,6 +24,8 @@ return function(test, equal, truthy)
             return true, { scopes = scopes, availableBases = 10 }
         end
         function engine:prepare_spawn(_, member)
+            if f.placement_pending then return true,{ready=false,pending=true,reason="floor-unavailable"} end
+            if f.in_base then return true,{ready=true,mode="in-base",position={X=500,Y=0,Z=0},goal={X=0,Y=0,Z=0}} end
             return true,{ready=member.index ~= f.unavailablePlacement,reason="floor-unavailable"}
         end
         function engine:spawn(_, member)
@@ -131,6 +133,32 @@ return function(test, equal, truthy)
         equal(f.runner.state.members[1].instanceGuid.A,1)
         equal(f.runner.state.status,"blocked")
         equal(f.runner.state.cleanupComplete,true)
+    end)
+
+    test("startup waits for a bounded surface search without submitting duplicate spawn intent", function()
+        local f=fixture()
+        f.placement_pending=true
+        f:tick(5)
+        equal(f.spawns,0)
+        f.placement_pending=false
+        f:tick(6)
+        equal(f.spawns,1)
+        equal(f.runner.state.status,"passed")
+    end)
+
+    test("in-base engagement does not fabricate travel proof or require an impossible outside approach", function()
+        local f=fixture("engagement")
+        f.in_base=true
+        f:tick(6)
+        equal(f.runner.state.stage,"engagement")
+        equal(f.runner.state.moved,0)
+        equal(f.travels,0)
+        equal(f.runner.state.status,"running")
+        f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,1)
+        f:tick(3)
+        equal(f.runner.state.status,"passed")
+        equal(f.runner.state.dealtDamageEvents,1)
     end)
 
     test("startup movement does not pass merely because an action returned", function()
@@ -367,9 +395,11 @@ return function(test, equal, truthy)
         truthy(support:finish(1))
         equal(source.Shapes[1].bIsSector,false)
         local queries=0
-        native.startup_floor=function() queries=queries+1; return nil end
-        native.startup_nav=function() return nil end
-        native.startup_trace=function() return false end
+        native.probe_placement=function(_,actual,character,slot)
+            equal(actual,scope); equal(character,"BOSS_Hunter_Rifle"); equal(slot,1)
+            queries=queries+1
+            return {ready=false,pending=true,reason="floor-unavailable",attempts=2}
+        end
         local observed, result = support:poll(1)
         truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,false)
         equal(queries,0)

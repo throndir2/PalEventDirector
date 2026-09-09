@@ -367,9 +367,21 @@ function Test:_tick()
     elseif stage == "spawn" then
         local member = self.state.members[self.cursor]
         if not member then return self:_stage("initialize") end
+        member.placementStartedAt = member.placementStartedAt or now
         local prepared, placement = self.engine:prepare_spawn(self.scopes[self.cursor], member)
         if not prepared then return self:halt(placement) end
         if type(placement) ~= "table" or type(placement.ready) ~= "boolean" then
+            return self:halt("Custom assault placement is unavailable")
+        end
+        member.placementMode, member.placementAttempts = placement.mode, placement.attempts
+        member.placementReason, member.fallbackReason = placement.reason, placement.fallbackReason
+        if placement.pending == true and placement.ready == false then
+            if now < member.placementStartedAt + 120 then
+                return self:_save("startup_placement_pending")
+            end
+            self.state.failure = "spawn-placement-timeout"
+            return self:_stage("cleanup")
+        elseif placement.pending ~= nil and placement.pending ~= false then
             return self:halt("Custom assault placement is unavailable")
         end
         if not placement.ready then
@@ -378,6 +390,7 @@ function Test:_tick()
             return self:_stage("cleanup")
         end
         if placement.position then member.spawnLocation = util.shallow_copy(placement.position) end
+        if placement.goal then member.goalLocation = util.shallow_copy(placement.goal) end
         member.phase, member.spawnRequested = "requested", true
         self.state.mutationStarted = true
         if not self:_save("startup_spawn_intent") then return end
@@ -424,7 +437,7 @@ function Test:_tick()
                         local moved, reason = self.engine:startup_travel(self.scopes[index], plan)
                         if not moved then return self:halt(reason) end
                     end
-                    local target = self.scopes[index].origin
+                    local target = member.goalLocation or self.scopes[index].origin
                     if distance2(observation.location, runtime.initialLocation) >= 300 ^ 2
                         and distance2(observation.location, target) <= 1100 ^ 2 then
                         arrived = arrived + 1
@@ -473,7 +486,12 @@ function Test:_tick()
         end
         if ready == #self.state.members then
             self.state.simultaneous = #self.state.members > 1
-            if stage == "initialize" then return self:_stage(self.state.case == "spawn-cleanup" and "cleanup" or "movement") end
+            if stage == "initialize" then
+                if self.state.case == "engagement" and self.state.members[1].placementMode == "in-base" then
+                    return self:_stage("engagement")
+                end
+                return self:_stage(self.state.case == "spawn-cleanup" and "cleanup" or "movement")
+            end
             if stage == "movement" and arrived == #self.state.members then
                 return self:_stage(self.state.case == "engagement" and "engagement" or "cleanup")
             end

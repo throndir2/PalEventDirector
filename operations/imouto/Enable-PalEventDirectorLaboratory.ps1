@@ -94,6 +94,9 @@ function Assert-PedConfigSchema3 {
         Assert-IntegerRange $Config.customAssault.membersPerBase 'customAssault.membersPerBase' 1 8
         Assert-IntegerRange $Config.customAssault.level 'customAssault.level' 1 65
         Assert-IntegerRange $Config.customAssault.spawnRadiusCm 'customAssault.spawnRadiusCm' 500 12000
+        if ($null -ne $Config.customAssault.PSObject.Properties['allowInBaseFallback']) {
+            Assert-BooleanValue $Config.customAssault.allowInBaseFallback 'customAssault.allowInBaseFallback'
+        }
         Assert-IntegerRange $Config.customAssault.spawnBatchSize 'customAssault.spawnBatchSize' 1 16
         Assert-IntegerRange $Config.customAssault.pollBatchSize 'customAssault.pollBatchSize' 1 64
         Assert-IntegerRange $Config.customAssault.lifetimeSeconds 'customAssault.lifetimeSeconds' 60 1800
@@ -303,6 +306,10 @@ if (-not $PSCmdlet.ShouldProcess(
     if ($null -eq $config.PSObject.Properties['customAssault']) {
         $defaults = Get-Content -LiteralPath $DefaultConfigPath -Raw | ConvertFrom-Json
         $config | Add-Member -NotePropertyName 'customAssault' -NotePropertyValue $defaults.customAssault
+    }
+    if ($null -eq $config.customAssault.PSObject.Properties['allowInBaseFallback']) {
+        $defaults = Get-Content -LiteralPath $DefaultConfigPath -Raw | ConvertFrom-Json
+        $config.customAssault | Add-Member -NotePropertyName 'allowInBaseFallback' -NotePropertyValue $defaults.customAssault.allowInBaseFallback
     }
     $config.compatibility.allowedServerBuildIds = @($VerifiedBuildId)
     $config.compatibility.allowedUe4ssVersions = @($ExpectedUe4ssApiVersion)

@@ -112,7 +112,7 @@ try {
         throw 'Activation did not migrate the old adapter while preserving unrelated configuration.'
     }
     if ($config.customAssault.membersPerBase -ne 3 -or $config.customAssault.level -ne 30 -or
-        $config.customAssault.spawnBatchSize -ne 8) {
+        $config.customAssault.spawnBatchSize -ne 8 -or $config.customAssault.allowInBaseFallback -ne $true) {
         throw 'Activation did not add bounded custom-assault defaults to the old configuration.'
     }
     if ($config.siegeLeague.nativeMarchStartSeconds -ne 480 -or $result.NativeMarchStartSeconds -ne 480) {
@@ -145,6 +145,7 @@ try {
     [IO.File]::WriteAllText($journalPath, 'synthetic recovery-required evidence')
     $journalHash = (Get-FileHash $journalPath -Algorithm SHA256).Hash
     $config.siegeLeague.nativeMarchStartSeconds = 600
+    $config.customAssault.PSObject.Properties.Remove('allowInBaseFallback')
     [IO.File]::WriteAllText($ConfigPath, ($config | ConvertTo-Json -Depth 30))
     $result = & $Activation -ServerRoot $ServerRoot -SyntheticTestFixture `
         -SyntheticExpectedUe4ssDllSha256 $ue4ssHash -Confirm:$false
@@ -160,6 +161,12 @@ try {
         throw 'Laboratory activation did not enable direct tests with reward, schedule and recovery protections.'
     }
     if ($config.siegeLeague.nativeMarchStartSeconds -ne 600) { throw 'Preparation overwrote the configured march window.' }
+    if ($config.customAssault.allowInBaseFallback -ne $true) { throw 'Preparation did not migrate the old custom placement policy.' }
+    $config.customAssault.allowInBaseFallback = $false
+    [IO.File]::WriteAllText($ConfigPath, ($config | ConvertTo-Json -Depth 30))
+    & $Activation -ServerRoot $ServerRoot -SyntheticTestFixture -SyntheticExpectedUe4ssDllSha256 $ue4ssHash -Confirm:$false | Out-Null
+    $config = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    if ($config.customAssault.allowInBaseFallback -ne $false) { throw 'Preparation overwrote an explicit approach-only placement policy.' }
     Write-Output 'PASS IMOUTO preparation enables direct gameplay tests or isolated diagnostics without changing recovery'
 } finally {
     Remove-Item $FixtureRoot -Recurse -Force -ErrorAction SilentlyContinue

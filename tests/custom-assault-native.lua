@@ -394,6 +394,19 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("recovered placement-only intent is not mistaken for an unidentified NPC spawn", function()
+        fixture(function(engine,_,f)
+            local outcomes={}
+            local ok,result=engine:cleanup_recovered({
+                ["1"]={index=1,status="planned",lastTransition="custom_placement_intent"},
+                ["2"]={index=2,status="planned",lastTransition="custom_placement_observed"},
+            },function(index,outcome) outcomes[index]=outcome; return true end)
+            truthy(ok,result); equal(result,"complete")
+            equal(outcomes[1],"cancelled"); equal(outcomes[2],"cancelled")
+            equal(f.despawns,nil)
+        end)
+    end)
+
     test("recovered cleanup cannot release an absent handle while its original actor remains alive", function()
         fixture(function(engine, member, f)
             truthy(engine:inspect(member.handle, member))
@@ -815,6 +828,8 @@ return function(test, equal, truthy)
                 if f.nav_missing then return nil end
                 return util.shallow_copy(point)
             end
+            engine._placement_surface=function() return {ready=true} end
+            engine._placement_path=function() return {ready=true} end
             equal(engine:spawn(scope,plan),false)
             f.floor_missing=true
             local ok,result=engine:prepare_spawn(scope,plan)
@@ -834,6 +849,137 @@ return function(test, equal, truthy)
             equal(engine:spawn(scope,plan),false)
             equal(f.spawns,2)
             truthy(floor_calls>=5)
+        end)
+    end)
+
+    test("native placement rejects an unreachable approach and selects only a validated in-base surface", function()
+        fixture(function(engine,member,f,_,_,scope)
+            local plan=util.shallow_copy(member)
+            plan.index=2
+            scope.positions[1]={X=900,Y=0,Z=0}
+            engine.startup_floor=function(_,_,position) return util.shallow_copy(position) end
+            engine.startup_nav=function(_,_,position) return util.shallow_copy(position) end
+            local surface_checks,path_checks=0,0
+            engine._placement_surface=function(_,actual,_,position)
+                equal(actual,scope); surface_checks=surface_checks+1
+                return {ready=surface_checks ~= 2,reason="water-or-unsupported-surface"}
+            end
+            engine._placement_path=function(_,actual,_,position)
+                equal(actual,scope); path_checks=path_checks+1
+                return {ready=position.X ~= 900,reason="path-unreachable"}
+            end
+            local result
+            for _=1,9 do
+                local ok
+                ok,result=engine:prepare_spawn(scope,plan)
+                truthy(ok,result)
+                if not result.pending then break end
+            end
+            equal(result.ready,true); equal(result.mode,"in-base"); equal(result.fallbackReason,"path-unreachable")
+            truthy(surface_checks>1); truthy(path_checks<surface_checks)
+            equal(f.spawns,1)
+            truthy(engine:spawn(scope,plan)); equal(f.spawns,2)
+            local record=engine.records[plan.groupId..":"..plan.index]
+            equal(record.placementMode,"in-base"); equal(record.goal.X,scope.origin.X)
+            truthy(engine:startup_travel(scope,plan))
+            for _,label in ipairs(f.calls) do equal(label=="custom-adjust-floor",false) end
+        end)
+    end)
+
+    test("placement paths use the reflected validity predicate and reject partial or out-of-envelope routes", function()
+        fixture(function(engine,member,f,_,_,scope)
+            engine._placement_shape=function() return {radius=30,halfHeight=80} end
+            engine.navigationLibrary={IsValid=function() return true end}
+            local points={{X=100,Y=0,Z=0},{X=0,Y=0,Z=0}}
+            local count,reads=2,0
+            local array=setmetatable({GetArrayNum=function() return count end},{
+                __index=function(_,index) reads=reads+1; return points[index] end,
+            })
+            local route={IsValid=function() return true end,IsA=function() return true end,PathPoints=array}
+            local valid,partial=true,false
+            engine.bridge._static_find=function(_,path)
+                return setmetatable({IsValid=function() return true end},{__call=function(_,receiver,...)
+                    if path:match(":FindPathToLocationSynchronously$") then
+                        equal(receiver,engine.navigationLibrary)
+                        local args=table.pack(...)
+                        equal(args.n,5); equal(args[1],scope.world); equal(args[4],nil); equal(args[5],nil)
+                        return route
+                    end
+                    equal(receiver,route)
+                    if path:match(":IsValid$") then return valid end
+                    if path:match(":IsPartial$") then return partial end
+                    if path:match(":GetPathLength$") then return 100 end
+                    error("unexpected reflected query")
+                end})
+            end
+            local function query() return engine:_placement_path(scope,member,points[1],scope.origin) end
+            truthy(query().ready); equal(reads,2)
+            valid=false
+            equal(query().reason,"path-unreachable"); equal(reads,2)
+            valid,partial=true,true
+            equal(query().reason,"path-partial"); equal(reads,2)
+            partial=false; count=65
+            equal(query().reason,"path-point-limit"); equal(reads,2)
+            count=3; points[3]={X=2000,Y=0,Z=0}
+            equal(query().reason,"path-outside-envelope")
+            equal(f.spawns,1)
+        end)
+    end)
+
+    test("placement shape qualifies only the exact upright owned CDO capsule and independent nav dimensions", function()
+        fixture(function(engine,member)
+            local function object(values)
+                values.IsValid=function() return true end
+                values.IsA=function() return true end
+                return values
+            end
+            local capsule=object({RelativeScale3D={X=1,Y=1,Z=1},RelativeLocation={X=0,Y=0,Z=0},
+                RelativeRotation={Pitch=0,Yaw=0,Roll=0},GetScaledCapsuleRadius=function() return 30 end,
+                GetScaledCapsuleHalfHeight=function() return 80 end})
+            local movement=object({WalkableFloorZ=0.7,NavAgentProps={AgentRadius=30,AgentHeight=160}})
+            local cdo=object({CapsuleComponent=capsule,CharacterMovement=movement,
+                K2_GetRootComponent=function() return capsule end,GetMovementComponent=function() return movement end})
+            capsule.GetOwner=function() return cdo end
+            movement.GetOwner=function() return cdo end
+            engine._class=function() return object({GetCDO=function() return cdo end}) end
+            local shape=engine:_placement_shape(member.characterId)
+            equal(shape.radius,30); equal(shape.halfHeight,80); equal(shape.navContext,cdo)
+            movement.NavAgentProps.AgentHeight=100
+            shape=engine:_placement_shape(member.characterId)
+            equal(shape.navContext,nil); equal(shape.halfHeight,80)
+            capsule.RelativeScale3D.Z=2
+            local absent,reason=engine:_placement_shape(member.characterId)
+            equal(absent,nil); equal(reason,"pawn-shape-transform")
+            capsule.RelativeScale3D.Z=1
+            capsule.GetOwner=function() return {} end
+            absent,reason=engine:_placement_shape(member.characterId)
+            equal(absent,nil); equal(reason,"pawn-shape-ownership")
+        end)
+    end)
+
+    test("walkable support and a ground-channel clearance miss never fabricate dry full-capsule safety", function()
+        fixture(function(engine,member,f,_,_,scope)
+            engine._placement_shape=function() return {radius=30,halfHeight=80,walkableZ=0.7} end
+            local component={IsValid=function() return true end,IsA=function() return true end,
+                GetWalkableSlopeOverride=function() return {WalkableSlopeBehavior=0} end}
+            engine.physicsLibrary={CapsuleTraceSingleByPalTraceType=function(_,world,start,finish,radius,half,kind,complex,material,index,out,draw)
+                equal(world,scope.world); equal(radius,30); equal(half,80); equal(kind,3)
+                equal(complex,false); equal(material,false); equal(index,false); equal(draw,0)
+                if finish.Z>start.Z then return false end
+                out.bBlockingHit,out.bStartPenetrating=true,f.penetrating==true
+                out.ImpactNormal={X=0,Y=0,Z=f.normal or 1}
+                out.Location={X=100,Y=0,Z=0}
+                out.Component={Get=function() return component end}
+                return true
+            end}
+            local point={X=100,Y=0,Z=0}
+            local result=engine:_placement_surface(scope,member,point)
+            equal(result.ready,false); equal(result.reason,"dry-clearance-unqualified")
+            f.penetrating=true
+            equal(engine:_placement_surface(scope,member,point).reason,"support-penetrating")
+            f.penetrating=false; f.normal=0.2
+            equal(engine:_placement_surface(scope,member,point).reason,"support-not-walkable")
+            equal(f.spawns,1)
         end)
     end)
 

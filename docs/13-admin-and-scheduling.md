@@ -242,6 +242,7 @@ Native profiles never resize Palworld's native member array. A native transforma
 | `customAssault.membersPerBase` | 1-8; default 3 stock bounty NPCs per prepared base. |
 | `customAssault.level` | 1-65; default 30. Fixed custom level, not native worker-derived scaling. |
 | `customAssault.spawnRadiusCm` | 500-12000; default 7000, additionally constrained to the base's outer usable area and bounded native placement. |
+| `customAssault.allowInBaseFallback` | Default `true`, as authorized for sky/water/terrain-isolated bases. When an approach is unavailable, search bounded same-base surface candidates; never bypass physical safety or relocate an existing NPC. |
 | `customAssault.spawnBatchSize` / `pollBatchSize` | Defaults 8 / 32; bound per-tick spawn and ownership-observation work. |
 | `customAssault.lifetimeSeconds` | 60-1800; default 900, followed by ownership-checked cleanup. |
 | `customAssault.initializationSeconds` | 5-120; default 60. Uncertain initialization/cleanup is retained for recovery, never retried blindly. |

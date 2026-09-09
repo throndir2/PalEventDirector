@@ -41,6 +41,7 @@ function M.defaults()
             membersPerBase = 3,
             level = 30,
             spawnRadiusCm = 7000,
+            allowInBaseFallback = true,
             spawnBatchSize = 8,
             pollBatchSize = 32,
             lifetimeSeconds = 900,
@@ -209,6 +210,7 @@ function M.validate(config)
         require_integer(config.customAssault.membersPerBase, "customAssault.membersPerBase", 1, 8)
         require_integer(config.customAssault.level, "customAssault.level", 1, 65)
         require_integer(config.customAssault.spawnRadiusCm, "customAssault.spawnRadiusCm", 500, 12000)
+        require_boolean(config.customAssault.allowInBaseFallback, "customAssault.allowInBaseFallback")
         require_integer(config.customAssault.spawnBatchSize, "customAssault.spawnBatchSize", 1, 16)
         require_integer(config.customAssault.pollBatchSize, "customAssault.pollBatchSize", 1, 64)
         require_integer(config.customAssault.lifetimeSeconds, "customAssault.lifetimeSeconds", 60, 1800)

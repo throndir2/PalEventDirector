@@ -504,11 +504,20 @@ function Assault:_spawn(member, now)
     if type(placement) ~= "table" or type(placement.ready) ~= "boolean" then
         return self:_fail_member(member, "custom assault placement returned invalid evidence")
     end
+    if placement.pending ~= nil and (type(placement.pending) ~= "boolean" or (placement.pending and placement.ready)) then
+        return self:_fail_member(member, "custom assault placement returned invalid pending evidence")
+    end
+    if placement.mode ~= nil and placement.mode ~= "approach" and placement.mode ~= "in-base" then
+        return self:_fail_member(member, "custom assault placement returned an invalid mode")
+    end
     local data = copy_plan(member)
-    data.ready, data.reason = placement.ready, placement.reason
+    data.ready, data.reason, data.pending = placement.ready, placement.reason, placement.pending
+    data.placementMode, data.placementAttempts, data.fallbackReason = placement.mode, placement.attempts, placement.fallbackReason
     ok, err = self:_record("custom_placement_observed", data)
     if not ok then return self:_fail_member(member, err) end
+    if placement.pending then return true end
     if not placement.ready then return self:_retire(member, "cancelled", "placement_unavailable") end
+    member.placementMode = placement.mode
     ok, err = self:_record("custom_spawn_intent", copy_plan(member))
     if not ok then return self:_fail_member(member, err) end
     member.phase, member.requestedAt, member.spawnRequested = "pending", now, true
@@ -549,13 +558,16 @@ function Assault:poll()
             return self:_fail_member(member, "custom assault initialization timed out; owned handle retained for recovery")
         end
     end
-    local spawned = 0
-    while self.spawnCursor <= #self.members and spawned < self.config.spawnBatchSize do
+    local spawned, visited_queued = 0, 0
+    while visited_queued < #self.members and spawned < self.config.spawnBatchSize do
         local member = self.members[self.spawnCursor]
-        self.spawnCursor, spawned = self.spawnCursor + 1, spawned + 1
-        local ok
-        ok, err = self:_spawn(member, now)
-        if not ok then return false, err end
+        self.spawnCursor, visited_queued = (self.spawnCursor % #self.members) + 1, visited_queued + 1
+        if member.phase == "queued" then
+            spawned = spawned + 1
+            local ok
+            ok, err = self:_spawn(member, now)
+            if not ok then return false, err end
+        end
     end
     local checked, visited, count = 0, 0, #self.requested
     while visited < count and checked < self.config.pollBatchSize do

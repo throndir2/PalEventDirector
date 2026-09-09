@@ -833,7 +833,8 @@ function Director:on_custom_assault_record(kind, data, occurrence_id)
         elseif kind == "custom_cleanup_intent" then
             member.cleanupRequested = true
         end
-        for _, key in ipairs({ "status", "phase", "outcome", "reason", "targetId", "healthBudget", "engaged" }) do
+        for _, key in ipairs({ "status", "phase", "outcome", "reason", "targetId", "healthBudget", "engaged",
+            "placementMode", "placementAttempts", "fallbackReason" }) do
             local value = data[key]
             if value ~= nil then
                 if type(value) ~= "string" and type(value) ~= "number" and type(value) ~= "boolean" then
@@ -859,6 +860,17 @@ function Director:on_custom_assault_record(kind, data, occurrence_id)
         self.state.status, event.status = "recovery_required", "recovery_required"
         event.recoveryReason = "unable to persist custom assault transition"
         return false, reason
+    end
+    if kind == "custom_placement_observed" and data.ready == true and data.placementMode == "in-base" then
+        local base = event.bases[data.baseId]
+        if not base.inBaseFallbackReported then
+            base.inBaseFallbackReported = true
+            self:_mark_dirty()
+            if event.requesterUid then
+                self:_chat(string.format("PED #%d target %d: using verified safe in-base placement; the approach was unavailable.",
+                    event.requestNumber or 0, base.dispatchIndex or 0), event.requesterUid)
+            end
+        end
     end
     return true
 end

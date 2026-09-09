@@ -51,6 +51,7 @@ return function(test, equal, truthy)
         local engine = {}
         function engine:prepare_spawn(scope, plan)
             if called("prepare_spawn", plan.index) then return false, "bounded placement failure" end
+            if scope.ordinal == f.pendingPlacement then return true,{ready=false,pending=true,reason="floor-unavailable"} end
             return true, {ready=scope.ordinal ~= f.unavailablePlacement,reason="floor-unavailable"}
         end
         function engine:spawn(scope, plan)
@@ -309,6 +310,21 @@ return function(test, equal, truthy)
         truthy(f.assault:close("cancelled"))
         equal(f:count("despawn"),3)
         equal(f.assault:has_live_members(),false)
+    end)
+
+    test("pending surface searches rotate fairly and never hold another base's spawn", function()
+        local f=fixture({immediate=true,config={membersPerBase=1,spawnBatchSize=1}})
+        f.pendingPlacement=1
+        truthy(f:start())
+        truthy(f.assault:poll())
+        equal(f:count("spawn"),0)
+        truthy(f.assault:poll())
+        equal(f:count("spawn"),1); equal(f.starts[1].id,"private-base-2")
+        f.pendingPlacement=nil
+        truthy(f.assault:poll())
+        equal(f:count("spawn"),2); equal(f.starts[2].id,"private-base-1")
+        truthy(f.assault:poll())
+        equal(f:count("spawn"),2)
     end)
 
     test("custom assault waits for valid actor evidence and journals initialization before engagement", function()

@@ -36,6 +36,7 @@
     "membersPerBase": 3,
     "level": 30,
     "spawnRadiusCm": 7000,
+    "allowInBaseFallback": true,
     "spawnBatchSize": 8,
     "pollBatchSize": 32,
     "lifetimeSeconds": 900,

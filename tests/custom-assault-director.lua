@@ -49,6 +49,9 @@ return function(test, equal, truthy)
             config.customAssault.membersPerBase, config.customAssault.spawnBatchSize = 2, 2
             local engine = {}
             function engine:prepare_spawn(scope)
+                if scope.baseId == state.fallback_base then
+                    return true,{ready=true,mode="in-base",attempts=3,fallbackReason="path-unreachable"}
+                end
                 return true,{ready=scope.baseId ~= state.unavailable_placement,reason="floor-unavailable"}
             end
             function engine:spawn(scope, plan)
@@ -450,6 +453,24 @@ return function(test, equal, truthy)
             equal(director.state.event.bases["base-b"].status,"active")
             equal(director.state.event.confirmedBaseCount,1)
             equal(state.despawns,0)
+        end,true)
+    end)
+
+    test("the real director persists and reports in-base fallback without claiming a native raid", function()
+        fixture(function(director,_,state)
+            state.fallback_base="base-b"
+            director:tick()
+            director:tick()
+            local member=director.state.event.customAssault.members["2"]
+            equal(member.placementMode,"in-base")
+            equal(member.fallbackReason,"path-unreachable")
+            equal(member.placementAttempts,3)
+            local announcements=0
+            for _,message in ipairs(state.messages) do
+                if message:find("using verified safe in-base placement",1,true) then announcements=announcements+1 end
+            end
+            equal(announcements,1)
+            equal(director.state.event.confirmedBaseCount,2)
         end,true)
     end)
 end
