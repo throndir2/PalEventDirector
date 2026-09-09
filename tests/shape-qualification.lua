@@ -3,6 +3,7 @@ return function(test,equal,truthy)
     local Shape=require("ped.shape_qualification")
     local Survey=require("ped.surface_survey")
     local Config=require("ped.config")
+    local Cadence=require("ped.cadence_trial")
     local util=require("ped.util")
     local function fixture(callback,case)
         local f={now=1000,spawns=0,despawns=0,surveys=0,calls={},signatures={},
@@ -105,6 +106,8 @@ return function(test,equal,truthy)
         end
         f.cdo,f.actor=character(true),character(false)
         local actions=object({
+            IsA=function(_,path) return path=="/Script/Pal.PalAIActionComponent" end,
+            GetOwner=function() return f.controller end,GetWorld=function() return world end,
             GetCurrentAction_BP=function() return f.action end,
             TerminateCurrentActionByClass=function() end,
             SetActionClassParameter=function()
@@ -113,7 +116,9 @@ return function(test,equal,truthy)
                 return f.action
             end,
         })
-        f.controller=object({GetAIActionComponent=function() return actions end,GetMyPalBlackboard=function() return object() end,
+        f.controller=object({IsA=function(_,path) return path=="/Script/Pal.PalAIController" end,
+            MinAIActionComponentTickInterval=0,CustomTimeDilation=1,
+            GetAIActionComponent=function() return actions end,GetMyPalBlackboard=function() return object() end,
             AddTargetNPC=function(_,target) equal(target,f.defender); f.targets=(f.targets or 0)+1 end,
             StopMovement=function() f.stops=(f.stops or 0)+1 end})
         local parameter=object({
@@ -180,6 +185,18 @@ return function(test,equal,truthy)
             return handle
         end})
         engine.actor_world=function() return world end
+        f.cadenceInterval,f.cadenceWrites=10,0
+        bridge._static_find=function(_,path)
+            if path=="/Script/Engine.ActorComponent:GetComponentTickInterval" then
+                return setmetatable(object(),{__call=function(_,receiver) equal(receiver,actions); return f.cadenceInterval end})
+            end
+            if path=="/Script/Engine.ActorComponent:SetComponentTickIntervalAndCooldown" then
+                return setmetatable(object(),{__call=function(_,receiver,value)
+                    equal(receiver,actions); f.cadenceWrites=f.cadenceWrites+1
+                    f.cadenceInterval=(string.unpack("<f",string.pack("<f",value)))
+                end})
+            end
+        end
         engine._class=function(_,path)
             if path=="/Script/Pal.PalCharacterMovementComponent" then return f.movementClass end
             return object({GetCDO=function() return f.cdo end})
@@ -228,6 +245,12 @@ return function(test,equal,truthy)
             runId="shape-fixture",artifactSha256=string.rep("2",64),sourceRevision=string.rep("1",40),
             status="running",stage="spawn",members={member},spawned=0,initialized=0,moved=0,
             helpersCreated=1,helpersCleaned=0,helpers={{phase="configured"}}}}
+        if case==Cadence.CASE then
+            runner.state.capturePolicy,runner.state.cadenceSeconds=Cadence.CAPTURE_POLICY,Cadence.SECONDS
+            runner.state.cadence={status="NOT_ACQUIRED",active=false,retired=false,generation=0}
+            bridge.cadenceBarrier={ready=true,native=engine,runner=runner,runId=runner.state.runId,artifact=runner.state.artifactSha256}
+        end
+        function runner:_save(kind) f.lastCadenceRecord=kind; return true end
         runner.support={native=engine,residency=function()
             f.residencies=f.residencies+1
             return true,{ready=false,physicalQueried=false,enabled=true,streamingComplete=not f.residency_missing}
@@ -245,7 +268,8 @@ return function(test,equal,truthy)
         f.environment={COMPUTERNAME="IMOUTO",PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN="shape-fixture",
             PAL_EVENT_DIRECTOR_SOURCE_REVISION=runner.state.sourceRevision,PAL_EVENT_DIRECTOR_ARTIFACT_SHA256=runner.state.artifactSha256,
             PAL_EVENT_DIRECTOR_SERVER_BUILD_ID="25080279",PAL_EVENT_DIRECTOR_UE4SS_TAG="2281fa31",PAL_EVENT_DIRECTOR_UE4SS_API_VERSION="3.0.1"}
-        local previous_getenv,previous_survey=os.getenv,Survey.new
+        local previous_getenv,previous_survey,previous_thread=os.getenv,Survey.new,_G.IsInGameThread
+        if case==Cadence.CASE then _G.IsInGameThread=function() return true end end
         os.getenv=function(name) return f.environment[name] end
         Survey.new=function(actual,actual_scope,options)
             equal(actual,engine); equal(actual_scope,scope)
@@ -326,7 +350,7 @@ return function(test,equal,truthy)
         function f:observe()
             local plan=util.shallow_copy(member)
             local ok,result=engine:startup_shape_observation(scope,plan)
-            if ok and runner.state.case==Shape.ENGAGEMENT_CASE then
+            if ok and Shape.is_engagement(runner.state.case) then
                 runner.state.shapeObservations=runner.state.shapeObservations or {}
                 runner.state.shapeObservations[#runner.state.shapeObservations+1]=result
             end
@@ -352,7 +376,7 @@ return function(test,equal,truthy)
             truthy(ok,result); equal(result.armed,true)
         end
         local ok,why=xpcall(function() callback(f,object) end,debug.traceback)
-        os.getenv,Survey.new=previous_getenv,previous_survey
+        os.getenv,Survey.new,_G.IsInGameThread=previous_getenv,previous_survey,previous_thread
         assert(ok,why)
     end
 
@@ -1131,6 +1155,44 @@ return function(test,equal,truthy)
             equal(result.actual.root.halfHeight,30)
             truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
         end)
+    end)
+
+    test("cadenced engagement acquires only after fresh qualification and restores before owned cleanup",function()
+        fixture(function(f)
+            f:qualify_engagement()
+            local ok,result=f.engine:engage(f.scope,f.member)
+            truthy(ok,result); equal(result,"unavailable"); equal(f.dispatched,nil); equal(f.cadenceWrites,0)
+            ok,result=f.engine:startup_acquire_cadence(f.scope,f.member)
+            truthy(ok,result); equal(result,true); equal(f.cadenceWrites,1); equal(f.cadenceInterval,Cadence.APPLIED)
+            ok,result=f.engine:engage(f.scope,f.member)
+            truthy(ok,result); equal(result,true); equal(f.dispatched,1); equal(f.cadenceWrites,1)
+            truthy(f.engine:despawn(f.scope,f.member))
+            equal(f.cadenceWrites,2); equal(f.cadenceInterval,10); equal(f.despawns,1)
+            equal(f.runner.state.cadence.status,"RESTORED")
+        end,Cadence.CASE)
+    end)
+
+    test("cadence admission fails before NPC work without its barrier or capture restriction",function()
+        for _,change in ipairs({
+            function(f) f.engine.bridge.cadenceBarrier.ready=false end,
+            function(f) f.runner.state.capturePolicy="unrestricted" end,
+            function(f) f.runner.state.cadenceSeconds=0.2 end,
+            function() _G.IsInGameThread=function() return false end end,
+        }) do
+            fixture(function(f)
+                change(f)
+                equal(f.engine:prepare_spawn(f.scope,f.member),false)
+                equal(f.spawns,0); equal(f.surveys,0); equal(f.cadenceWrites,0)
+            end,Cadence.CASE)
+        end
+    end)
+
+    test("stock qualified engagement does not acquire or write a cadence lease",function()
+        fixture(function(f)
+            f:qualify_engagement()
+            truthy(f.engine:engage(f.scope,f.member))
+            equal(f.engine.cadenceLease,nil); equal(f.cadenceWrites,0)
+        end,Shape.ENGAGEMENT_CASE)
     end)
 
     test("qualified engagement needs two native same-actor receipts and an explicit bounded arm",function()

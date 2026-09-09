@@ -894,6 +894,8 @@ function Bridge:_register_hook(name, path, callback, mode)
     local ok, pre_id, post_id
     if mode == "script" then
         ok, pre_id, post_id = pcall(register, path, observed)
+    elseif mode=="native-pre" then
+        ok, pre_id, post_id = pcall(register,path,observed,function() end)
     else
         ok, pre_id, post_id = pcall(register, path, function() end, observed)
     end
@@ -901,6 +903,8 @@ function Bridge:_register_hook(name, path, callback, mode)
         return false, tostring(pre_id)
     end
     self.hook_ids[name] = { path = path, pre = pre_id, post = post_id }
+    if mode=="native-pre" and (not util.is_integer(pre_id) or pre_id<0 or not util.is_integer(post_id)
+        or post_id<0 or pre_id==post_id) then return false,"Native pre-hook registration identifiers are invalid" end
     if mode == "script" and (not util.is_integer(pre_id) or pre_id < 0 or pre_id ~= post_id) then
         return false, "Script hook registration identifiers are invalid"
     end
@@ -1763,13 +1767,30 @@ function Bridge:register()
         end)
         if not loop_ok then ingress.active = false; return false, "Local diagnostic ingress initialization failed" end
     end
+    self.registeringHooks=true
+    local cadence_ok,cadence_error=true,nil
+    local cadence=require("ped.cadence_trial")
+    if self.startup_test and self.startup_test.state.case==cadence.CASE then
+        cadence_ok,cadence_error=cadence.register(self,self:_custom_engine())
+    end
+    if not cadence_ok then
+        self.registeringHooks=false
+        self:unregister()
+        if self.startup_test then
+            if self.native_fault then self.startup_test:halt(self.native_fault)
+            else self.startup_test:_finish("blocked","cadence-barrier-unavailable") end
+        end
+        return false,cadence_error
+    end
     for _, specification in ipairs(required) do
         local ok, hook_error = self:_register_hook(specification[1], specification[2], specification[3])
         if not ok then
+            self.registeringHooks=false
             self:unregister()
             return false, specification[1] .. " hook failed: " .. hook_error
         end
     end
+    self.registeringHooks=false
     if type(register_console) == "function" then
         local console_ok = pcall(register_console, "ped", function(command, parts, output)
             if not self.registered then return true end
@@ -1867,6 +1888,11 @@ function Bridge:register()
 end
 
 function Bridge:unregister()
+    if self.cadenceBarrier then self.cadenceBarrier.ready=false end
+    if self.custom_engine and self.custom_engine.cadenceLease then
+        self.custom_engine.cadenceLease:retire("bridge-unregister")
+        self.custom_engine.cadenceLease:release("bridge-unregister")
+    end
     self.periodic_active = false
     if self.diagnostic_ingress then self.diagnostic_ingress.active = false end
     local unregister = global("UnregisterHook")

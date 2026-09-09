@@ -8,7 +8,7 @@ param(
 
     [switch]$ValidateOnly,
 
-    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey', 'ShapeQualification', 'QualifiedEngagement')]
+    [ValidateSet('None', 'SpawnCleanup', 'Movement', 'TwoBaseMovement', 'Prewarm', 'Engagement', 'ClassCatalog', 'SurfaceSurvey', 'ShapeQualification', 'QualifiedEngagement', 'CadencedEngagement')]
     [string]$StartupTest = 'None',
 
     [ValidateRange(0,64)]
@@ -262,8 +262,8 @@ function Read-StartupTestOutcome {
         $state.status -notin @('running','passed','blocked','failed') -or
         $state.mutationStarted -isnot [bool] -or $state.cleanupComplete -isnot [bool] -or
         [string]$state.artifactSha256 -notmatch '^[a-f0-9]{64}$') { throw 'Startup test outcome schema is invalid.' }
-    if ($state.case -in @('shape-qualification','qualified-engagement')) {
-        $expectedContract = if ($state.case -eq 'qualified-engagement') { 'hunter-level30-qualified-engagement-v1' } else { 'hunter-level30-one-instance-v1' }
+    if ($state.case -in @('shape-qualification','qualified-engagement','cadenced-engagement')) {
+        $expectedContract = if ($state.case -eq 'cadenced-engagement') { 'hunter-level30-network-sphere-cadence-v1' } elseif ($state.case -eq 'qualified-engagement') { 'hunter-level30-qualified-engagement-v1' } else { 'hunter-level30-one-instance-v1' }
         if ($null -eq $state.PSObject.Properties['experiment'] -or $state.experiment -cne $expectedContract -or
             $state.moved -ne 0 -or $state.spawned -gt 1) { throw 'Startup shape experiment outcome is invalid.' }
         if ($state.status -eq 'passed') {
@@ -276,7 +276,7 @@ function Read-StartupTestOutcome {
                 if ($observation.comparison -cne 'MATCH' -or $observation.instanceOnly -ne $true -or
                     $observation.spawnQualified -ne $false) { throw 'Startup shape evidence is not a qualification.' }
             }
-            if ($state.case -eq 'qualified-engagement') {
+            if ($state.case -in @('qualified-engagement','cadenced-engagement')) {
                 if ($null -eq $state.PSObject.Properties['qualifiedEngagementArmed'] -or $state.qualifiedEngagementArmed -ne $true -or
                     $null -eq $state.PSObject.Properties['dealtDamageEvents'] -or $state.dealtDamageEvents -lt 1 -or
                     $null -eq $state.PSObject.Properties['dealtDamage'] -or $state.dealtDamage -lt 1) {
@@ -301,6 +301,25 @@ function Read-StartupTestOutcome {
                 }
             }
         }
+    }
+    if ($state.case -eq 'cadenced-engagement') {
+        if ($state.capturePolicy -cne 'stock-networked-spheres-only-v1' -or $state.cadenceSeconds -ne 0.1) {
+            throw 'Cadence trial capture policy or interval is invalid.'
+        }
+        if ($state.cleanupComplete -and ($state.cadence.active -ne $false -or
+            $state.cadence.status -notin @('NOT_ACQUIRED','RESTORED','DISPOSED','OVERRIDDEN') -or
+            ($state.cadence.status -eq 'RESTORED' -and $state.cadence.restorationVerified -ne $true) -or
+            ($state.cadence.status -eq 'DISPOSED' -and $state.cadence.disposalVerified -ne $true))) {
+            throw 'Cadence lease cleanup is unresolved.'
+        }
+        if ($state.status -eq 'passed' -and ($state.cadence.appliedObserved -ne $true -or
+            $state.cadence.retired -ne $true -or
+            ($state.cadence.status -ne 'RESTORED' -and
+                ($state.cadence.status -ne 'DISPOSED' -or $state.cadence.disposalVerified -ne $true)))) {
+            throw 'Cadence lease was not restored or disposed.'
+        }
+    } elseif ($null -ne $state.PSObject.Properties['capturePolicy'] -or $null -ne $state.PSObject.Properties['cadenceSeconds']) {
+        throw 'Cadence policy cannot be attached to another startup case.'
     }
     $finalizedNpcs = 0
     if ($null -ne $state.PSObject.Properties['npcsFinalized']) { $finalizedNpcs = $state.npcsFinalized }
@@ -358,12 +377,17 @@ try {
         $testDirectory = Join-Path $testRoot $testRunId
         Assert-StartupTestPath $testDirectory
         New-Item -ItemType Directory -Path $testDirectory -ErrorAction Stop | Out-Null
-        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey'; ShapeQualification='shape-qualification'; QualifiedEngagement='qualified-engagement' }
+        $caseNames = @{ SpawnCleanup='spawn-cleanup'; Movement='movement'; TwoBaseMovement='two-base-movement'; Prewarm='prewarm'; Engagement='engagement'; ClassCatalog='class-catalog'; SurfaceSurvey='surface-survey'; ShapeQualification='shape-qualification'; QualifiedEngagement='qualified-engagement'; CadencedEngagement='cadenced-engagement' }
         $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
             artifactSha256=[string]$deployment.artifactSha256 }
         if ($StartupTestBaseIndex -gt 0) { $plan['baseOrdinal'] = $StartupTestBaseIndex }
         if ($StartupTest -eq 'ShapeQualification') { $plan['experiment'] = 'hunter-level30-one-instance-v1' }
         if ($StartupTest -eq 'QualifiedEngagement') { $plan['experiment'] = 'hunter-level30-qualified-engagement-v1' }
+        if ($StartupTest -eq 'CadencedEngagement') {
+            $plan['experiment'] = 'hunter-level30-network-sphere-cadence-v1'
+            $plan['capturePolicy'] = 'stock-networked-spheres-only-v1'
+            $plan['cadenceSeconds'] = 0.1
+        }
         if ($previousTestRunId) { $plan['previousRunId'] = $previousTestRunId }
         [IO.File]::WriteAllText((Join-Path $testDirectory 'plan.json'), ($plan | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
         [IO.File]::WriteAllText($activeTestPath, (@{ runId=$testRunId } | ConvertTo-Json), [Text.UTF8Encoding]::new($false))

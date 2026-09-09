@@ -1,6 +1,7 @@
 return function(test, equal, truthy)
     local Startup = require("ped.startup_test")
     local Shape = require("ped.shape_qualification")
+    local Cadence = require("ped.cadence_trial")
     local util = require("ped.util")
     local function fixture(case)
         local f = { now = 1000, records = {}, spawns = 0, despawns = 0, travels = 0, phases = {}, actors = {} }
@@ -73,7 +74,7 @@ return function(test, equal, truthy)
             if f.capture_at_observation then f.phases[1]="capturing" end
             local result={comparison=f.shape_result or "MATCH",instanceOnly=true,spawnQualified=false,
                 actual={root={radius=30,halfHeight=30},body={radius=30,halfHeight=95}}}
-            if f.runner.state.case==Shape.ENGAGEMENT_CASE then
+            if Shape.is_engagement(f.runner.state.case) then
                 local state=f.runner.state
                 result.receipt={sample=f.shape_observations,runId=state.runId,case=state.case,experiment=state.experiment,
                     artifactSha256=state.artifactSha256,memberIndex=1,actorAddress="fixture-actor",observedAt=f.now}
@@ -88,14 +89,33 @@ return function(test, equal, truthy)
                 location = { X=f.arrived and 500 or 4000,Y=0,Z=0 } }
         end
         function engine:engage()
-            if f.runner.state.case==Shape.ENGAGEMENT_CASE then
+            if Shape.is_engagement(f.runner.state.case) then
                 equal(f.activePermit,true); equal(#f.runner.state.shapeObservations,2)
             end
+            if f.runner.state.case==Cadence.CASE then equal(f.runner.state.cadence.active,true) end
             f.engages=(f.engages or 0)+1
             return true,f.engagementUnavailable and "unavailable" or true
         end
         function engine:startup_test_stage_changed(_,stage)
             if stage~="engagement" then f.activePermit=false end
+            if f.runner and f.runner.state.case==Cadence.CASE and stage~="engagement" then
+                local cadence=f.runner.state.cadence
+                if cadence.status=="ACTIVE" then
+                    cadence.active,cadence.retired=false,true
+                    cadence.status=f.restoreFailed and "UNRESOLVED" or "RESTORED"
+                    cadence.restorationVerified=not f.restoreFailed
+                end
+                if cadence.status=="UNRESOLVED" then return false end
+            end
+            return true
+        end
+        function engine:startup_acquire_cadence()
+            equal(f.records[#f.records],"startup_cadence_acquire_intent")
+            equal(f.arms,1); equal(#f.runner.state.shapeObservations,2)
+            f.cadenceAcquisitions=(f.cadenceAcquisitions or 0)+1
+            local cadence=f.runner.state.cadence
+            cadence.status,cadence.active,cadence.appliedObserved="ACTIVE",true,true
+            return true,true
         end
         function engine:startup_arm_qualified_engagement()
             equal(f.records[#f.records],"startup_qualified_engagement_arm_intent")
@@ -136,10 +156,20 @@ return function(test, equal, truthy)
         end
         f.runner = Startup.new({ plan = { schemaVersion=1, runId="fixture-run", case=case or "spawn-cleanup",
             experiment=Shape.contract(case),
+            capturePolicy=case==Cadence.CASE and Cadence.CAPTURE_POLICY or nil,
+            cadenceSeconds=case==Cadence.CASE and Cadence.SECONDS or nil,
             sourceRevision=string.rep("1",40), artifactSha256=string.rep("2",64) }, store=store, engine=engine, clock=function() return f.now end,
             logger={ info=function() end, error=function() end } })
+        if case==Cadence.CASE then
+            engine.bridge={startup_test=f.runner,delivery_profile="laboratory-native-test",
+                config={mode="laboratory",capabilities={startAllInvasions=true}},
+                cadenceBarrier={ready=true,native=engine,runner=f.runner,runId=f.runner.state.runId,artifact=f.runner.state.artifactSha256}}
+        end
         function f:tick(count)
+            local previous=_G.IsInGameThread
+            if self.runner.state.case==Cadence.CASE then _G.IsInGameThread=function() return self.onGameThread~=false end end
             for _ = 1, count or 1 do self.runner:tick(); self.now = self.now + 1 end
+            _G.IsInGameThread=previous
         end
         return f
     end
@@ -388,6 +418,44 @@ return function(test, equal, truthy)
         equal(f.surveys,1); equal(f.runner.state.helpersCleaned,1)
         equal(f.runner.state.surfaceSurvey.spawnQualified,false)
         f:tick(5); equal(f.surveys,1)
+    end)
+
+    test("cadence case blocks before any NPC or helper when its capture barrier is unavailable",function()
+        local f=fixture(Cadence.CASE)
+        f.runner.engine.bridge.cadenceBarrier.ready=false
+        f:tick(5)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"cadence-barrier-unavailable")
+        equal(f.spawns,0); equal(f.helpers,nil); equal(f.cadenceAcquisitions,nil)
+    end)
+
+    test("cadence case requires fresh shape receipts then a lease and real outgoing damage before PASS",function()
+        local f=fixture(Cadence.CASE)
+        f.physical_ready=true
+        f:tick(20)
+        equal(f.shape_observations,2); equal(f.arms,1); equal(f.cadenceAcquisitions,1)
+        equal(f.spawns,1); equal(f.runner.state.cadence.status,"ACTIVE")
+        equal(f.runner.state.status,"running"); equal(f.runner.state.moved,0)
+        f.runner:on_damage({},f.actors[1],10)
+        f:tick()
+        equal(f.runner.state.receivedDamageEvents,1); equal(f.runner.state.status,"running")
+        f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,1)
+        f:tick(5)
+        equal(f.runner.state.status,"passed"); equal(f.runner.state.code,"cadenced-engagement-damage-observed")
+        equal(f.runner.state.cadence.status,"RESTORED")
+        equal(f.runner.state.cleaned,1); equal(f.runner.state.helpersCleaned,1)
+        truthy(Startup.validate_state(f.runner.state,"fixture-run"))
+    end)
+
+    test("cadence restoration failure prevents PASS and owned cleanup claims even after outgoing damage",function()
+        local f=fixture(Cadence.CASE)
+        f.physical_ready=true
+        f:tick(20)
+        f.restoreFailed=true; f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,1)
+        f:tick(5)
+        equal(f.runner.state.status,"failed"); equal(f.runner.state.cleanupComplete,false)
+        equal(f.runner.state.cadence.status,"UNRESOLVED"); equal(f.despawns,0); equal(f.helper_closes,nil)
     end)
 
     test("qualified engagement waits for two samples and an arm before dispatch without fabricated movement",function()

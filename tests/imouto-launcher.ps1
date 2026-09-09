@@ -305,6 +305,30 @@ try {
         } catch {
             if ($_.Exception.Message -notmatch 'requires observed outgoing damage') { throw }
         }
+        $qualifiedState.dealtDamageEvents = 1
+        Write-StartupTestFixtureOutcome $qualifiedStatePath $qualifiedState
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -ValidateOnly | Out-Null
+        $activeAfterValidate = Get-Content (Join-Path $testRoot 'active.json') -Raw | ConvertFrom-Json
+        if ($activeAfterValidate.runId -cne $qualifiedLaunch.StartupTestRunId) { throw 'Cadence validation armed a test.' }
+        $cadenceLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest CadencedEngagement
+        $cadencePlan = Get-Content (Join-Path $cadenceLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
+        if ($cadencePlan.case -cne 'cadenced-engagement' -or $cadencePlan.experiment -cne 'hunter-level30-network-sphere-cadence-v1' -or
+            $cadencePlan.capturePolicy -cne 'stock-networked-spheres-only-v1' -or $cadencePlan.cadenceSeconds -ne 0.1) {
+            throw 'Cadence launch omitted its restricted capture policy or fixed interval.'
+        }
+        $cadenceState = @{schemaVersion=1;runId=$cadencePlan.runId;case=$cadencePlan.case;experiment=$cadencePlan.experiment;
+            capturePolicy=$cadencePlan.capturePolicy;cadenceSeconds=$cadencePlan.cadenceSeconds;status='blocked';mutationStarted=$true;
+            cleanupComplete=$true;sourceRevision=$cadencePlan.sourceRevision;artifactSha256=$cadencePlan.artifactSha256;
+            spawned=1;initialized=1;cleaned=1;moved=0;helpersCreated=1;helpersCleaned=1;
+            cadence=@{status='UNRESOLVED';active=$false;retired=$true}}
+        $cadenceStatePath = Join-Path $cadenceLaunch.StartupTestDirectory 'snapshot.json'
+        Write-StartupTestFixtureOutcome $cadenceStatePath $cadenceState
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -ValidateOnly | Out-Null
+            throw 'An unresolved cadence lease was accepted as cleaned.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'Cadence lease cleanup is unresolved') { throw }
+        }
         if ($env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID -ne 'parent-build' -or $env:PAL_EVENT_DIRECTOR_DATA_DIR -ne 'parent-data') {
             throw 'Launcher did not restore the parent process environment.'
         }

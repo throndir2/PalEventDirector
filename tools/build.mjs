@@ -44,6 +44,7 @@ const packageFiles = [
   'Scripts/ped/config.lua',
   'Scripts/ped/custom_assault.lua',
   'Scripts/ped/custom_assault_native.lua',
+  'Scripts/ped/cadence_trial.lua',
   'Scripts/ped/director.lua',
   'Scripts/ped/diagnostic_ingress.lua',
   'Scripts/ped/filesystem.lua',

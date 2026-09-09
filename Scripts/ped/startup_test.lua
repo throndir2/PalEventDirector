@@ -6,12 +6,13 @@ local Store = require("ped.store")
 local Diagnostic = require("ped.preflight_diagnostic")
 local bounties = require("ped.bounties")
 local Shape = require("ped.shape_qualification")
+local Cadence = require("ped.cadence_trial")
 
 local Test = {}
 Test.__index = Test
 
 local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1,
-    ["class-catalog"] = 1, ["surface-survey"] = 1, [Shape.CASE] = 1, [Shape.ENGAGEMENT_CASE] = 1 }
+    ["class-catalog"] = 1, ["surface-survey"] = 1, [Shape.CASE] = 1, [Shape.ENGAGEMENT_CASE] = 1, [Cadence.CASE] = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
 
 function Test.validate_state(state, run_id)
@@ -20,6 +21,11 @@ function Test.validate_state(state, run_id)
         and type(state.mutationStarted) == "boolean" and type(state.cleanupComplete) == "boolean"
         and type(state.artifactSha256) == "string" and #state.artifactSha256 == 64 and state.artifactSha256:match("^%x+$"),
         "Startup test outcome is invalid")
+    assert(Cadence.plan_valid(state),"Cadence capture policy is invalid")
+    if state.case==Cadence.CASE and state.cleanupComplete then
+        assert(Cadence.settled(state.cadence),"Cadence lease cleanup is unresolved")
+        if state.status=="passed" then assert(Cadence.passed(state.cadence),"Cadence lease was not restored or disposed") end
+    end
     assert(state.baseOrdinal==nil or (util.is_integer(state.baseOrdinal) and state.baseOrdinal>=1
         and state.baseOrdinal<=64 and state.case~="class-catalog"),"Startup test base selection is invalid")
     for _, field in ipairs({ "spawned", "initialized", "cleaned", "moved" }) do
@@ -38,7 +44,7 @@ function Test.validate_state(state, run_id)
             for index,observation in ipairs(state.shapeObservations) do
                 assert(observation.comparison=="MATCH" and observation.instanceOnly==true
                     and observation.spawnQualified==false, "Startup shape evidence is not a qualification")
-                if state.case==Shape.ENGAGEMENT_CASE then
+                if Shape.is_engagement(state.case) then
                     local receipt=observation.receipt
                     assert(type(receipt)=="table" and receipt.sample==index and receipt.runId==state.runId
                         and receipt.case==state.case and receipt.experiment==state.experiment and receipt.artifactSha256==state.artifactSha256
@@ -46,7 +52,7 @@ function Test.validate_state(state, run_id)
                         "Qualified engagement receipt is invalid")
                 end
             end
-            if state.case==Shape.ENGAGEMENT_CASE then
+            if Shape.is_engagement(state.case) then
                 local authorization=state.engagementAuthorization
                 assert(type(authorization)=="table" and authorization.armed==true and authorization.runId==state.runId
                     and authorization.case==state.case and authorization.experiment==state.experiment
@@ -219,6 +225,7 @@ function Test.new(options)
     assert(plan.baseOrdinal==nil or (util.is_integer(plan.baseOrdinal) and plan.baseOrdinal>=1 and plan.baseOrdinal<=64
         and plan.case~="class-catalog"),"Startup test base selection is invalid")
     assert(plan.experiment==Shape.contract(plan.case), "Startup shape experiment contract is invalid")
+    assert(Cadence.plan_valid(plan),"Cadence trial requires its explicit capture policy and fixed interval")
     local self = setmetatable({
         engine = assert(options.engine), store = assert(options.store), logger = assert(options.logger),
         clock = options.clock or util.now_seconds, runtime = {}, cursor = 1, damageQueue = {},
@@ -226,6 +233,8 @@ function Test.new(options)
             artifactSha256 = plan.artifactSha256,
             baseOrdinal=plan.baseOrdinal,
             experiment=plan.experiment, experimentalPremise=Shape.contract(plan.case) and Shape.PREMISE or nil,
+            capturePolicy=plan.capturePolicy,cadenceSeconds=plan.cadenceSeconds,
+            cadence=plan.case==Cadence.CASE and {status="NOT_ACQUIRED",active=false,retired=false,generation=0} or nil,
             status = "running", stage = plan.case == "class-catalog" and "class-catalog" or "world",
             startedAt = (options.clock or util.now_seconds)(),
             mutationStarted = false, cleanupComplete = false, members = {},
@@ -239,8 +248,9 @@ end
 
 function Test:on_damage(attacker, defender, amount)
     if self.stopped or self.state.stage ~= "engagement" or not util.is_integer(amount) or amount <= 0 then return end
-    if self.state.case~= "engagement" and self.state.case~=Shape.ENGAGEMENT_CASE then return end
-    if self.state.case==Shape.ENGAGEMENT_CASE and not self.state.qualifiedEngagementArmed then return end
+    if self.state.case~= "engagement" and not Shape.is_engagement(self.state.case) then return end
+    if Shape.is_engagement(self.state.case) and not self.state.qualifiedEngagementArmed then return end
+    if self.state.case==Cadence.CASE and not self.state.cadence.active then return end
     if #self.damageQueue >= 64 then self.damageOverflow = true; return end
     self.damageQueue[#self.damageQueue + 1] = {attacker=attacker,defender=defender,amount=amount}
 end
@@ -254,11 +264,12 @@ function Test:_damage_witness()
             if runtime.actor and member.phase == "alive" and not member.cleanupRequested then
                 if self.engine:sameActor(runtime.actor, event.attacker) then
                     local ok,allowed
-                    if self.state.case==Shape.ENGAGEMENT_CASE then
+                    if Shape.is_engagement(self.state.case) then
                         local member_plan=util.shallow_copy(member)
                         member_plan.handle=runtime.handle
                         local result
                         ok,result=self.engine:startup_qualified_damage_target(self.scopes[index],member_plan,event.attacker,event.defender)
+                        if self.stopped then return false end
                         if not ok then return self:halt(result) end
                         if type(result)~="table" or type(result.allowed)~="boolean" or type(result.active)~="boolean" then
                             return self:halt("Custom assault scope is invalid")
@@ -271,6 +282,7 @@ function Test:_damage_witness()
                         allowed=result.allowed
                     else
                         ok,allowed=self.engine:startup_damage_target(self.scopes[index],event.defender)
+                        if self.stopped then return false end
                     end
                     if not ok then return self:halt(allowed) end
                     if allowed then
@@ -289,18 +301,21 @@ function Test:_damage_witness()
 end
 
 function Test:_save(kind)
-    local ok = self.store:append(kind, { stage = self.state.stage, status = self.state.status }, self.state)
-    if not ok then
+    if self.journalFailed then return false end
+    local called, ok = pcall(self.store.append, self.store, kind, { stage = self.state.stage, status = self.state.status }, self.state)
+    if not called or not ok then
         self.state.status, self.state.code = "failed", "journal-write"
-        self.stopped = true
+        self.stopped, self.journalFailed = true, true
+        self.state.cleanupComplete = not self.state.mutationStarted
         if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
         self.logger:error("Startup test journal failed; native work stopped")
         return false
     end
-    local saved = self.store:save_snapshot(self.state)
-    if not saved then
+    local snapshot_called, saved = pcall(self.store.save_snapshot, self.store, self.state)
+    if not snapshot_called or not saved then
         self.state.status, self.state.code = "failed", "snapshot-write"
-        self.stopped = true
+        self.stopped, self.journalFailed = true, true
+        self.state.cleanupComplete = not self.state.mutationStarted
         if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
         self.logger:error("Startup test snapshot failed; native work stopped")
         return false
@@ -310,6 +325,7 @@ end
 
 function Test:halt(reason)
     if self.stopped then return false end
+    self.stopped = true
     self.state.status = "failed"
     if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"failed") end
     self.state.code = type(reason) == "string" and reason:match("%[([a-z0-9%-]+)%]") or nil
@@ -317,23 +333,30 @@ function Test:halt(reason)
     self.state.cleanupComplete = not self.state.mutationStarted
     self.state.finishedAt = self.clock()
     self:_save("startup_test_failed")
-    self.stopped = true
     self.logger:error("Startup test stopped", { stage = self.state.stage, code = self.state.code,
         spawned = self.state.spawned, initialized = self.state.initialized, cleaned = self.state.cleaned })
     return false
 end
 
 function Test:_stage(stage)
-    if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,stage) end
+    if self.engine.startup_test_stage_changed and self.engine:startup_test_stage_changed(self,stage)==false then
+        return self:halt("Cadence lease restoration is unresolved")
+    end
     self.state.stage, self.state.stageStartedAt, self.cursor = stage, self.clock(), 1
     return self:_save("startup_test_stage")
 end
 
 function Test:_finish(status, code)
-    if self.engine.startup_test_stage_changed then self.engine:startup_test_stage_changed(self,"finished") end
+    if self.engine.startup_test_stage_changed and self.engine:startup_test_stage_changed(self,"finished")==false then
+        return self:halt("Cadence lease restoration is unresolved")
+    end
+    if self.state.case==Cadence.CASE and (not Cadence.settled(self.state.cadence)
+        or (status=="passed" and not Cadence.passed(self.state.cadence))) then
+        return self:halt("Cadence lease restoration is unresolved")
+    end
     self.state.status, self.state.code = status, code
     self.state.cleanupComplete, self.state.finishedAt = true, self.clock()
-    self:_save("startup_test_finished")
+    if not self:_save("startup_test_finished") then return false end
     self.stopped = true
     self.logger:info("Startup test finished", { case = self.state.case, status = status, code = code,
         spawned = self.state.spawned, initialized = self.state.initialized,
@@ -354,6 +377,7 @@ function Test:_cleaned_npcs()
     if self.state.helpersCreated > self.state.helpersCleaned then return self:_stage("support-cleanup") end
     return self:_finish(self.state.failure and "blocked" or "passed",
         self.state.failure or (self.state.case==Shape.CASE and "shape-instance-only"
+            or self.state.case==Cadence.CASE and "cadenced-engagement-damage-observed"
             or self.state.case==Shape.ENGAGEMENT_CASE and "qualified-engagement-damage-observed" or "complete"))
 end
 
@@ -378,6 +402,16 @@ function Test:_tick()
     if self.stopped or TERMINAL[self.state.status] then return end
     local now = self.clock()
     local stage = self.state.stage
+    if self.state.case==Cadence.CASE then
+        if self.state.cadence.status=="UNRESOLVED" then return self:halt("Cadence lease restoration is unresolved") end
+        if stage=="world" and not Cadence.admission(self.engine,self) then
+            return self:_finish("blocked","cadence-barrier-unavailable")
+        end
+        if stage=="engagement" and self.state.cadence.retired then
+            self.state.failure=self.state.failure or "cadence-retired"
+            return self:_stage("cleanup")
+        end
+    end
     if stage == "class-catalog" then
         self.catalog = self.catalog or bounties.roster()
         self.state.catalog = self.state.catalog or {}
@@ -572,11 +606,11 @@ function Test:_tick()
             return self:_stage("cleanup")
         end
         if #self.state.shapeObservations==2 then
-            return self:_stage(self.state.case==Shape.ENGAGEMENT_CASE and "engagement" or "cleanup")
+            return self:_stage(Shape.is_engagement(self.state.case) and "engagement" or "cleanup")
         end
         return
     elseif stage == "initialize" or stage == "movement" or stage == "engagement" then
-        if self.state.case==Shape.ENGAGEMENT_CASE and stage=="engagement" then
+        if Shape.is_engagement(self.state.case) and stage=="engagement" then
             if now>=self.state.stageStartedAt+60 then
                 self.state.failure="engagement-timeout"
                 return self:_stage("cleanup")
@@ -586,6 +620,7 @@ function Test:_tick()
                 plan.handle=self.runtime[1].handle
                 if not self:_save("startup_qualified_engagement_arm_intent") then return end
                 local ok,result=self.engine:startup_arm_qualified_engagement(self.scopes[1],plan)
+                if self.stopped then return end
                 if not ok then return self:halt(result) end
                 if type(result)~="table" or type(result.armed)~="boolean" then return self:halt("Custom assault scope is invalid") end
                 if not result.armed then
@@ -596,6 +631,19 @@ function Test:_tick()
                 self.state.qualifiedEngagementArmed=true
                 return self:_save("startup_qualified_engagement_armed")
             end
+            if self.state.case==Cadence.CASE and not self.state.cadence.appliedObserved then
+                local plan=util.shallow_copy(self.state.members[1])
+                plan.handle=self.runtime[1].handle
+                if not self:_save("startup_cadence_acquire_intent") then return end
+                local ok,acquired=self.engine:startup_acquire_cadence(self.scopes[1],plan)
+                if not ok then return self:halt(acquired) end
+                if self.stopped then return end
+                if not acquired then
+                    self.state.failure=self.state.failure or "cadence-acquire-unavailable"
+                    return self:_stage("cleanup")
+                end
+                return self:_save("startup_cadence_ready")
+            end
         end
         local ready, arrived = 0, 0
         for index, member in ipairs(self.state.members) do
@@ -603,6 +651,7 @@ function Test:_tick()
             local plan = util.shallow_copy(member)
             plan.handle = runtime.handle
             local ok, observation = self.engine:inspect(runtime.handle, plan)
+            if self.stopped then return end
             if not ok then return self:halt(observation) end
             if not self:_update_identity(member) then return end
             member.phase = observation.phase
@@ -657,6 +706,7 @@ function Test:_tick()
                         if not self:_save("startup_engagement_intent") then return end
                         local engaged
                         engaged, result = self.engine:engage(self.scopes[index],plan)
+                        if self.stopped then return end
                         if not engaged then return self:halt(result) end
                         member.behavior = self.engine:startup_behavior(member)
                         dispatched = true
@@ -664,6 +714,7 @@ function Test:_tick()
                     if dispatched or now >= (member.nextObserveAt or 0) then
                         member.nextObserveAt = now + 1
                         local observed, details = self.engine:startup_combat_observation(self.scopes[index],plan)
+                        if self.stopped then return end
                         if not observed then return self:halt(details) end
                         member.combatObservation = details
                         self.state.damageHookCalls = self.engine.bridge and self.engine.bridge.hook_observed
@@ -679,13 +730,14 @@ function Test:_tick()
                 or observation.phase == "escaped" then
                 if stage == "engagement" and observation.phase == "escaped" then
                     local observed, details = self.engine:startup_combat_observation(self.scopes[index],plan,true)
+                    if self.stopped then return end
                     if not observed then return self:halt(details) end
                     member.combatObservation = details
                     if not self:_save("startup_combat_observed") then return end
                 end
                 self.state.failure = "unexpected-member-" .. observation.phase
                 return self:_stage("cleanup")
-            elseif stage=="engagement" and self.state.case==Shape.ENGAGEMENT_CASE then
+            elseif stage=="engagement" and Shape.is_engagement(self.state.case) then
                 self.state.failure="engagement-member-"..observation.phase
                 return self:_stage("cleanup")
             end

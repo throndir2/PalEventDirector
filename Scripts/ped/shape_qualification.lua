@@ -1,6 +1,7 @@
 local util = require("ped.util")
 local bounties = require("ped.bounties")
 local Survey = require("ped.surface_survey")
+local Cadence = require("ped.cadence_trial")
 
 local Shape = {}
 Shape.__index = Shape
@@ -9,10 +10,14 @@ Shape.CONTRACT = "hunter-level30-one-instance-v1"
 Shape.ENGAGEMENT_CASE = "qualified-engagement"
 Shape.ENGAGEMENT_CONTRACT = "hunter-level30-qualified-engagement-v1"
 Shape.PREMISE = "Authored proxies are the controlled test envelope, not a universal final-shape or dry-placement certificate."
-local CONTRACTS = {[Shape.CASE]=Shape.CONTRACT,[Shape.ENGAGEMENT_CASE]=Shape.ENGAGEMENT_CONTRACT}
+local CONTRACTS = {[Shape.CASE]=Shape.CONTRACT,[Shape.ENGAGEMENT_CASE]=Shape.ENGAGEMENT_CONTRACT,[Cadence.CASE]=Cadence.CONTRACT}
 
 function Shape.contract(case)
     return CONTRACTS[case]
+end
+
+function Shape.is_engagement(case)
+    return case==Shape.ENGAGEMENT_CASE or case==Cadence.CASE
 end
 
 local ERROR = "Custom assault scope is invalid"
@@ -71,6 +76,7 @@ function Shape.new(native,runner,scope,member)
     local state=runner.state
     local self=setmetatable({native=native,a=native.a,runner=runner,scope=scope,member=member,
         case=state.case,contract=CONTRACTS[state.case],receipts={},
+        capturePolicy=state.capturePolicy,cadenceSeconds=state.cadenceSeconds,
         baseOrdinal=state.baseOrdinal,
         runId=state.runId,artifact=state.artifactSha256,source=state.sourceRevision,
         base=scope.base,world=scope.world,baseId=scope.baseId,guildId=scope.guildId,
@@ -85,6 +91,8 @@ end
 function Shape:_validate(scope,member,spawning)
     local n,runner=self.native,self.runner
     local state=runner.state
+    if self.case==Cadence.CASE and (state.capturePolicy~=self.capturePolicy or state.cadenceSeconds~=self.cadenceSeconds
+        or not Cadence.admission(n,runner)) then error(ERROR,0) end
     if n.bridge.startup_test~=runner or runner.engine~=n or runner.stopped or state.status~="running"
         or not self.contract or state.case~=self.case or state.experiment~=self.contract
         or state.runId~=self.runId or state.artifactSha256~=self.artifact or state.sourceRevision~=self.source
@@ -452,19 +460,19 @@ end
 
 function Shape:stage_changed(stage)
     if #self.receipts==0 and not self.engagementArmAttempted then return end
-    if stage=="engagement" and self.case==Shape.ENGAGEMENT_CASE
+    if stage=="engagement" and Shape.is_engagement(self.case)
         and self.runner.state.stage=="shape-observe" and #self.receipts==2 and not self.engagementArmAttempted then return end
     self:revoke_engagement("stage-change")
 end
 
 function Shape:ownership_observed(state)
-    if self.case==Shape.ENGAGEMENT_CASE and (#self.receipts>0 or self.engagementArmAttempted) and state.phase~="alive" then
+    if Shape.is_engagement(self.case) and (#self.receipts>0 or self.engagementArmAttempted) and state.phase~="alive" then
         self:revoke_engagement("ownership-"..state.phase)
     end
 end
 
 function Shape:record_observation(record,state,result)
-    if self.case~=Shape.ENGAGEMENT_CASE then return end
+    if not Shape.is_engagement(self.case) then return end
     if result.comparison~="MATCH" or state.phase~="alive" then
         self:revoke_engagement("shape-not-matched")
         return
@@ -499,7 +507,7 @@ end
 
 function Shape:begin_engagement(scope,member,record)
     self:_validate(scope,member,false)
-    if self.case~=Shape.ENGAGEMENT_CASE or self.contract~=Shape.ENGAGEMENT_CONTRACT
+    if not Shape.is_engagement(self.case) or self.contract~=CONTRACTS[self.case]
         or self.engagementRevoked or self.engagementArmAttempted or not self.consumed
         or self.runner.state.stage~="engagement" or self.runner.state.spawned~=1 or self.runner.state.initialized~=1
         or member.cleanupRequested or self.member.cleanupRequested or record.despawnRequested then error(ERROR,0) end
@@ -539,7 +547,7 @@ function Shape:validate_gameplay(scope,member,record,owned)
         self:revoke_engagement("expired")
         return false
     end
-    if self.case~=Shape.ENGAGEMENT_CASE or self.contract~=Shape.ENGAGEMENT_CONTRACT or self.engagementRevoked
+    if not Shape.is_engagement(self.case) or self.contract~=CONTRACTS[self.case] or self.engagementRevoked
         or not self.consumed or not self.engagementArmAttempted or self.native.bridge.native_fault
         or not permit or permit.record~=record or state.stage~="engagement"
         or state.qualifiedEngagementArmed~=true or state.engagementAuthorization~=permit.authorization

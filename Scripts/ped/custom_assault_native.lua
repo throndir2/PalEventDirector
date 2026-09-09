@@ -4,6 +4,7 @@ local bounties = require("ped.bounties")
 local PlacementSearch = require("ped.placement_search")
 local invoke_function = require("ped.native_observer").invoke
 local Qualification = require("ped.shape_qualification")
+local Cadence = require("ped.cadence_trial")
 
 local Native = {}
 Native.__index = Native
@@ -576,8 +577,13 @@ end
 function Native:startup_combat_observation(scope, member, movement_only)
     return self.bridge:_native_step("startup-combat-observation", function()
         local state = self:_owned_state(member.handle, member)
+        local lease=self.cadenceLease
+        if lease and lease.record==self.records[member_key(member)] and (lease.retired or not lease:check()) then
+            return {phase="cadence-ended",cadence=util.deep_copy(lease.runner.state.cadence)}
+        end
         if state.phase ~= "alive" and state.phase ~= "escaped" then return { phase = state.phase } end
         local result = { phase = state.phase, movement = self:_movement_observation(state) }
+        if lease then result.cadence=util.deep_copy(lease.runner.state.cadence) end
         if movement_only or state.phase ~= "alive" then return result end
         local actions = self:_call("startup-current-ai", state.controller, "GetAIActionComponent")
         local action = self:_call("startup-current-action", actions, "GetCurrentAction_BP")
@@ -1255,7 +1261,14 @@ function Native:startup_shape_observation(scope,member)
 end
 
 function Native:startup_test_stage_changed(runner,stage)
+    local lease=self.cadenceLease
+    if lease and lease.runner==runner and stage~="engagement" then
+        lease:retire(stage)
+        if self.shapeQualification then self.shapeQualification:stage_changed(stage) end
+        return lease:release(stage)
+    end
     if self.shapeQualification and self.shapeQualification.runner==runner then self.shapeQualification:stage_changed(stage) end
+    return true
 end
 
 function Native:_qualification_identity(record,member)
@@ -1273,19 +1286,47 @@ function Native:startup_arm_qualified_engagement(scope,member)
         self:_qualification_identity(record,member)
         local start=record.shapeQualification:begin_engagement(scope,member,record)
         local state=self:_owned_state(member.handle,member)
-        return record.shapeQualification:finish_engagement(record,state,start)
+        local result=record.shapeQualification:finish_engagement(record,state,start)
+        if result.armed and record.shapeQualification.case==Cadence.CASE then
+            self.cadenceLease=Cadence.new(self,record.shapeQualification,record)
+        end
+        return result
     end)
 end
 
 function Native:_gameplay_state(scope,member)
     local record=self.records[member_key(member)]
+    local lease=self.cadenceLease
+    if lease and lease.record==record and lease.retired then
+        if not lease:_context() then error(SCOPE,0) end
+        record.shapeQualification:_validate(scope,member,false)
+        self:_qualification_identity(record,member)
+        return {phase="cadence-ended"},record
+    end
+    if lease and lease.record==record and lease.active and record.shapeQualification.engagementPermit
+        and self.bridge.clock()>=record.shapeQualification.engagementPermit.expiresAt then
+        lease:retire("expired")
+        record.shapeQualification:_validate(scope,member,false)
+        self:_qualification_identity(record,member)
+        lease:release("expired")
+        return {phase="expired"},record
+    end
     if record and record.shapeQualification then
-        if not record.shapeQualification:validate_gameplay(scope,member,record) then return {phase="expired"},record end
+        if not record.shapeQualification:validate_gameplay(scope,member,record) then
+            if lease and lease.record==record then lease:release("expired") end
+            return {phase="expired"},record
+        end
         self:_qualification_identity(record,member)
     end
     local state=self:_owned_state(member.handle,member)
     if record and record.shapeQualification and state.phase=="alive" then
-        if not record.shapeQualification:validate_gameplay(scope,member,record,state) then return {phase="expired"},record end
+        if not record.shapeQualification:validate_gameplay(scope,member,record,state) then
+            if lease and lease.record==record then lease:release("expired") end
+            return {phase="expired"},record
+        end
+        if record.shapeQualification.case==Cadence.CASE and (not lease or lease.record~=record or not lease:check()) then
+            return {phase="cadence-unavailable"},record
+        end
     end
     return state,record
 end
@@ -1293,7 +1334,7 @@ end
 function Native:startup_qualified_damage_target(scope,member,attacker,defender)
     return self.bridge:_native_step("startup-qualified-damage-target",function()
         local record=self.records[member_key(member)]
-        if not record or not record.shapeQualification or record.shapeQualification.case~=Qualification.ENGAGEMENT_CASE then error(SCOPE,0) end
+        if not record or not record.shapeQualification or not Qualification.is_engagement(record.shapeQualification.case) then error(SCOPE,0) end
         local state=self:_gameplay_state(scope,member)
         if state.phase~="alive" then return {allowed=false,active=false,phase=state.phase} end
         if not self.a.same(attacker,state.actor) then return {allowed=false,active=true} end
@@ -1301,6 +1342,55 @@ function Native:startup_qualified_damage_target(scope,member,attacker,defender)
         local allowed=scoped==true and self.a.guid(self:_call("qualified-damage-base",parameter,"GetBaseCampId"))==scope.baseId
         return {allowed=allowed,active=true}
     end)
+end
+
+function Native:_cadence_acquisition_state(scope,member)
+    local record=self.records[member_key(member)]
+    if not record or not record.shapeQualification or record.shapeQualification.case~=Cadence.CASE
+        or not self.cadenceLease or self.cadenceLease.record~=record or (record.encounterRequests or 0)~=0 then error(SCOPE,0) end
+    if not record.shapeQualification:validate_gameplay(scope,member,record) then return {phase="expired"},record end
+    self:_qualification_identity(record,member)
+    local state=self:_owned_state(member.handle,member)
+    if state.phase=="alive" and not record.shapeQualification:validate_gameplay(scope,member,record,state) then return {phase="expired"},record end
+    return state,record
+end
+
+function Native:startup_acquire_cadence(scope,member)
+    return self.bridge:_native_step("startup-cadence-acquire",function()
+        if not self.cadenceLease then error(SCOPE,0) end
+        return self.cadenceLease:acquire(scope,member)
+    end)
+end
+
+function Native:_cadence_owner(lease)
+    local a,record=self.a,lease.record
+    if not a.valid(lease.actor) or not a.valid(lease.controller) or not a.valid(lease.component)
+        or not lease.actor:IsA("/Script/Pal.PalCharacter") or not lease.controller:IsA("/Script/Pal.PalAIController")
+        or not a.same(record.actor,lease.actor) or not a.same(record.parameter,lease.parameter)
+        or not a.same(record.handle,lease.handle) or not same_id(record.id,lease.id) then return false,"cadence-original-identity" end
+    local handle=self:_call("cadence-owned-handle",self.characterManager,"GetIndividualHandle",lease.id)
+    if not a.valid(handle) or not a.same(handle,lease.handle)
+        or not same_id(full_id(self:_call("cadence-owned-id",handle,"GetIndividualID")),lease.id) then return false,"cadence-handle-identity" end
+    local parameter=self:_call("cadence-owned-parameter",handle,"TryGetIndividualParameter")
+    local actor=self:_call("cadence-owned-actor",handle,"TryGetIndividualActor")
+    if not a.same(parameter,lease.parameter) or not a.same(actor,lease.actor) or self:_captured_owner(parameter)
+        or not same_id(full_id(self:_call("cadence-parameter-id",parameter,"GetPalId")),lease.id) then return false,"cadence-ownership-changed" end
+    local character=self.a.text(self:_call("cadence-character",parameter,"GetCharacterID"))
+    if type(character)~="string" or character:lower()~=record.characterId:lower() then return false,"cadence-character-changed" end
+    if not a.same(self:actor_world(actor),lease.world) then return false,"cadence-world" end
+    if self:_call("cadence-actor-destroying",actor,"IsActorBeingDestroyed")~=false
+        or self:_call("cadence-actor-initialized",actor,"IsInitialized")~=true then return false,"cadence-actor-lifecycle" end
+    local component=self:_call("cadence-capture-component",actor,"GetCharacterParameterComponent")
+    if not a.valid(component) or self:_call("cadence-capture-state",component,"GetIsCapturedProcessing")~=false then
+        return false,"cadence-capture-state"
+    end
+    local controller=self:_call("cadence-owned-controller",actor,"GetController")
+    if not a.same(controller,lease.controller) or not a.same(self:actor_world(controller),lease.world) then return false,"cadence-controller-changed" end
+    local actions=self:_call("cadence-owned-actions",controller,"GetAIActionComponent")
+    if not a.same(actions,lease.component) or not actions:IsA("/Script/Pal.PalAIActionComponent")
+        or not a.same(self:_call("cadence-actions-owner",actions,"GetOwner"),controller)
+        or not a.same(self:_call("cadence-actions-world",actions,"GetWorld"),lease.world) then return false,"cadence-component-changed" end
+    return true
 end
 
 function Native:_captured_owner(parameter)
@@ -1452,6 +1542,12 @@ end
 function Native:_owned_state(handle,member)
     local state=self:_read_owned_state(handle,member)
     local record=self.records[member_key(member)]
+    if self.cadenceLease and self.cadenceLease.record==record and self.cadenceLease.active and state.phase~="alive" then
+        self.cadenceLease:retire("ownership-"..state.phase)
+        if not self.cadenceLease:release("ownership-"..state.phase) then
+            error(self.bridge.native_fault or "Cadence lease restoration is unresolved",0)
+        end
+    end
     if record and record.shapeQualification then record.shapeQualification:ownership_observed(state) end
     return state
 end
@@ -1775,6 +1871,9 @@ end
 function Native:despawn(_, member)
     return self.bridge:_native_step("custom-despawn", function()
         local owned=self.records[member_key(member)]
+        if self.cadenceLease and self.cadenceLease.record==owned and not self.cadenceLease:release("cleanup") then
+            return "cadence-unresolved"
+        end
         if owned and owned.shapeQualification then owned.shapeQualification:revoke_engagement("cleanup") end
         local state = self:_owned_state(member.handle, member)
         if TERMINAL[state.phase] then return state.phase end
