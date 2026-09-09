@@ -119,21 +119,29 @@ function Support:finish(index)
     end)
 end
 
+function Support:_residency(index)
+    local record, n = self:_record(index), self.native
+    if not self.a.valid(record.source) then error(ERROR,0) end
+    local enabled = n:_call("support-enabled",record.source,"IsStreamingSourceEnabled")
+    local complete = n:_call("support-streaming-complete",record.source,"IsStreamingCompleted")
+    if type(enabled) ~= "boolean" or type(complete) ~= "boolean" then error(ERROR,0) end
+    return {enabled=enabled,streamingComplete=complete,physicalQueried=false,ready=false,placementQualified=false}
+end
+
+function Support:residency(index)
+    return self.bridge:_native_step("startup-support-residency",function() return self:_residency(index) end)
+end
+
 function Support:poll(index)
     return self.bridge:_native_step("startup-support-readiness",function()
-        local record, n, scope = self:_record(index), self.native, self.scopes[index]
-        if not self.a.valid(record.source) then error(ERROR,0) end
-        local enabled = n:_call("support-enabled",record.source,"IsStreamingSourceEnabled")
-        local complete = n:_call("support-streaming-complete",record.source,"IsStreamingCompleted")
-        if type(enabled) ~= "boolean" or type(complete) ~= "boolean" then error(ERROR,0) end
-        if not enabled or not complete then
-            return {enabled=enabled,streamingComplete=complete,physicalQueried=false,ready=false}
-        end
+        local observation=self:_residency(index)
+        if not observation.enabled or not observation.streamingComplete then return observation end
+        local n,scope=self.native,self.scopes[index]
         local floor=scope.positions[1] and n:startup_floor(scope.world,scope.positions[1]) or nil
         if not floor then floor=n:startup_floor(scope.world,scope.origin) end
         local nav=floor and n:startup_nav(scope.world,floor) or nil
         local goal=n:startup_nav(scope.world,scope.origin)
-        return {enabled=enabled,streamingComplete=complete,physicalQueried=true,ready=nav~=nil and goal~=nil,
+        return {enabled=observation.enabled,streamingComplete=observation.streamingComplete,physicalQueried=true,ready=nav~=nil and goal~=nil,
             floor=floor~=nil,nav=nav~=nil,goal=goal~=nil,placementQualified=false}
     end)
 end

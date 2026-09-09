@@ -1065,18 +1065,39 @@ return function(test, equal, truthy)
             engine.physicsLibrary={CapsuleTraceSingleByPalTraceType=function(_,world,start,finish,radius,half,kind,complex,material,index,out,draw)
                 equal(world,scope.world); equal(radius,30); equal(half,80); equal(kind,3)
                 equal(complex,false); equal(material,false); equal(index,false); equal(draw,0)
-                if finish.Z>start.Z then return false end
-                out.bBlockingHit,out.bStartPenetrating=true,f.penetrating==true
+                if finish.Z>start.Z then
+                    f.clearanceQueries=(f.clearanceQueries or 0)+1
+                    return false
+                end
+                out.bBlockingHit,out.bStartPenetrating=not f.nonblocking,f.penetrating==true
                 out.ImpactNormal={X=0,Y=0,Z=f.normal or 1}
-                out.Location={X=100,Y=0,Z=0}
+                if not f.missingContact then out.Location=f.contact or {X=100,Y=0,Z=0} end
                 out.Component={Get=function() return component end}
+                out.ActorName="private-hit-name"
                 return true
             end}
             local point={X=100,Y=0,Z=0}
             local result=engine:_placement_surface(scope,member,point)
             equal(result.ready,false); equal(result.reason,"dry-clearance-unqualified")
             f.penetrating=true
-            equal(engine:_placement_surface(scope,member,point).reason,"support-penetrating")
+            result=engine:_placement_surface(scope,member,point)
+            equal(result.reason,"support-penetrating")
+            equal(result.support.blockingHit,true); equal(result.support.startPenetrating,true)
+            equal(result.support.contactDelta.X,0); equal(result.support.impactNormal.Z,1)
+            equal(result.support.Component,nil); equal(result.support.ActorName,nil); equal(result.support.Location,nil)
+            equal(f.clearanceQueries,1)
+            f.missingContact=true
+            result=engine:_placement_support(scope,member,point)
+            equal(result.reason,"support-penetrating"); equal(result.support.contactDelta,nil)
+            f.missingContact=false; f.contact={X=100000,Y=200000,Z=300000}
+            result=engine:_placement_support(scope,member,point)
+            equal(result.reason,"support-penetrating"); equal(result.support.contactDelta,nil)
+            f.contact=nil; f.nonblocking=true; f.penetrating=false
+            result=engine:_placement_support(scope,member,point)
+            equal(result.reason,"support-penetrating")
+            equal(result.support.blockingHit,false); equal(result.support.startPenetrating,false)
+            equal(f.clearanceQueries,1)
+            f.nonblocking=false
             f.penetrating=false; f.normal=0.2
             equal(engine:_placement_surface(scope,member,point).reason,"support-not-walkable")
             equal(f.spawns,1)

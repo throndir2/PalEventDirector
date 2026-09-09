@@ -844,28 +844,43 @@ function Native:_placement_support(scope, member, position)
     local found = self:_call("placement-support",self.physicsLibrary,"CapsuleTraceSingleByPalTraceType",
         scope.world,start,finish,shape.radius,shape.halfHeight,3,false,false,false,hit,0,color,color,0)
     if type(found)~="boolean" then error(SCOPE,0) end
-    if not found then return {ready=false,reason="no-solid-support"} end
+    local observation={found=found,radius=shape.radius,halfHeight=shape.halfHeight}
+    local function outcome(ready,why) return {ready=ready,reason=why,support=observation} end
+    if not found then return outcome(false,"no-solid-support") end
     if type(hit.bBlockingHit)~="boolean" or type(hit.bStartPenetrating)~="boolean" then error(SCOPE,0) end
-    if not hit.bBlockingHit or hit.bStartPenetrating then return {ready=false,reason="support-penetrating"} end
+    observation.blockingHit,observation.startPenetrating=hit.bBlockingHit,hit.bStartPenetrating
+    local impact,contact=self.a.unwrap(hit.ImpactNormal),self.a.unwrap(hit.Location)
+    if impact and finite(impact.X) and finite(impact.Y) and finite(impact.Z)
+        and math.abs(impact.X)<=1 and math.abs(impact.Y)<=1 and math.abs(impact.Z)<=1 then
+        observation.impactNormal=vector(impact)
+    end
+    -- Failed hits can contain an unset world location; only retain plausible short-sweep deltas.
+    if contact and finite(contact.X) and finite(contact.Y) and finite(contact.Z) then
+        local delta={X=contact.X-position.X,Y=contact.Y-position.Y,Z=contact.Z-position.Z}
+        if math.abs(delta.X)<=100 and math.abs(delta.Y)<=100 and math.abs(delta.Z)<=100
+            and delta.X^2+delta.Y^2+delta.Z^2<=100^2 then observation.contactDelta=delta end
+    end
+    if not hit.bBlockingHit or hit.bStartPenetrating then return outcome(false,"support-penetrating") end
     local normal,location = vector(self.a.unwrap(hit.ImpactNormal)),vector(self.a.unwrap(hit.Location))
-    if normal.Z<shape.walkableZ then return {ready=false,reason="support-not-walkable"} end
-    if distance_squared(location,position)>10^2 then return {ready=false,reason="support-moved"} end
+    if normal.Z<shape.walkableZ then return outcome(false,"support-not-walkable") end
+    if distance_squared(location,position)>10^2 then return outcome(false,"support-moved") end
     local weak = self.a.unwrap(hit.Component)
-    if weak==nil then return {ready=false,reason="support-component-unavailable"} end
+    if weak==nil then return outcome(false,"support-component-unavailable") end
     local component = weak:Get()
     if not self.a.valid(component) or not component:IsA("/Script/Engine.PrimitiveComponent") then
-        return {ready=false,reason="support-component-unavailable"}
+        return outcome(false,"support-component-unavailable")
     end
     local slope = self.a.unwrap(self:_call("placement-slope",component,"GetWalkableSlopeOverride"))
     if not slope or not util.is_integer(slope.WalkableSlopeBehavior) then error(SCOPE,0) end
-    if slope.WalkableSlopeBehavior~=0 then return {ready=false,reason="support-slope-override"} end
+    if slope.WalkableSlopeBehavior~=0 then return outcome(false,"support-slope-override") end
     start,finish,hit=vector(position),vector(position),{}
     start.Z,finish.Z=start.Z+2,finish.Z+4
     local blocked = self:_call("placement-ground-clearance",self.physicsLibrary,"CapsuleTraceSingleByPalTraceType",
         scope.world,start,finish,shape.radius,shape.halfHeight,3,false,false,false,hit,0,color,color,0)
     if type(blocked)~="boolean" then error(SCOPE,0) end
-    if blocked then return {ready=false,reason="capsule-obstructed"} end
-    return {ready=true}
+    observation.clearanceBlocked=blocked
+    if blocked then return outcome(false,"capsule-obstructed") end
+    return outcome(true)
 end
 
 function Native:_placement_surface(scope, member, position)
@@ -922,13 +937,14 @@ function Native:prepare_spawn(scope, member)
         if self.records[key] then error(IDENTITY, 0) end
         self:_validate_spawn_scope(scope,member)
         local runner=self.bridge.startup_test
+        if self.shapeQualification then self.shapeQualification:_validate(scope,member,true) end
         if runner and runner.state.case=="shape-qualification" then
             if next(self.records) or next(self.placements) or next(self.placementSearches) then
                 error(SCOPE,0)
             end
             local experiment=self.shapeQualification or require("ped.shape_qualification").new(self,runner,scope,member)
             self.shapeQualification=experiment
-            local result=experiment:prepare()
+            local result=experiment:prepare(scope,member)
             if not result.ready then return result end
             scope.positions[member.slot]=vector(result.position)
             self.placements[key]={scope=scope,characterId=member.characterId,level=member.level,slot=member.slot,

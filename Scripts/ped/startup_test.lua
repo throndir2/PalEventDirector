@@ -404,6 +404,10 @@ function Test:_tick()
         local member = self.state.members[self.cursor]
         if not member then return self:_stage("initialize") end
         member.placementStartedAt = member.placementStartedAt or now
+        if self.state.case==Shape.CASE and now>=member.placementStartedAt+120 then
+            self.state.failure="spawn-placement-timeout"
+            return self:_stage("cleanup")
+        end
         local prepared, placement = self.engine:prepare_spawn(self.scopes[self.cursor], member)
         if not prepared then return self:halt(placement) end
         if type(placement) ~= "table" or type(placement.ready) ~= "boolean" then
@@ -413,10 +417,12 @@ function Test:_tick()
         member.placementReason, member.fallbackReason = placement.reason, placement.fallbackReason
         if self.state.case==Shape.CASE then
             if placement.spawnQualified~=false or placement.experiment~=Shape.CONTRACT
-                or (placement.pending==true and placement.reason~="shape-residency-pending") then
+                or (placement.pending==true and (placement.ready~=false
+                    or (placement.reason~="shape-residency-pending" and placement.reason~="shape-site-search-pending"))) then
                 return self:halt("Custom assault scope is invalid")
             end
             if placement.residency then self.state.helpers[1].observation=placement.residency end
+            member.siteSelection=placement.selection
             self.state.surfaceSurvey=placement.surfaceSurvey
             member.plannedGeometry=placement.plannedGeometry
             member.defaultNavDataUsed=placement.defaultNavDataUsed

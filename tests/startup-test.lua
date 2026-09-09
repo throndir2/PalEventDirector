@@ -30,9 +30,16 @@ return function(test, equal, truthy)
             return true, { scopes = scopes, availableBases = 10 }
         end
         function engine:prepare_spawn(_, member)
+            f.prepares=(f.prepares or 0)+1
             if f.runner.state.case==Shape.CASE then
+                if f.shape_pending then
+                    return true,{ready=f.shape_pending_ready==true,pending=true,spawnQualified=false,experiment=Shape.CONTRACT,
+                        reason=f.shape_pending,attempts=2,selection={candidateLimit=17,candidatesVisited=2,rejections={
+                            {candidate=1,reason="support-penetrating",support={blockingHit=true,startPenetrating=true}}}}}
+                end
                 return true,{ready=not f.shape_placement_blocked,pending=false,spawnQualified=false,experiment=Shape.CONTRACT,
-                    reason="shape-fixture-blocked",surfaceSurvey={spawnQualified=false,templateOnly=true},plannedGeometry={fixture=true}}
+                    reason=f.shape_reason or "shape-fixture-blocked",surfaceSurvey={spawnQualified=false,templateOnly=true},
+                    plannedGeometry={fixture=true}}
             end
             if f.placement_pending then return true,{ready=false,pending=true,reason="floor-unavailable"} end
             if f.in_base then return true,{ready=true,mode="in-base",position={X=500,Y=0,Z=0},goal={X=0,Y=0,Z=0}} end
@@ -344,6 +351,42 @@ return function(test, equal, truthy)
         equal(f.runner.state.code,"shape-fixture-blocked")
     end)
 
+    test("shape harness journals pending site rejections and cleans its helper on exhaustion",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.shape_pending=true,"shape-site-search-pending"
+        f:tick(12)
+        equal(f.spawns,0); equal(f.runner.state.stage,"spawn"); equal(f.runner.state.helpersCleaned,0)
+        local selection=f.runner.state.members[1].siteSelection
+        equal(selection.candidatesVisited,2); equal(selection.rejections[1].support.startPenetrating,true)
+        f.shape_pending,f.shape_placement_blocked,f.shape_reason=nil,true,"shape-sites-exhausted"
+        f:tick(5)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"shape-sites-exhausted")
+        equal(f.spawns,0); equal(f.runner.state.helpersCleaned,1); equal(f.runner.state.cleanupComplete,true)
+    end)
+
+    test("shape harness cannot start late geometry or spawn work after the preparation deadline",function()
+        local f=fixture(Shape.CASE)
+        f.physical_ready,f.shape_pending=true,"shape-residency-pending"
+        f:tick(12)
+        local prepares=f.prepares
+        f.now=f.runner.state.members[1].placementStartedAt+120
+        f.shape_pending=nil
+        f:tick(5)
+        equal(f.prepares,prepares); equal(f.spawns,0)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"spawn-placement-timeout")
+        equal(f.runner.state.helpersCleaned,1); equal(f.runner.state.cleanupComplete,true)
+    end)
+
+    test("shape harness rejects anonymous pending states and a ready-pending proof",function()
+        for _,reason in ipairs({"shape-site-search-pending","unqualified-pending"}) do
+            local f=fixture(Shape.CASE)
+            f.physical_ready,f.shape_pending=true,reason
+            f.shape_pending_ready=reason=="shape-site-search-pending"
+            f:tick(12)
+            equal(f.runner.state.status,"failed"); equal(f.spawns,0)
+        end
+    end)
+
     test("shape startup waits for an assigned identity without duplicate NPC requests",function()
         local f=fixture(Shape.CASE)
         f.physical_ready,f.id_pending,f.phases[1]=true,true,"pending"
@@ -555,6 +598,10 @@ return function(test, equal, truthy)
         truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,false)
         equal(queries,0)
         source.complete=true
+        observed,result=support:residency(1)
+        truthy(observed,result); equal(result.streamingComplete,true)
+        equal(result.ready,false); equal(result.physicalQueried,false); equal(queries,0)
+        equal(result.placementQualified,false)
         observed,result=support:poll(1)
         truthy(observed,result); equal(result.ready,false); equal(result.physicalQueried,true)
         equal(queries,2)

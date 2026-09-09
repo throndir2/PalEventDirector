@@ -5,7 +5,8 @@ return function(test,equal,truthy)
     local Config=require("ped.config")
     local util=require("ped.util")
     local function fixture(callback)
-        local f={now=1000,spawns=0,despawns=0,surveys=0,calls={},signatures={}}
+        local f={now=1000,spawns=0,despawns=0,surveys=0,calls={},signatures={},
+            floorQueries={},navQueries={},supportPoints={},pathPoints={},residencies=0}
         local next_address=0
         local function object(values)
             next_address=next_address+1
@@ -160,15 +161,25 @@ return function(test,equal,truthy)
         end
         engine.startup_floor=function(_,actual,point,character_id)
             equal(actual,world); equal(character_id,"BOSS_Hunter_Rifle")
+            f.floorQueries[#f.floorQueries+1]=util.shallow_copy(point)
+            if f.floor_projection then return f.floor_projection(point,#f.floorQueries) end
             return not f.floor_missing and util.shallow_copy(point) or nil
         end
         engine.startup_nav=function(_,actual,point)
             equal(actual,world)
+            f.navQueries[#f.navQueries+1]=util.shallow_copy(point)
+            if f.nav_projection then return f.nav_projection(point) end
             return not f.nav_missing and util.shallow_copy(point) or nil
         end
-        engine._placement_support=function() return {ready=not f.support_missing,reason="support-fixture-missing"} end
-        engine._placement_path=function(_,scope)
+        engine._placement_support=function(_,_,_,point)
+            f.supportPoints[#f.supportPoints+1]=util.shallow_copy(point)
+            if f.support_result then return f.support_result(point,#f.supportPoints) end
+            return {ready=not f.support_missing,reason="support-fixture-missing"}
+        end
+        engine._placement_path=function(_,scope,_,point,goal)
             truthy(scope.leashRadius<=4000)
+            f.pathPoints[#f.pathPoints+1]={point=util.shallow_copy(point),goal=util.shallow_copy(goal)}
+            if f.path_result then return f.path_result(point,goal,#f.pathPoints) end
             return {ready=not f.path_missing,reason="path-fixture-missing",pathPoints=2,pathLength=500,defaultNavDataUsed=true}
         end
         local scope={world=world,baseId="9-0-0-0",guildId="8-0-0-0",origin={X=0,Y=0,Z=1000},range=2000,leashRadius=4000,
@@ -182,8 +193,9 @@ return function(test,equal,truthy)
             runId="shape-fixture",artifactSha256=string.rep("2",64),sourceRevision=string.rep("1",40),
             status="running",stage="spawn",members={member},spawned=0,initialized=0,moved=0,
             helpersCreated=1,helpersCleaned=0,helpers={{phase="configured"}}}}
-        runner.support={native=engine,poll=function() return true,{
-            ready=not f.residency_missing,enabled=true,streamingComplete=true}
+        runner.support={native=engine,residency=function()
+            f.residencies=f.residencies+1
+            return true,{ready=false,physicalQueried=false,enabled=true,streamingComplete=not f.residency_missing}
         end}
         bridge.startup_test=runner
         f.engine,f.scope,f.member,f.runner=engine,scope,member,runner
@@ -195,6 +207,7 @@ return function(test,equal,truthy)
         Survey.new=function(actual,actual_scope,options)
             equal(actual,engine); equal(actual_scope,scope)
             f.surveys=f.surveys+1
+            if f.on_survey then f.on_survey() end
             local measured=engine:_placement_shape("BOSS_Hunter_Rifle")
             return {point=util.shallow_copy(options.point),shape=measured,sourceCollision={
                 enabled=f.cdo.CapsuleComponent.collisionEnabled,objectType=f.cdo.CapsuleComponent.objectType,
@@ -206,6 +219,14 @@ return function(test,equal,truthy)
             local ok,result=engine:prepare_spawn(scope,member)
             truthy(ok,result); self.placement=result
             return result
+        end
+        function f:search_all()
+            local result
+            for _=1,9 do
+                result=self:prepare()
+                if not result.pending then return result end
+            end
+            error("site search did not finish within its candidate budget")
         end
         function f:spawn()
             member.spawnRequested,member.phase=true,"requested"
@@ -357,6 +378,7 @@ return function(test,equal,truthy)
             end)
         end
         fixture(function(f)
+            f.engine.bridge.config.customAssault.allowInBaseFallback=false
             f.scope.positions[1].Z=1400
             equal(f:prepare().ready,false); equal(f.surveys,0)
         end)
@@ -373,6 +395,191 @@ return function(test,equal,truthy)
             equal(result.ready,true); equal(result.pending,false); equal(f.surveys,1)
             equal(f.engine:prepare_spawn(f.scope,f.member),false)
             equal(f.surveys,1)
+        end)
+    end)
+
+    test("shape search skips a penetrating approach and consumes only the first passing distinct site",function()
+        fixture(function(f)
+            f.support_result=function(_,index)
+                return {ready=index>2,reason="support-penetrating",support={
+                    found=true,blockingHit=true,startPenetrating=index<=2,contactDelta={X=0,Y=0,Z=5}}}
+            end
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.pending,true); equal(result.reason,"shape-site-search-pending")
+            equal(result.attempts,2); equal(f.surveys,0); equal(f.spawns,0)
+            equal(f.engine.shapeQualification.attempted,nil)
+            equal(f.scope.positions[1].X,500)
+            equal(#result.selection.rejections,2); equal(result.selection.rejections[1].support.startPenetrating,true)
+            result=f:prepare()
+            equal(result.ready,true); equal(result.attempts,3); equal(f.surveys,1); equal(#f.supportPoints,3)
+            equal(result.fallbackReason,"support-penetrating"); equal(result.selection.selectedMode,"in-base")
+            equal(result.selection.selectedCandidate,3); equal(#f.pathPoints,1)
+            for _,axis in ipairs({"X","Y","Z"}) do equal(result.position[axis],f.supportPoints[3][axis]) end
+            truthy(f:spawn()); equal(f.spawns,1)
+        end)
+    end)
+
+    test("shape search tests a complete same-base path for every supported candidate",function()
+        fixture(function(f)
+            f.path_result=function(point,goal,index)
+                equal(point.Z,1000); equal(goal.Z,1000)
+                return {ready=index>2,reason="path-unreachable",pathPoints=2,pathLength=500,defaultNavDataUsed=true}
+            end
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.attempts,2); equal(f.surveys,0); equal(#f.supportPoints,2)
+            equal(result.selection.rejections[1].reason,"path-unreachable")
+            result=f:prepare()
+            equal(result.ready,true); equal(#f.pathPoints,3); equal(#f.supportPoints,3)
+            equal(result.fallbackReason,"path-unreachable"); equal(f.surveys,1)
+        end)
+    end)
+
+    test("shape search exhausts seventeen same-height sites two per poll without a survey or spawn",function()
+        fixture(function(f)
+            f.scope.positions[1]={X=137,Y=251,Z=1000}
+            f.support_missing=true
+            local result
+            for poll=1,9 do
+                local before=#f.supportPoints
+                result=f:prepare()
+                truthy(#f.supportPoints-before<=2)
+                equal(result.pending,poll<9); equal(result.ready,false)
+            end
+            equal(result.reason,"shape-sites-exhausted"); equal(result.attempts,17)
+            equal(result.selection.candidateLimit,17); equal(result.selection.uniqueCandidates,17)
+            equal(result.selection.projectedSites,17); equal(#result.selection.rejections,17)
+            equal(#f.floorQueries,34); equal(#f.supportPoints,17); equal(#f.pathPoints,0)
+            for index,point in ipairs(f.supportPoints) do
+                equal(point.Z,1000)
+                for previous=1,index-1 do
+                    local other=f.supportPoints[previous]
+                    truthy((point.X-other.X)^2+(point.Y-other.Y)^2+(point.Z-other.Z)^2>1)
+                end
+            end
+            equal(f.surveys,0); equal(f.spawns,0); equal(f.engine.shapeQualification.attempted,nil)
+            equal(f.engine:prepare_spawn(f.scope,f.member),false); equal(#f.supportPoints,17)
+        end)
+    end)
+
+    test("shape site selection honors disabled fallback and never substitutes the origin after a floor miss",function()
+        fixture(function(f)
+            f.engine.bridge.config.customAssault.allowInBaseFallback=false
+            f.floor_missing=true
+            local result=f:prepare()
+            equal(result.reason,"shape-sites-exhausted"); equal(result.pending,false); equal(result.attempts,1)
+            equal(result.selection.candidateLimit,1); equal(result.selection.rejections[1].reason,"shape-floor-unavailable")
+            equal(#f.floorQueries,1); equal(f.floorQueries[1].X,500)
+            equal(#f.supportPoints,0); equal(f.surveys,0); equal(f.spawns,0)
+        end)
+    end)
+
+    test("shape site selection skips duplicate inputs and collapsed nav projections",function()
+        fixture(function(f)
+            local search=f.engine:_new_placement_search(f.scope,f.member)
+            f.scope.positions[1]=util.shallow_copy(search.candidates[2].position)
+            f.support_missing=true
+            local result=f:search_all()
+            equal(result.attempts,17); equal(result.selection.duplicates,1)
+            equal(result.selection.uniqueCandidates,16); equal(#f.supportPoints,16)
+            equal(#f.floorQueries,32); equal(f.surveys,0)
+        end)
+        fixture(function(f)
+            f.support_missing=true
+            f.nav_projection=function(point)
+                if point.X==0 and point.Y==0 then return util.shallow_copy(point) end
+                return {X=600,Y=100,Z=1000}
+            end
+            local result=f:search_all()
+            equal(result.reason,"shape-sites-exhausted"); equal(result.attempts,17)
+            equal(result.selection.duplicates,16); equal(#f.supportPoints,1)
+            equal(#f.floorQueries,18); equal(f.surveys,0)
+        end)
+    end)
+
+    test("shape search pauses across residency flaps without rechecking rejected sites",function()
+        fixture(function(f)
+            f.support_missing=true
+            equal(f:prepare().attempts,2)
+            f.residency_missing=true
+            for _=1,3 do
+                local result=f:prepare()
+                equal(result.reason,"shape-residency-pending"); equal(result.attempts,2)
+                equal(result.residency.physicalQueried,false)
+                equal(#result.selection.rejections,2)
+            end
+            equal(#f.floorQueries,4); equal(#f.supportPoints,2); equal(f.surveys,0)
+            f.residency_missing,f.support_missing=false,false
+            local result=f:prepare()
+            equal(result.ready,true); equal(result.attempts,3); equal(f.surveys,1)
+            equal(#f.supportPoints,3)
+        end)
+    end)
+
+    test("shape preparation rejects late readiness and late candidate success at the shared deadline",function()
+        fixture(function(f)
+            f.residency_missing=true
+            truthy(f:prepare().pending)
+            f.residency_missing,f.now=false,1120
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.pending,false); equal(result.reason,"spawn-placement-timeout")
+            equal(f.residencies,1); equal(f.surveys,0); equal(#f.floorQueries,0)
+        end)
+        fixture(function(f)
+            f.path_result=function()
+                f.now=1120
+                return {ready=true,pathPoints=2,pathLength=500,defaultNavDataUsed=true}
+            end
+            local result=f:prepare()
+            equal(result.reason,"spawn-placement-timeout"); equal(result.ready,false)
+            equal(f.engine.shapeQualification.attempted,nil); equal(f.surveys,0); equal(f.spawns,0)
+        end)
+    end)
+
+    test("a rejected one-shot survey or template never resumes the candidate search",function()
+        for _,template_changed in ipairs({false,true}) do
+            fixture(function(f)
+                if template_changed then
+                    f.on_survey=function() f.cdo.Mesh.RelativeLocation.Z=-40 end
+                else f.survey_classification="wet" end
+                local result=f:prepare()
+                equal(result.ready,false); equal(result.pending,false)
+                equal(result.reason,template_changed and "shape-template-changed" or "shape-survey-wet")
+                equal(f.surveys,1); equal(#f.supportPoints,1); equal(f.engine.shapeQualification.attempted,true)
+                equal(f.engine:prepare_spawn(f.scope,f.member),false)
+                equal(f.surveys,1); equal(#f.supportPoints,1); equal(f.spawns,0)
+            end)
+        end
+    end)
+
+    test("pending shape preparation remains bound to its original caller and artifact",function()
+        for _,change in ipairs({
+            function(f) f.member=util.shallow_copy(f.member) end,
+            function(f) f.scope=util.shallow_copy(f.scope) end,
+            function(f) f.member.characterId="BOSS_Ninja" end,
+            function(f) f.runner.state.runId="different-run" end,
+            function(f) f.runner.state.artifactSha256=string.rep("4",64) end,
+            function(f) f.runner.state.case="engagement" end,
+            function(f) f.engine.bridge.config.customAssault.allowInBaseFallback=false end,
+        }) do
+            fixture(function(f)
+                f.support_missing=true
+                truthy(f:prepare().pending)
+                change(f)
+                equal(f.engine:prepare_spawn(f.scope,f.member),false)
+                equal(f.residencies,1); equal(#f.supportPoints,2); equal(f.surveys,0); equal(f.spawns,0)
+            end)
+        end
+    end)
+
+    test("a native fault during a pre-attempt candidate stops all later site and survey work",function()
+        fixture(function(f)
+            f.support_result=function() error("fixture-native-fault") end
+            equal(f.engine:prepare_spawn(f.scope,f.member),false)
+            equal(f.engine.shapeQualification.search.interrupted,true)
+            local calls=#f.calls
+            equal(f.engine:prepare_spawn(f.scope,f.member),false)
+            equal(#f.calls,calls); equal(f.residencies,1); equal(#f.supportPoints,1)
+            equal(f.surveys,0); equal(f.spawns,0)
         end)
     end)
 

@@ -46,13 +46,21 @@ local function dimensions(radius,half)
     return finite(radius) and finite(half) and radius>0 and radius<=500 and half>=radius and half<=1000
 end
 
+local function seen(points,position)
+    for _,previous in ipairs(points) do if distance(previous,position)<=1 then return true end end
+    return false
+end
+
 function Shape.new(native,runner,scope,member)
     local state=runner.state
     local self=setmetatable({native=native,a=native.a,runner=runner,scope=scope,member=member,
         runId=state.runId,artifact=state.artifactSha256,source=state.sourceRevision,
         base=scope.base,world=scope.world,baseId=scope.baseId,guildId=scope.guildId,
-        origin=vector(scope.origin),range=scope.range,leashRadius=scope.leashRadius},Shape)
+        origin=vector(scope.origin),range=scope.range,leashRadius=scope.leashRadius,
+        allowFallback=native.bridge.config.customAssault.allowInBaseFallback,
+        visited={candidates={},floors={},navigation={},sites={}},rejections={},duplicates=0},Shape)
     self:_validate(scope,member,true)
+    self.search=native:_new_placement_search(scope,member)
     return self
 end
 
@@ -73,6 +81,7 @@ function Shape:_validate(scope,member,spawning)
         or scope~=self.scope or scope.base~=self.base or scope.world~=self.world
         or scope.baseId~=self.baseId or scope.guildId~=self.guildId
         or scope.range~=self.range or scope.leashRadius~=self.leashRadius
+        or n.bridge.config.customAssault.allowInBaseFallback~=self.allowFallback
         or not same_vector(scope.origin,self.origin,0) or #runner.scopes~=1 or runner.scopes[1]~=scope
         or #state.members~=1 or state.members[1]~=self.member
         or member.index~=1 or member.slot~=1 or member.baseId~=self.baseId
@@ -195,44 +204,95 @@ local function same_collision(a,b)
     return true
 end
 
-function Shape:prepare()
-    self:_validate(self.scope,self.member,true)
-    if self.attempted then error(ERROR,0) end
-    if not self.layoutsQualified then self:_qualify(); self.layoutsQualified=true end
+function Shape:_candidate(position)
+    local n,scope,member=self.native,self.scope,self.member
+    local function rejected(reason) return {ready=false,reason=reason} end
+    local function duplicate()
+        self.duplicates=self.duplicates+1
+        return rejected("shape-duplicate-site")
+    end
+    if seen(self.visited.candidates,position) or seen(self.visited.sites,position) then return duplicate() end
+    self.visited.candidates[#self.visited.candidates+1]=vector(position)
+    local floor=n:startup_floor(scope.world,position,CHARACTER)
+    if not floor then return rejected("shape-floor-unavailable") end
+    if seen(self.visited.floors,floor) or seen(self.visited.sites,floor) then return duplicate() end
+    self.visited.floors[#self.visited.floors+1]=vector(floor)
+    local nav=n:startup_nav(scope.world,floor)
+    if not nav then return rejected("shape-navigation-unavailable") end
+    if seen(self.visited.navigation,nav) then return duplicate() end
+    self.visited.navigation[#self.visited.navigation+1]=vector(nav)
+    local goal=n:startup_nav(scope.world,scope.origin)
+    if not goal then return rejected("shape-navigation-unavailable") end
+    local point=n:startup_floor(scope.world,nav,CHARACTER)
+    if not point then return rejected("shape-projected-floor-unavailable") end
+    if seen(self.visited.sites,point) then return duplicate() end
+    self.visited.sites[#self.visited.sites+1]=vector(point)
+    local shape,reason=n:_placement_shape(CHARACTER)
+    if not shape or not shape.bodyProxy then return rejected(reason or (shape and shape.bodyProxyReason) or "shape-template-unavailable") end
+    local proxy=shape.bodyProxy
+    local envelope=proxy.halfHeight+math.abs(proxy.centerOffsetZ)
+    if scope.range<=envelope or distance(point,scope.origin)>math.min(scope.range,9000)-envelope
+        or math.abs(point.Z-scope.origin.Z)+envelope>500 then return rejected("shape-outside-base-envelope") end
+    local support=n:_placement_support(scope,member,point)
+    if not support.ready then return support end
+    local path_scope=util.shallow_copy(scope)
+    path_scope.leashRadius=math.min(scope.leashRadius,scope.range,9000)-envelope
+    local route=n:_placement_path(path_scope,member,point,goal)
+    if not route.ready then return {ready=false,reason=route.reason,support=support.support} end
+    return {ready=true,position=vector(point),goal=vector(goal),proxy=util.deep_copy(proxy),
+        pathPoints=route.pathPoints,pathLength=route.pathLength,defaultNavDataUsed=route.defaultNavDataUsed}
+end
+
+function Shape:_selection()
+    return {candidateLimit=#self.search.candidates,candidatesVisited=self.search.attempts,
+        uniqueCandidates=#self.visited.candidates,projectedSites=#self.visited.sites,duplicates=self.duplicates,
+        rejections=util.deep_copy(self.rejections),selectedCandidate=self.selectedCandidate,selectedMode=self.selectedMode}
+end
+
+function Shape:_expired()
+    local now=self.native.bridge.clock()
+    if not finite(now) or now<self.preparationStartedAt then error(ERROR,0) end
+    return now>=self.preparationStartedAt+120
+end
+
+function Shape:prepare(scope,member)
+    self:_validate(scope,member,true)
+    if self.attempted or self.selectionClosed then error(ERROR,0) end
+    self.preparationStartedAt=self.preparationStartedAt or self.native.bridge.clock()
     local function blocked(reason,survey)
-        return {ready=false,pending=false,reason=reason,mode="in-base",attempts=1,
+        return {ready=false,pending=false,reason=reason,mode="in-base",attempts=self.search.attempts,
+            fallbackReason=self.search.fallbackReason,selection=self:_selection(),
             experiment=Shape.CONTRACT,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=survey}
     end
-    local ok,residency=self.runner.support:poll(1)
+    if self:_expired() then self.selectionClosed=true; return blocked("spawn-placement-timeout") end
+    if not self.layoutsQualified then self:_qualify(); self.layoutsQualified=true end
+    local ok,residency=self.runner.support:residency(1)
     if not ok then error(residency,0) end
-    if not residency.ready or not residency.enabled or not residency.streamingComplete then
+    if self:_expired() then self.selectionClosed=true; return blocked("spawn-placement-timeout") end
+    if not residency.enabled or not residency.streamingComplete then
         local pending=blocked("shape-residency-pending")
         pending.pending,pending.residency=true,residency
         return pending
     end
+    local site=self.search:poll(function(position,mode)
+        local result=self:_expired() and {ready=false,reason="spawn-placement-timeout"} or self:_candidate(position)
+        if not result.ready then
+            self.rejections[#self.rejections+1]={candidate=self.search.attempts,mode=mode,reason=result.reason,
+                support=util.deep_copy(result.support)}
+        end
+        return result
+    end,2)
+    if self:_expired() then self.selectionClosed=true; return blocked("spawn-placement-timeout") end
+    if not site.ready then
+        local result=blocked(site.pending and "shape-site-search-pending" or "shape-sites-exhausted")
+        result.pending=site.pending==true
+        if not result.pending then self.selectionClosed=true end
+        return result
+    end
+    self.selectedCandidate,self.selectedMode=site.attempts,site.mode
     self.attempted=true
-    local n,scope,member=self.native,self.scope,self.member
-    local candidate=scope.positions[1] or scope.origin
-    local floor=n:startup_floor(scope.world,candidate,CHARACTER)
-    if not floor and candidate~=scope.origin then floor=n:startup_floor(scope.world,scope.origin,CHARACTER) end
-    if not floor then return blocked("shape-floor-unavailable") end
-    local nav,goal=n:startup_nav(scope.world,floor),n:startup_nav(scope.world,scope.origin)
-    if not nav or not goal then return blocked("shape-navigation-unavailable") end
-    local point=n:startup_floor(scope.world,nav,CHARACTER)
-    if not point then return blocked("shape-projected-floor-unavailable") end
+    local n,point,goal,proxy=self.native,site.position,site.goal,site.proxy
     local shape,reason=n:_placement_shape(CHARACTER)
-    if not shape or not shape.bodyProxy then return blocked(reason or (shape and shape.bodyProxyReason) or "shape-template-unavailable") end
-    local proxy=shape.bodyProxy
-    local envelope=proxy.halfHeight+math.abs(proxy.centerOffsetZ)
-    if scope.range<=envelope or distance(point,scope.origin)>math.min(scope.range,9000)-envelope
-        or math.abs(point.Z-scope.origin.Z)+envelope>500 then return blocked("shape-outside-base-envelope") end
-    local support=n:_placement_support(scope,member,point)
-    if not support.ready then return blocked(support.reason) end
-    local path_scope=util.shallow_copy(scope)
-    path_scope.leashRadius=math.min(scope.leashRadius,scope.range,9000)-envelope
-    local route=n:_placement_path(path_scope,member,point,goal)
-    if not route.ready then return blocked(route.reason) end
-    shape,reason=n:_placement_shape(CHARACTER)
     if not shape then return blocked(reason or "shape-template-unavailable") end
     local planned,why=self:_geometry(shape.cdo,false)
     if not planned then return blocked("shape-template-"..why) end
@@ -245,6 +305,7 @@ function Shape:prepare()
         or not close(planned.mesh.relativeRotation.Pitch,0,0.1) or not close(planned.mesh.relativeRotation.Roll,0,0.1) then
         return blocked("shape-template-transform")
     end
+    if self:_expired() then return blocked("spawn-placement-timeout") end
     local survey=Survey.new(n,scope,{point=point})
     local result=survey:run()
     if result.complete and result.classification~="proxy-clear" then
@@ -270,10 +331,12 @@ function Shape:prepare()
     self.proxy=util.deep_copy(proxy)
     self.preparedAt=n.bridge.clock()
     if not finite(self.preparedAt) then error(ERROR,0) end
-    return {ready=true,pending=false,mode="in-base",attempts=1,position=vector(point),goal=vector(goal),
+    if self:_expired() then return blocked("spawn-placement-timeout",result) end
+    return {ready=true,pending=false,mode="in-base",attempts=site.attempts,position=vector(point),goal=vector(goal),
+        fallbackReason=site.fallbackReason,selection=self:_selection(),
         experiment=Shape.CONTRACT,premise=Shape.PREMISE,spawnQualified=false,surfaceSurvey=result,
-        plannedGeometry=util.deep_copy(planned),pathPoints=route.pathPoints,pathLength=route.pathLength,
-        defaultNavDataUsed=route.defaultNavDataUsed,templateOnly=true}
+        plannedGeometry=util.deep_copy(planned),pathPoints=site.pathPoints,pathLength=site.pathLength,
+        defaultNavDataUsed=site.defaultNavDataUsed,templateOnly=true}
 end
 
 function Shape:consume(scope,member,placement)
