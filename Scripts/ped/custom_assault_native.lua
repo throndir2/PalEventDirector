@@ -186,6 +186,15 @@ function Native:qualify()
     self:_signature("/Script/Engine.CharacterMovementComponent:GetCurrentAcceleration", {ReturnValue={"StructProperty",0}})
     self:_signature("/Script/Engine.Actor:K2_GetActorRotation", {ReturnValue={"StructProperty",0}})
     self:_signature("/Script/Engine.ActorComponent:GetOwner", {ReturnValue={"ObjectProperty",0}})
+    self:_signature("/Script/Engine.ActorComponent:GetComponentTickInterval",{ReturnValue={"FloatProperty",0}})
+    self:_signature("/Script/Engine.ActorComponent:IsComponentTickEnabled",{ReturnValue={"BoolProperty",0}})
+    self:_signature("/Script/Pal.PalAIController:IsActiveAI",{ReturnValue={"BoolProperty",0}})
+    for _,method in ipairs({"IsActive","IsPaused"}) do
+        self:_signature("/Script/Pal.PalAIActionBase:"..method,{ReturnValue={"BoolProperty",0}})
+    end
+    self:_signature("/Script/Engine.KismetSystemLibrary:GetOuterObject", {
+        Object={"ObjectProperty",0},ReturnValue={"ObjectProperty",8},
+    })
     for _, method in ipairs({"IsMovingOnGround","IsFalling","IsFlying"}) do
         self:_signature("/Script/Engine.NavMovementComponent:" .. method, {ReturnValue={"BoolProperty",0}})
     end
@@ -480,6 +489,43 @@ function Native:_movement_observation(state)
     return result
 end
 
+function Native:_class_name(object)
+    local class = object:GetClass()
+    if not self.a.valid(class) then error(SCOPE,0) end
+    local name = class:GetFName():ToString()
+    if #name>96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE,0) end
+    return name
+end
+
+function Native:_tick_observation(state, actions, action)
+    local owner = self:_call("tick-owner",actions,"GetOwner")
+    if not self.a.same(owner,state.controller) then error(SCOPE,0) end
+    local result = {
+        intervalSeconds=self:_call("tick-interval",actions,"GetComponentTickInterval"),
+        enabled=self:_call("tick-enabled",actions,"IsComponentTickEnabled"),
+        ownerTimeDilation=owner.CustomTimeDilation,
+        minIntervalSeconds=state.controller.MinAIActionComponentTickInterval,
+        importance=state.actor.ImportanceType,
+        controllerActive=self:_call("tick-ai-active",state.controller,"IsActiveAI"),
+    }
+    for _,key in ipairs({"intervalSeconds","ownerTimeDilation","minIntervalSeconds"}) do
+        if not finite(result[key]) or result[key]<0 then error(SCOPE,0) end
+    end
+    if type(result.enabled)~="boolean" or type(result.controllerActive)~="boolean"
+        or not util.is_integer(result.importance) or result.importance<0 or result.importance>255 then error(SCOPE,0) end
+    if self.a.valid(action) and action:IsA("/Script/AIModule.PawnAction") then
+        local child = self.a.unwrap(action.ChildAction)
+        result.childAction = self.a.valid(child)
+        if result.childAction then result.childActionClass=self:_class_name(child) end
+        if action:IsA("/Script/Pal.PalAIActionBase") then
+            result.actionActive = self:_call("tick-action-active",action,"IsActive")
+            result.actionPaused = self:_call("tick-action-paused",action,"IsPaused")
+            if type(result.actionActive)~="boolean" or type(result.actionPaused)~="boolean" then error(SCOPE,0) end
+        end
+    end
+    return result
+end
+
 function Native:startup_combat_observation(scope, member, movement_only)
     return self.bridge:_native_step("startup-combat-observation", function()
         local state = self:_owned_state(member.handle, member)
@@ -488,11 +534,10 @@ function Native:startup_combat_observation(scope, member, movement_only)
         if movement_only or state.phase ~= "alive" then return result end
         local actions = self:_call("startup-current-ai", state.controller, "GetAIActionComponent")
         local action = self:_call("startup-current-action", actions, "GetCurrentAction_BP")
+        result.tick = self:_tick_observation(state,actions,action)
         result.currentAction = "none"
         if self.a.valid(action) then
-            local name = action:GetClass():GetFName():ToString()
-            if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
-            result.currentAction = name
+            result.currentAction = self:_class_name(action)
         end
         if result.currentAction == "BP_AIAction_NPC_Combat_Gun_C" then
             result.outerTimer, result.outerDeltaTime = action.Timer, action.tempDeltaTime
@@ -517,9 +562,12 @@ function Native:startup_combat_observation(scope, member, movement_only)
             if result.stateMachine then
                 local current = self:_call("startup-gun-state", machine, "GetCurrentState")
                 if self.a.valid(current) then
-                    local name = current:GetClass():GetFName():ToString()
-                    if #name > 96 or not name:match("^[A-Za-z][A-Za-z0-9_]+$") then error(SCOPE, 0) end
+                    local name = self:_class_name(current)
                     result.gunState = name
+                    local library = self.bridge:_static_find("/Script/Engine.Default__KismetSystemLibrary")
+                    if not self.a.valid(library) then error(SCOPE,0) end
+                    local outer = self:_call("startup-state-outer",library,"GetOuterObject",current)
+                    result.tick.stateOuterMatches = self.a.same(outer,action)
                     if name == "BP_AINPC_CombatGunState_FireMove_C" then
                         result.fireState = {}
                         for _, key in ipairs({"Timer","Interval","ShootCount","ShootAbleTimer","temp_DeltaTime"}) do
@@ -1042,31 +1090,41 @@ function Native:_defender(actor, scope)
 end
 
 function Native:_combat_targets_scoped(actions, scope)
-    local action = self:_call("current-ai-action", actions, "GetCurrentAction_BP")
-    local visited, uncertain = {}, false
+    local current = self:_call("current-ai-action", actions, "GetCurrentAction_BP")
+    if not self.a.valid(current) then return true end
+    if not current:IsA("/Script/AIModule.PawnAction") then return nil end
+    local uncertain = false
     local function target_allowed(target)
         if not self.a.valid(target) then return true end
         local scoped = self:_character_scope(target, scope)
         if scoped == nil then uncertain = true end
         return scoped ~= false
     end
-    for _ = 1, 8 do
-        if not self.a.valid(action) then return not uncertain and true or nil end
-        if not action:IsA("/Script/AIModule.PawnAction") then return nil end
-        for _, previous in ipairs(visited) do if self.a.same(previous, action) then return nil end end
-        visited[#visited + 1] = action
-        if action:IsA(CLASSES.combat) then
-            if not target_allowed(self.a.unwrap(action.TargetActor)) then return false end
-            local module = self.a.unwrap(action.CombatModule)
-            if self.a.valid(module) then
-                if not target_allowed(self:_call("combat-module-target", module, "GetTargetActor")) then return false end
-            else
-                uncertain = true
+    local function walk(action, link)
+        local visited = {}
+        for _ = 1, 8 do
+            if not self.a.valid(action) then return true end
+            if not action:IsA("/Script/AIModule.PawnAction") then return nil end
+            for _, previous in ipairs(visited) do if self.a.same(previous,action) then return nil end end
+            visited[#visited+1] = action
+            if action:IsA(CLASSES.combat) then
+                if not target_allowed(self.a.unwrap(action.TargetActor)) then return false end
+                local module = self.a.unwrap(action.CombatModule)
+                if self.a.valid(module) then
+                    if not target_allowed(self:_call("combat-module-target",module,"GetTargetActor")) then return false end
+                else
+                    uncertain = true
+                end
             end
+            action = self.a.unwrap(action[link])
         end
-        action = self.a.unwrap(action.ParentAction)
+        return not self.a.valid(action) and true or nil
     end
-    return not self.a.valid(action) and not uncertain and true or nil
+    local parents = walk(current,"ParentAction")
+    if parents==false then return false end
+    local children = walk(self.a.unwrap(current.ChildAction),"ChildAction")
+    if children==false then return false end
+    return parents and children and not uncertain and true or nil
 end
 
 function Native:_choose_defender(scope, state, record)

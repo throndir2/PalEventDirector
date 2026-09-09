@@ -33,6 +33,7 @@ return function(test, equal, truthy)
         })
         local blackboard = object()
         local controller = object({
+            CustomTimeDilation=1,MinAIActionComponentTickInterval=0,IsActiveAI=function() return true end,
             GetAIActionComponent = function() if f.ai_pending then return nil end; return actions end,
             GetMyPalBlackboard = function() return blackboard end,
             StopMovement = function() f.stops = (f.stops or 0) + 1 end,
@@ -48,6 +49,9 @@ return function(test, equal, truthy)
                 return 2
             end,
         })
+        actions.GetOwner=function() return controller end
+        actions.GetComponentTickInterval=function() return f.tick_interval or 0 end
+        actions.IsComponentTickEnabled=function() return true end
         local parameter = object({
             SaveParameter = { IsPlayer = false, OwnerPlayerUId = util.deep_copy(zero), OldOwnerPlayerUIds = {} },
             GetPalId = function() return identity end,
@@ -56,6 +60,7 @@ return function(test, equal, truthy)
             IsDead = function() return f.dead end,
         })
         local actor = object({
+            ImportanceType=0,
             IsA = function(_, path) return path == "/Script/Pal.PalCharacter" end,
             GetWorld = function() return f.foreign_world and object() or world end,
             GetCharacterParameterComponent = function() return component end,
@@ -120,6 +125,11 @@ return function(test, equal, truthy)
             local args = table.pack(...)
             return pcall(function() return owner[method](owner, table.unpack(args, 1, args.n)) end)
         end
+        function bridge:_static_find(path)
+            if path=="/Script/Engine.Default__KismetSystemLibrary" then
+                return object({GetOuterObject=function() return f.current_action end})
+            end
+        end
         local engine = Native.new(bridge, {
             valid = function(value) return type(value) == "table" and value.IsValid and value:IsValid() == true end,
             unwrap = function(value) return value end, same = function(a, b) return a ~= nil and a == b end,
@@ -179,7 +189,9 @@ return function(test, equal, truthy)
         end
         function f:combat_action(target, module_target, without_module)
             return object({
-                IsA = function(_, path) return path == "/Script/AIModule.PawnAction" or path:find("NPC_CombatBase", 1, true) ~= nil end,
+                IsA = function(_, path) return path == "/Script/AIModule.PawnAction" or path == "/Script/Pal.PalAIActionBase"
+                    or path:find("NPC_CombatBase", 1, true) ~= nil end,
+                IsActive=function() return true end,IsPaused=function() return f.paused==true end,
                 Timer = 1, tempDeltaTime = 0.25,
                 TargetActor = target,
                 CombatModule = not without_module and object({ GetTargetActor = function() return module_target end }) or nil,
@@ -621,6 +633,24 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("combat scope includes the child action which can receive ticks instead of its parent", function()
+        fixture(function(engine,member,f)
+            local target,remote=f:defender_at(500),f:defender_at(5000)
+            local parent,child=f:combat_action(target,target),f:combat_action(target,target)
+            parent.ChildAction,child.ParentAction=child,parent
+            f.current_action=parent
+            local ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state); equal(state.phase,"alive")
+            child.CombatModule.GetTargetActor=function() return remote end
+            ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state); equal(state.phase,"escaped"); equal(state.scopeReason,"combat-target")
+            child.CombatModule.GetTargetActor=function() return target end
+            child.ChildAction=parent
+            ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state); equal(state.phase,"inactive")
+        end)
+    end)
+
     test("generated-class loading consumes the returned class and requires registry/load evidence", function()
         fixture(function(engine)
             local previous = rawget(_G, "LoadAsset")
@@ -770,7 +800,8 @@ return function(test, equal, truthy)
             state.controller.WeaponHandle={IsValid=function() return true end,IsEndInitialize=function() return false end,
                 GetRemainingBullet=function() error("unready weapon was queried") end}
             local action=f:combat_action(nil,nil)
-            action.GetClass=function() return {GetFName=function() return {ToString=function() return "BP_AIAction_NPC_Combat_Gun_C" end} end} end
+            action.GetClass=function() return {IsValid=function() return true end,
+                GetFName=function() return {ToString=function() return "BP_AIAction_NPC_Combat_Gun_C" end} end} end
             action.IsStopTick=false
             f.current_action=action
             engine._class=function() return {} end
@@ -784,6 +815,20 @@ return function(test, equal, truthy)
             equal(result.remainingBullets,nil)
             equal(result.canShoot,nil)
             equal(result.currentAction,"BP_AIAction_NPC_Combat_Gun_C")
+        end)
+    end)
+
+    test("tick observation records sparse cadence and the component owner's clock without forcing delivery", function()
+        fixture(function(engine,member,f)
+            local ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state)
+            f.tick_interval,f.paused=10,true
+            state.controller.CustomTimeDilation=0.5
+            local action=f:combat_action(nil,nil)
+            local result=engine:_tick_observation(state,state.controller:GetAIActionComponent(),action)
+            equal(result.intervalSeconds,10); equal(result.ownerTimeDilation,0.5)
+            equal(result.actionPaused,true); equal(result.enabled,true); equal(result.childAction,false)
+            equal(f.spawns,1); equal(f.terminated,nil)
         end)
     end)
 
@@ -1037,7 +1082,7 @@ return function(test, equal, truthy)
             weapon.IsMagazineEmpty = function() return false end
             target.visible = true
             local function class(name)
-                return {GetFName=function() return {ToString=function() return name end} end}
+                return {IsValid=function() return true end,GetFName=function() return {ToString=function() return name end} end}
             end
             local fire = {IsValid=function() return true end,Timer=-0.1,Interval=0.1,ShootCount=0,
                 ShootAbleTimer=0,temp_DeltaTime=0.25,GetClass=function() return class("BP_AINPC_CombatGunState_FireMove_C") end}
@@ -1065,6 +1110,7 @@ return function(test, equal, truthy)
             truthy(observed,result)
             equal(result.fireState.Timer,-0.1); equal(result.fireState.ShootCount,0)
             equal(result.outerTimer,1); equal(result.outerDeltaTime,0.25)
+            equal(result.tick.stateOuterMatches,true); equal(result.tick.actionActive,true)
             equal(result.requestedTargetMatches,false); equal(result.actualTargetDistanceCm,200)
             equal(result.storedShooterMatches,true); equal(result.canShoot,true); equal(result.canAim,false)
             equal(result.rootFacing,true); equal(result.aimFacing,false)
