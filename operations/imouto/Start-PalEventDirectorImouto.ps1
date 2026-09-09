@@ -306,7 +306,47 @@ function Read-StartupTestOutcome {
         if ($state.capturePolicy -cne 'stock-networked-spheres-only-v1' -or $state.cadenceSeconds -ne 0.1) {
             throw 'Cadence trial capture policy or interval is invalid.'
         }
-        if ($state.cleanupComplete -and ($state.cadence.active -ne $false -or
+        $worldFinalized = $false
+        if ($null -ne $state.cadence.PSObject.Properties['runtimeDisposition'] -and
+            $state.cadence.runtimeDisposition -ceq 'WORLD_FINALIZED') {
+            $pins = @{
+                runId='20260909-221539-b5664f1858dd4afcab2f296570f197e1'
+                certificateSha256='45a3328ee826697958f997f26356953ad469eabfb2eb34e1fbe25222427455ae'
+                journalSha256='0d92fee98b9bfd3adbebccf143a2cd44bc05cb87ec97e6eb7dcbad5a2736aa1b'
+                snapshotSha256='a5610801008d136212a48aa75e4781f8e56122eb0bc0b65988339326fac7768c'
+                evidenceManifestSha256='82a0f705074dde66b8c73e32d54c03afef1a774f0f720831add56f39ad1defb3'
+                breadcrumbsSha256='5192e3d3378d6fc205edb15b510e2c1774d644e7866608deb6f2b4e021c7aad1'
+                missingAfterStep='1788992144-2197-start-projectile-creation-observation'
+                serverExecutableSha256='61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02'
+                serverPakSha256='2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe'
+            }
+            if ($state.runId -cne $pins.runId -or
+                $state.sourceRevision -cne '29bea671d8cafc3588fa1c12bcf7c0ecbee0db48' -or
+                $state.artifactSha256 -cne 'd3b4a9b6628189cbfa0545e6ca4ce593fedfa19265e708e645695aa2e79cf274' -or
+                $state.failedArtifactSha256 -cne $state.artifactSha256 -or
+                $state.status -cne 'blocked' -or $state.code -cne 'cadence-world-finalized' -or
+                $state.cleanupComplete -ne $true -or $state.spawned -ne 1 -or $state.initialized -ne 1 -or
+                $state.cleaned -ne 0 -or $state.npcsFinalized -ne 1 -or $state.helpersFinalized -ne 1 -or
+                $state.helpersCreated -ne 1 -or $state.helpersCleaned -ne 0 -or
+                $state.cadence.status -cne 'UNRESOLVED' -or $state.cadence.active -ne $false -or
+                $state.cadence.retired -ne $true -or $state.cadence.worldFinalizationVerified -ne $true -or
+                $state.finalization.oldRootPid -ne 14328 -or $state.finalization.nativeCalls -ne 0) {
+                throw 'Cadence world finalization evidence is invalid.'
+            }
+            foreach ($key in $pins.Keys) {
+                if ($state.finalization.$key -cne $pins[$key]) { throw 'Cadence world finalization evidence is invalid.' }
+            }
+            foreach ($key in @('processExitVerified','installationProcessTreeEmpty','instanceOnlyLeaseVerified','noReplay','preserveSavedTransfers','noExternalReapply')) {
+                if ($state.finalization.$key -ne $true) { throw 'Cadence world finalization evidence is invalid.' }
+            }
+            foreach ($key in @('restorationVerified','disposalVerified')) {
+                if ($null -ne $state.cadence.PSObject.Properties[$key] -and $state.cadence.$key -eq $true) {
+                    throw 'Cadence world finalization cannot claim live restoration or disposal.'
+                }
+            }
+            $worldFinalized = $true
+        }
+        if ($state.cleanupComplete -and -not $worldFinalized -and ($state.cadence.active -ne $false -or
             $state.cadence.status -notin @('NOT_ACQUIRED','RESTORED','DISPOSED','OVERRIDDEN') -or
             ($state.cadence.status -eq 'RESTORED' -and $state.cadence.restorationVerified -ne $true) -or
             ($state.cadence.status -eq 'DISPOSED' -and $state.cadence.disposalVerified -ne $true))) {

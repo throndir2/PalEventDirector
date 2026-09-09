@@ -340,13 +340,17 @@ function Cadence:check()
 end
 
 function Cadence.settled(state)
-    return state and state.active==false
-        and (state.status=="NOT_ACQUIRED" or (state.status=="RESTORED" and state.restorationVerified==true)
-            or (state.status=="DISPOSED" and state.disposalVerified==true) or state.status=="OVERRIDDEN")
+    if not state or state.active~=false then return false end
+    if state.runtimeDisposition~=nil then
+        return state.runtimeDisposition=="WORLD_FINALIZED" and state.status=="UNRESOLVED" and state.retired==true
+            and state.worldFinalizationVerified==true and state.restorationVerified~=true and state.disposalVerified~=true
+    end
+    return state.status=="NOT_ACQUIRED" or (state.status=="RESTORED" and state.restorationVerified==true)
+        or (state.status=="DISPOSED" and state.disposalVerified==true) or state.status=="OVERRIDDEN"
 end
 
 function Cadence.passed(state)
-    return state and state.appliedObserved==true and state.active==false and state.retired==true
+    return state and state.runtimeDisposition==nil and state.appliedObserved==true and state.active==false and state.retired==true
         and ((state.status=="RESTORED" and state.restorationVerified==true) or (state.status=="DISPOSED" and state.disposalVerified==true))
 end
 

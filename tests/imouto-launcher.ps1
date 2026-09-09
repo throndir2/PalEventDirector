@@ -329,6 +329,52 @@ try {
         } catch {
             if ($_.Exception.Message -notmatch 'Cadence lease cleanup is unresolved') { throw }
         }
+        $cadenceState.cadence.runtimeDisposition = 'WORLD_FINALIZED'
+        $cadenceState.cadence.worldFinalizationVerified = $true
+        Write-StartupTestFixtureOutcome $cadenceStatePath $cadenceState
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -ValidateOnly | Out-Null
+            throw 'Unpinned world finalization was accepted.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'world finalization evidence is invalid') { throw }
+        }
+        $worldRunId = '20260909-221539-b5664f1858dd4afcab2f296570f197e1'
+        $worldDirectory = Join-Path $testRoot $worldRunId
+        New-Item -ItemType Directory -Path $worldDirectory -ErrorAction Stop | Out-Null
+        $worldStatePath = Join-Path $worldDirectory 'snapshot.json'
+        $cadenceState.runId = $worldRunId
+        $cadenceState.sourceRevision = '29bea671d8cafc3588fa1c12bcf7c0ecbee0db48'
+        $cadenceState.artifactSha256 = 'd3b4a9b6628189cbfa0545e6ca4ce593fedfa19265e708e645695aa2e79cf274'
+        $cadenceState.failedArtifactSha256 = $cadenceState.artifactSha256
+        $cadenceState.code = 'cadence-world-finalized'
+        $cadenceState.cleaned = 0
+        $cadenceState.helpersCleaned = 0
+        $cadenceState.npcsFinalized = 1
+        $cadenceState.helpersFinalized = 1
+        $cadenceState.finalization = @{
+            runId=$worldRunId;oldRootPid=14328;nativeCalls=0
+            processExitVerified=$true;installationProcessTreeEmpty=$true;instanceOnlyLeaseVerified=$true
+            noReplay=$true;preserveSavedTransfers=$true;noExternalReapply=$true
+            certificateSha256='45a3328ee826697958f997f26356953ad469eabfb2eb34e1fbe25222427455ae'
+            journalSha256='0d92fee98b9bfd3adbebccf143a2cd44bc05cb87ec97e6eb7dcbad5a2736aa1b'
+            snapshotSha256='a5610801008d136212a48aa75e4781f8e56122eb0bc0b65988339326fac7768c'
+            evidenceManifestSha256='82a0f705074dde66b8c73e32d54c03afef1a774f0f720831add56f39ad1defb3'
+            breadcrumbsSha256='5192e3d3378d6fc205edb15b510e2c1774d644e7866608deb6f2b4e021c7aad1'
+            missingAfterStep='1788992144-2197-start-projectile-creation-observation'
+            serverExecutableSha256='61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02'
+            serverPakSha256='2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe'
+        }
+        Write-StartupTestFixtureOutcome $worldStatePath $cadenceState
+        [IO.File]::WriteAllText((Join-Path $testRoot 'active.json'), (@{runId=$worldRunId} | ConvertTo-Json))
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -ValidateOnly | Out-Null
+        $cadenceState.cadence.restorationVerified = $true
+        Write-StartupTestFixtureOutcome $worldStatePath $cadenceState
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -ValidateOnly | Out-Null
+            throw 'World finalization claimed live restoration.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'cannot claim live restoration or disposal') { throw }
+        }
         if ($env:PAL_EVENT_DIRECTOR_SERVER_BUILD_ID -ne 'parent-build' -or $env:PAL_EVENT_DIRECTOR_DATA_DIR -ne 'parent-data') {
             throw 'Launcher did not restore the parent process environment.'
         }

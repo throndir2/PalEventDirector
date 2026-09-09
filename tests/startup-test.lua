@@ -477,6 +477,71 @@ return function(test, equal, truthy)
         equal(f.spawns, 0)
     end)
 
+    test("world finalization preserves unresolved cadence history and can never pass gameplay",function()
+        local run="20260909-221539-b5664f1858dd4afcab2f296570f197e1"
+        local artifact="d3b4a9b6628189cbfa0545e6ca4ce593fedfa19265e708e645695aa2e79cf274"
+        local member={characterId="BOSS_Hunter_Rifle",level=30,index=1,slot=1,spawnRequested=true,initialized=true,
+            actorAddress="fixture-actor",instanceGuid={A=1,B=2,C=3,D=4},playerGuid={A=0,B=0,C=0,D=0}}
+        local state={schemaVersion=1,runId=run,case=Cadence.CASE,experiment=Cadence.CONTRACT,
+            capturePolicy=Cadence.CAPTURE_POLICY,cadenceSeconds=0.1,baseOrdinal=3,
+            sourceRevision="29bea671d8cafc3588fa1c12bcf7c0ecbee0db48",artifactSha256=artifact,
+            status="failed",code="unclassified-lua-error",stage="engagement",mutationStarted=true,cleanupComplete=false,
+            spawned=1,initialized=1,cleaned=0,moved=0,members={member},helpers={{phase="configured"}},
+            helpersCreated=1,helpersCleaned=0,shapeObservations={},
+            cadence={status="UNRESOLVED",active=false,retired=true,generation=2,reason="projectile-creation-native-fault",
+                priorSeconds=10,appliedSeconds=0.10000000149012,appliedObserved=true}}
+        for index=1,2 do state.shapeObservations[index]={comparison="MATCH",
+            receipt={sample=index,runId=run,artifactSha256=artifact,actorAddress=member.actorAddress}} end
+        local records={}
+        for index=1,44 do records[index]={sequence=index,kind="startup_test_stage",state=state} end
+        records[44].kind="startup_test_failed"
+        local written
+        local store={records=records,append=function(_,kind,_,value)
+            equal(kind,"startup_cadence_world_finalized"); written=value; return true
+        end,save_snapshot=function() return true end}
+        local proof={runId=run,processExitVerified=true,installationProcessTreeEmpty=true,oldRootPid=14328,
+            instanceOnlyLeaseVerified=true,noReplay=true,preserveSavedTransfers=true,noExternalReapply=true,nativeCalls=0,
+            certificateSha256="45a3328ee826697958f997f26356953ad469eabfb2eb34e1fbe25222427455ae",
+            journalSha256="0d92fee98b9bfd3adbebccf143a2cd44bc05cb87ec97e6eb7dcbad5a2736aa1b",
+            snapshotSha256="a5610801008d136212a48aa75e4781f8e56122eb0bc0b65988339326fac7768c",
+            evidenceManifestSha256="82a0f705074dde66b8c73e32d54c03afef1a774f0f720831add56f39ad1defb3",
+            breadcrumbsSha256="5192e3d3378d6fc205edb15b510e2c1774d644e7866608deb6f2b4e021c7aad1",
+            missingAfterStep="1788992144-2197-start-projectile-creation-observation",
+            serverExecutableSha256="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02",
+            serverPakSha256="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"}
+        for _,key in ipairs({"processExitVerified","installationProcessTreeEmpty","instanceOnlyLeaseVerified","noReplay","preserveSavedTransfers","noExternalReapply"}) do
+            proof[key]=false
+            equal(pcall(Startup.finalize_cadence_world,store,proof),false); equal(written,nil)
+            proof[key]=true
+        end
+        records[40].kind="startup_cleanup_intent"
+        equal(pcall(Startup.finalize_cadence_world,store,proof),false); equal(written,nil)
+        records[40].kind="startup_test_stage"
+        truthy(Startup.finalize_cadence_world(store,proof))
+        equal(state.status,"failed"); equal(state.cadence.status,"UNRESOLVED")
+        equal(written.status,"blocked"); equal(written.npcsFinalized,1); equal(written.helpersFinalized,1)
+        equal(written.cleaned,0); equal(written.helpersCleaned,0)
+        equal(written.cadence.status,"UNRESOLVED"); equal(written.cadence.runtimeDisposition,"WORLD_FINALIZED")
+        equal(written.cadence.restorationVerified,nil); equal(written.cadence.disposalVerified,nil)
+        truthy(Cadence.settled(written.cadence)); equal(Cadence.passed(written.cadence),false)
+        truthy(Startup.validate_state(written,run))
+        written.finalization.certificateSha256=string.rep("0",64)
+        equal(pcall(Startup.validate_state,written,run),false)
+        written.finalization.certificateSha256=proof.certificateSha256
+        written.cadence.restorationVerified=true
+        equal(pcall(Startup.validate_state,written,run),false)
+        written.cadence.restorationVerified=nil
+        for _,pair in ipairs({{"RESTORED","restorationVerified"},{"DISPOSED","disposalVerified"}}) do
+            written.cadence.status=pair[1]
+            written.cadence[pair[2]]=true
+            equal(Cadence.settled(written.cadence),false); equal(Cadence.passed(written.cadence),false)
+            equal(pcall(Startup.validate_state,written,run),false)
+            written.cadence.status="UNRESOLVED"
+            written.cadence[pair[2]]=nil
+        end
+        truthy(Startup.validate_state(written,run))
+    end)
+
     test("startup class catalog qualifies all entries without requesting a world or NPC", function()
         local f = fixture("class-catalog")
         f.not_ready = true

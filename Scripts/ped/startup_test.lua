@@ -14,6 +14,33 @@ Test.__index = Test
 local CASES = { ["spawn-cleanup"] = 1, movement = 1, ["two-base-movement"] = 2, prewarm = 1, engagement = 1,
     ["class-catalog"] = 1, ["surface-survey"] = 1, [Shape.CASE] = 1, [Shape.ENGAGEMENT_CASE] = 1, [Cadence.CASE] = 1 }
 local TERMINAL = { passed = true, failed = true, blocked = true }
+local WORLD_FINALIZED = {
+    runId="20260909-221539-b5664f1858dd4afcab2f296570f197e1",
+    sourceRevision="29bea671d8cafc3588fa1c12bcf7c0ecbee0db48",
+    artifactSha256="d3b4a9b6628189cbfa0545e6ca4ce593fedfa19265e708e645695aa2e79cf274",
+    certificateSha256="45a3328ee826697958f997f26356953ad469eabfb2eb34e1fbe25222427455ae",
+    journalSha256="0d92fee98b9bfd3adbebccf143a2cd44bc05cb87ec97e6eb7dcbad5a2736aa1b",
+    snapshotSha256="a5610801008d136212a48aa75e4781f8e56122eb0bc0b65988339326fac7768c",
+    evidenceManifestSha256="82a0f705074dde66b8c73e32d54c03afef1a774f0f720831add56f39ad1defb3",
+    breadcrumbsSha256="5192e3d3378d6fc205edb15b510e2c1774d644e7866608deb6f2b4e021c7aad1",
+    missingAfterStep="1788992144-2197-start-projectile-creation-observation",
+}
+
+local function world_finalization_proof(state,evidence)
+    if type(evidence)~="table" or state.case~=Cadence.CASE then return false end
+    for _,key in ipairs({"runId","sourceRevision","artifactSha256"}) do
+        if state[key]~=WORLD_FINALIZED[key] then return false end
+    end
+    for _,key in ipairs({"runId","certificateSha256","journalSha256","snapshotSha256",
+        "evidenceManifestSha256","breadcrumbsSha256","missingAfterStep"}) do
+        if evidence[key]~=WORLD_FINALIZED[key] then return false end
+    end
+    return evidence.processExitVerified==true and evidence.installationProcessTreeEmpty==true
+        and evidence.oldRootPid==14328 and evidence.instanceOnlyLeaseVerified==true and evidence.noReplay==true
+        and evidence.preserveSavedTransfers==true and evidence.noExternalReapply==true and evidence.nativeCalls==0
+        and evidence.serverExecutableSha256=="61c7d285a7a5072486ae099ae7c7c9be5ef0c34d843e06e05517e1f0bd157c02"
+        and evidence.serverPakSha256=="2e6a964a1fe2e8bd7d754648d35240e2c1567e780455aedd22f27dbc9dcedabe"
+end
 
 function Test.validate_state(state, run_id)
     assert(type(state) == "table" and state.schemaVersion == 1 and state.runId == run_id and CASES[state.case]
@@ -25,6 +52,13 @@ function Test.validate_state(state, run_id)
     if state.case==Cadence.CASE and state.cleanupComplete then
         assert(Cadence.settled(state.cadence),"Cadence lease cleanup is unresolved")
         if state.status=="passed" then assert(Cadence.passed(state.cadence),"Cadence lease was not restored or disposed") end
+        if state.cadence.runtimeDisposition=="WORLD_FINALIZED" then
+            assert(state.status=="blocked" and state.code=="cadence-world-finalized"
+                and state.failedArtifactSha256==state.artifactSha256 and state.npcsFinalized==1 and state.helpersFinalized==1
+                and state.spawned==1 and state.initialized==1 and state.cleaned==0
+                and state.helpersCreated==1 and state.helpersCleaned==0
+                and world_finalization_proof(state,state.finalization), "Cadence world finalization evidence is invalid")
+        end
     end
     assert(state.baseOrdinal==nil or (util.is_integer(state.baseOrdinal) and state.baseOrdinal>=1
         and state.baseOrdinal<=64 and state.case~="class-catalog"),"Startup test base selection is invalid")
@@ -256,6 +290,53 @@ function Test.finalize_snapshot_support_fault(store,evidence)
     state.finalization=util.deep_copy(evidence)
     state.finalization.disposition="deferred-noncharacter-world-ended; no-NPC-or-cadence-intent"
     local ok,reason=store:append("startup_snapshot_support_runtime_finalized",{disposition=state.finalization.disposition},state)
+    if not ok then return false,reason end
+    return store:save_snapshot(state)
+end
+
+function Test.finalize_cadence_world(store,evidence)
+    local last=store.records[#store.records]
+    local previous=last and last.state
+    assert(previous,"No cadence failure state is available")
+    Test.validate_state(previous,previous.runId)
+    assert(world_finalization_proof(previous,evidence),"Exact cadence-world exit and serialization evidence are required")
+    local cadence=previous.cadence
+    assert(#store.records==44 and last.sequence==44 and last.kind=="startup_test_failed"
+        and previous.status=="failed" and previous.code=="unclassified-lua-error" and previous.stage=="engagement"
+        and previous.mutationStarted and not previous.cleanupComplete and previous.baseOrdinal==3
+        and previous.spawned==1 and previous.initialized==1 and previous.cleaned==0
+        and previous.helpersCreated==1 and previous.helpersCleaned==0
+        and #previous.members==1 and #previous.helpers==1 and #previous.shapeObservations==2
+        and cadence.status=="UNRESOLVED" and cadence.active==false and cadence.retired==true and cadence.generation==2
+        and cadence.reason=="projectile-creation-native-fault" and cadence.appliedObserved==true
+        and cadence.priorSeconds==10 and math.abs(cadence.appliedSeconds-0.1)<0.0000001
+        and cadence.restorationVerified~=true and cadence.disposalVerified~=true
+        and cadence.runtimeDisposition==nil, "This failure is outside the exact cadence-world finalization scope")
+    local member=previous.members[1]
+    assert(member.characterId=="BOSS_Hunter_Rifle" and member.level==30 and member.index==1 and member.slot==1
+        and member.spawnRequested==true and member.initialized==true and not member.cleanupRequested and not member.cleaned
+        and member.instanceGuid and member.playerGuid and member.actorAddress,
+        "Cadence-world finalization lacks the recorded instance target")
+    for index,observation in ipairs(previous.shapeObservations) do
+        local receipt=observation.receipt
+        assert(observation.comparison=="MATCH" and receipt and receipt.sample==index
+            and receipt.runId==previous.runId and receipt.artifactSha256==previous.artifactSha256
+            and receipt.actorAddress==member.actorAddress, "Cadence-world instance receipt differs")
+    end
+    for _,record in ipairs(store.records) do
+        assert(record.kind~="startup_cadence_restore_intent" and record.kind~="startup_cadence_restored"
+            and record.kind~="startup_cleanup_intent" and record.kind~="startup_cleanup_completed",
+            "Unexpected runtime work prevents cadence-world finalization")
+    end
+    local state=util.deep_copy(previous)
+    state.status,state.code,state.cleanupComplete="blocked","cadence-world-finalized",true
+    state.failedArtifactSha256=previous.artifactSha256
+    state.npcsFinalized,state.helpersFinalized=1,1
+    state.cadence.runtimeDisposition="WORLD_FINALIZED"
+    state.cadence.worldFinalizationVerified=true
+    state.finalization=util.deep_copy(evidence)
+    state.finalization.disposition="old-runtime-only; unresolved-restoration-preserved; saved-transfers-preserved"
+    local ok,reason=store:append("startup_cadence_world_finalized",{disposition=state.finalization.disposition},state)
     if not ok then return false,reason end
     return store:save_snapshot(state)
 end
