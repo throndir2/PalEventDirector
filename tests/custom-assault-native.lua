@@ -996,6 +996,99 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("cadence movement telemetry distinguishes primary and cached async periods without changing them",function()
+        fixture(function(engine,member,f,_,actor)
+            local ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state)
+            local root={IsValid=function() return true end}
+            actor.RootComponent=root
+            actor.CharacterMovement={
+                IsValid=function() return true end,IsA=function() return true end,
+                GetOwner=function() return actor end,UpdatedComponent=root,
+                MovementMode=6,CustomMovementMode=2,Velocity={X=0,Y=0,Z=0},
+                IsMovingOnGround=function() return true end,IsFalling=function() return false end,
+                IsFlying=function() return false end,GetCurrentAcceleration=function() return {X=0,Y=0,Z=0} end,
+                IsActive=function() return false end,IsComponentTickEnabled=function() return true end,
+                GetComponentTickInterval=function() return 10 end,CacheTickInterval=0.25,ReserveTickInterval=-1,
+                GetGravityZ=function() return -980 end,
+                GetLastUpdateLocation=function() return {X=30,Y=40,Z=-50} end,
+                GetLastUpdateVelocity=function() return {X=0,Y=0,Z=-120} end,
+            }
+            actor.GetPendingMovementInputVector=function() return {X=0,Y=0,Z=120} end
+            actor.GetLastMovementInputVector=function() return {X=0,Y=0,Z=-80} end
+            actor.K2_GetActorRotation=function() return {Pitch=0,Yaw=10,Roll=0} end
+            local before=#f.calls
+            equal(pcall(engine._movement_observation,engine,state,true),false)
+            equal(#f.calls,before)
+            engine.simulationObservationQualified=true
+            local result=engine:_movement_observation(state,true)
+            equal(result.active,false); equal(result.tickEnabled,true)
+            equal(result.primaryInterval,10); equal(result.cacheInterval,0.25); equal(result.reserveInterval,-1)
+            equal(result.gravityZ,-980); equal(result.lastUpdateHeightFromActor,-50)
+            equal(result.lastUpdateVelocityZ,-120)
+            equal(actor.CharacterMovement.CacheTickInterval,0.25)
+            equal(f.spawns,1); equal(f.terminated,nil)
+        end)
+    end)
+
+    test("character simulation reads actual owned component flags without claiming full body coverage",function()
+        fixture(function(engine,member,f,_,actor,scope)
+            engine.simulationObservationQualified=true
+            actor.GetActiveActorFlag=function() return false end
+            actor.GetActorEnableCollision=function() return true end
+            actor.IsActorTickEnabled=function() return false end
+            actor.GetActorTickInterval=function() return 10 end
+            actor.ImportanceType=8
+            local function primitive(name,enabled,kind)
+                return {
+                    IsValid=function() return true end,
+                    IsA=function(_,path) return path=="/Script/Engine.PrimitiveComponent" end,
+                    GetOwner=function() return actor end,GetWorld=function() return scope.world end,
+                    GetGenerateOverlapEvents=function() return false end,
+                    GetCollisionEnabled=function() return enabled end,GetCollisionObjectType=function() return kind end,
+                    GetClass=function() return {
+                        IsValid=function() return true end,GetFName=function() return {ToString=function() return name end} end,
+                    } end,
+                }
+            end
+            actor.RootComponent=primitive("CapsuleComponent",3,2)
+            actor.Mesh=primitive("SkeletalMeshComponent",0,0)
+            local result=engine:_character_simulation(actor,scope.world)
+            equal(result.active,false); equal(result.collisionEnabled,true)
+            equal(result.tickEnabled,false); equal(result.importance,8); equal(result.bodyPartsSampled,false)
+            equal(result.root.overlapEvents,false); equal(result.root.collisionEnabled,3); equal(result.root.objectType,2)
+            equal(result.mesh.overlapEvents,false); equal(result.mesh.collisionEnabled,0)
+            actor.Mesh.GetOwner=function() return {} end
+            equal(pcall(engine._character_simulation,engine,actor,scope.world),false)
+            equal(f.spawns,1); equal(f.terminated,nil)
+        end)
+    end)
+
+    test("additional simulation sampling is limited to the matching active cadence lease",function()
+        fixture(function(engine,member,f,_,actor,scope)
+            engine._owned_state=function() return {phase="alive",actor=actor} end
+            engine._movement_observation=function(_,_,extended) f.extended=extended; return {} end
+            engine._character_simulation=function(_,selected,world)
+                equal(selected,actor); equal(world,scope.world)
+                f.simulationSamples=(f.simulationSamples or 0)+1
+                return {available=true}
+            end
+            local ok,result=engine:startup_combat_observation(scope,member,true)
+            truthy(ok,result); equal(result.simulation,nil); equal(f.extended,nil)
+            local record=engine.records[member.groupId..":"..member.index]
+            engine.cadenceLease={record=record,retired=false,check=function() return true end,runner={state={cadence={}}}}
+            ok,result=engine:startup_combat_observation(scope,member,true)
+            truthy(ok,result); equal(f.extended,true); equal(f.simulationSamples,1)
+            truthy(result.simulation.actor.available)
+            engine.cadenceLease.record={}
+            ok,result=engine:startup_combat_observation(scope,member,true)
+            truthy(ok,result); equal(result.simulation,nil); equal(f.extended,false); equal(f.simulationSamples,1)
+            engine.cadenceLease.record=record; engine.cadenceLease.retired=true
+            ok,result=engine:startup_combat_observation(scope,member,true)
+            truthy(ok,result); equal(result.phase,"cadence-ended"); equal(f.simulationSamples,1)
+        end)
+    end)
+
     test("startup arrival requires grounded feet near the actual navigation goal, not just matching XY", function()
         fixture(function(engine,member,f,_,actor,scope)
             scope.leashRadius=10000

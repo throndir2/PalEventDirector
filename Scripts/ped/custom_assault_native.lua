@@ -282,6 +282,29 @@ function Native:_class(path)
     return class
 end
 
+function Native:qualify_simulation_observation()
+    for _,path in ipairs({
+        "/Script/Pal.PalCharacter:GetActiveActorFlag",
+        "/Script/Engine.Actor:GetActorEnableCollision",
+        "/Script/Engine.Actor:IsActorTickEnabled",
+        "/Script/Engine.ActorComponent:IsActive",
+        "/Script/Engine.ActorComponent:IsComponentTickEnabled",
+        "/Script/Engine.PrimitiveComponent:GetGenerateOverlapEvents",
+    }) do self:_signature(path,{ReturnValue={"BoolProperty",0}}) end
+    for _,path in ipairs({
+        "/Script/Engine.Actor:GetActorTickInterval",
+        "/Script/Engine.ActorComponent:GetComponentTickInterval",
+        "/Script/Engine.MovementComponent:GetGravityZ",
+    }) do self:_signature(path,{ReturnValue={"FloatProperty",0}}) end
+    for _,method in ipairs({"GetCollisionEnabled","GetCollisionObjectType"}) do
+        self:_signature("/Script/Engine.PrimitiveComponent:"..method,{ReturnValue={"ByteProperty",0}})
+    end
+    for _,method in ipairs({"GetLastUpdateLocation","GetLastUpdateVelocity"}) do
+        self:_signature("/Script/Engine.CharacterMovementComponent:"..method,{ReturnValue={"StructProperty",0}})
+    end
+    self.simulationObservationQualified=true
+end
+
 function Native:actor_world(actor)
     if not self.a.valid(actor) then return nil end
     local fn=self.bridge:_static_find("/Script/Engine.Actor:GetLevel")
@@ -509,7 +532,8 @@ function Native:_line_of_sight(actor, target, radius)
     return visible
 end
 
-function Native:_movement_observation(state)
+function Native:_movement_observation(state,simulation)
+    if simulation and not self.simulationObservationQualified then error(SCOPE,0) end
     local movement = self.a.unwrap(state.actor.CharacterMovement)
     local result = { available = self.a.valid(movement) }
     if not result.available then return result end
@@ -534,6 +558,57 @@ function Native:_movement_observation(state)
     if not finite(rotation.Pitch) or not finite(rotation.Roll) then error(SCOPE, 0) end
     result.pitch, result.roll = rotation.Pitch, rotation.Roll
     result.heightFromBase = state.heightFromBase
+    if simulation then
+        result.active=self:_call("movement-active",movement,"IsActive")
+        result.tickEnabled=self:_call("movement-tick-enabled",movement,"IsComponentTickEnabled")
+        result.primaryInterval=self:_call("movement-primary-interval",movement,"GetComponentTickInterval")
+        result.cacheInterval,result.reserveInterval=movement.CacheTickInterval,movement.ReserveTickInterval
+        result.gravityZ=self:_call("movement-gravity",movement,"GetGravityZ")
+        local location=vector(self:_call("movement-last-update-location",movement,"GetLastUpdateLocation"))
+        local velocity=vector(self:_call("movement-last-update-velocity",movement,"GetLastUpdateVelocity"))
+        result.lastUpdateDistanceFromActor=math.sqrt(distance_squared(location,state.location))
+        result.lastUpdateHeightFromActor=location.Z-state.location.Z
+        result.lastUpdateVelocityZ=velocity.Z
+        if type(result.active)~="boolean" or type(result.tickEnabled)~="boolean"
+            or not finite(result.primaryInterval) or result.primaryInterval<0
+            or not finite(result.cacheInterval) or not finite(result.reserveInterval) or not finite(result.gravityZ) then
+            error(SCOPE,0)
+        end
+    end
+    return result
+end
+
+function Native:_simulation_component(component,actor,world)
+    if not self.a.valid(component) then return {available=false} end
+    if not component:IsA("/Script/Engine.PrimitiveComponent")
+        or not self.a.same(self:_call("simulation-component-owner",component,"GetOwner"),actor)
+        or not self.a.same(self:_call("simulation-component-world",component,"GetWorld"),world) then error(SCOPE,0) end
+    local result={available=true,class=self:_class_name(component),
+        overlapEvents=self:_call("simulation-overlap-events",component,"GetGenerateOverlapEvents"),
+        collisionEnabled=self:_call("simulation-collision-enabled",component,"GetCollisionEnabled"),
+        objectType=self:_call("simulation-object-type",component,"GetCollisionObjectType")}
+    if type(result.overlapEvents)~="boolean" or not util.is_integer(result.collisionEnabled)
+        or result.collisionEnabled<0 or result.collisionEnabled>5
+        or not util.is_integer(result.objectType) or result.objectType<0 or result.objectType>31 then error(SCOPE,0) end
+    return result
+end
+
+function Native:_character_simulation(actor,world)
+    if not self.simulationObservationQualified or not self.a.valid(actor)
+        or not actor:IsA("/Script/Pal.PalCharacter") or not self.a.same(self:actor_world(actor),world) then error(SCOPE,0) end
+    local result={available=true,bodyPartsSampled=false,
+        active=self:_call("simulation-character-active",actor,"GetActiveActorFlag"),
+        collisionEnabled=self:_call("simulation-actor-collision",actor,"GetActorEnableCollision"),
+        tickEnabled=self:_call("simulation-actor-tick-enabled",actor,"IsActorTickEnabled"),
+        tickInterval=self:_call("simulation-actor-tick-interval",actor,"GetActorTickInterval"),
+        importance=actor.ImportanceType}
+    for _,key in ipairs({"active","collisionEnabled","tickEnabled"}) do
+        if type(result[key])~="boolean" then error(SCOPE,0) end
+    end
+    if not finite(result.tickInterval) or result.tickInterval<0
+        or not util.is_integer(result.importance) or result.importance<0 or result.importance>255 then error(SCOPE,0) end
+    result.root=self:_simulation_component(self.a.unwrap(actor.RootComponent),actor,world)
+    result.mesh=self:_simulation_component(self.a.unwrap(actor.Mesh),actor,world)
     return result
 end
 
@@ -578,12 +653,17 @@ function Native:startup_combat_observation(scope, member, movement_only)
     return self.bridge:_native_step("startup-combat-observation", function()
         local state = self:_owned_state(member.handle, member)
         local lease=self.cadenceLease
-        if lease and lease.record==self.records[member_key(member)] and (lease.retired or not lease:check()) then
+        local cadenced=lease and lease.record==self.records[member_key(member)]
+        if cadenced and (lease.retired or not lease:check()) then
             return {phase="cadence-ended",cadence=util.deep_copy(lease.runner.state.cadence)}
         end
         if state.phase ~= "alive" and state.phase ~= "escaped" then return { phase = state.phase } end
-        local result = { phase = state.phase, movement = self:_movement_observation(state) }
+        local result = { phase = state.phase, movement = self:_movement_observation(state,cadenced) }
         if lease then result.cadence=util.deep_copy(lease.runner.state.cadence) end
+        if cadenced then
+            result.simulation={actor=self:_character_simulation(state.actor,scope.world),
+                target={available=false,reason="no-scoped-target"},weapon={available=false}}
+        end
         if movement_only or state.phase ~= "alive" then return result end
         local actions = self:_call("startup-current-ai", state.controller, "GetAIActionComponent")
         local action = self:_call("startup-current-action", actions, "GetCurrentAction_BP")
@@ -608,6 +688,12 @@ function Native:startup_combat_observation(scope, member, movement_only)
         local weapon, ready = self:_weapon_readiness(state.controller)
         result.weaponHandle = self.a.valid(weapon)
         result.weaponReady = ready
+        if cadenced and result.weaponHandle and ready then
+            local class=weapon:GetClass()
+            if not self.a.valid(class) then error(SCOPE,0) end
+            result.simulation.weapon={available=true,class=self:_class_name(weapon),
+                exactRifleFamily=class:GetFullName()=="BlueprintGeneratedClass /Game/Pal/Blueprint/Weapon/NPCWeapon/BP_AssaultRifle_NPC.BP_AssaultRifle_NPC_C"}
+        end
         if self.a.valid(action) and action:IsA(CLASSES.combat) then
             result.stopTick = action.IsStopTick
             local machine = self.a.unwrap(action.StateMachine)
@@ -640,7 +726,16 @@ function Native:startup_combat_observation(scope, member, movement_only)
                 result.magazineEmpty = self:_call("startup-magazine-empty", weapon, "IsMagazineEmpty")
                 if not util.is_integer(result.remainingBullets) or result.remainingBullets < 0
                     or type(result.magazineEmpty) ~= "boolean" then error(SCOPE, 0) end
-                if result.actualTarget and self:_character_scope(target,scope) == true then
+                local scoped,target_parameter
+                if result.actualTarget then scoped,target_parameter=self:_character_scope(target,scope) end
+                if scoped == true then
+                    if cadenced then
+                        if self.a.guid(self:_call("simulation-target-base",target_parameter,"GetBaseCampId"))==scope.baseId then
+                            result.simulation.target=self:_character_simulation(target,scope.world)
+                        else
+                            result.simulation.target={available=false,reason="target-not-exact-base"}
+                        end
+                    end
                     result.lineOfSight = self:_line_of_sight(state.actor, target, self:_shot_radius(weapon))
                     local location = vector(self:_call("startup-actual-target-location", target, "K2_GetActorLocation"))
                     result.actualTargetHeightDelta = location.Z - state.location.Z

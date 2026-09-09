@@ -170,6 +170,11 @@ return function(test,equal,truthy)
             equal(fields.target[2],8); equal(fields.targetCharacter[2],16); equal(fields.ReturnValue,nil)
             fields=f.signatures["/Script/Engine.ActorComponent:SetComponentTickIntervalAndCooldown"]
             equal(fields.TickInterval[1],"FloatProperty"); equal(fields.TickInterval[2],0)
+            fields=f.signatures["/Script/Pal.PalCharacter:GetActiveActorFlag"]
+            equal(fields.ReturnValue[1],"BoolProperty"); equal(fields.ReturnValue[2],0)
+            fields=f.signatures["/Script/Engine.CharacterMovementComponent:GetLastUpdateLocation"]
+            equal(fields.ReturnValue[1],"StructProperty"); equal(fields.ReturnValue[2],0)
+            truthy(f.native.simulationObservationQualified)
             equal(#f.sets,0)
         end)
 

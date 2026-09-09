@@ -73,6 +73,7 @@ function Cadence.register(bridge,native)
         if not native.a.valid(fn) or fn:GetFunctionFlags()~=0x00220cc0 then error(ERROR,0) end
         native:_signature(SETTER,{TickInterval={"FloatProperty",0}})
         native:_signature(GETTER,{ReturnValue={"FloatProperty",0}})
+        native:qualify_simulation_observation()
     end)
     if not qualified then return false,"Cadence capture barrier layout is unsupported" end
     local ok=bridge:_native_step("cadence-barrier-register",function()
