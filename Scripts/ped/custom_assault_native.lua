@@ -302,6 +302,16 @@ function Native:qualify_simulation_observation()
     for _,method in ipairs({"GetLastUpdateLocation","GetLastUpdateVelocity"}) do
         self:_signature("/Script/Engine.CharacterMovementComponent:"..method,{ReturnValue={"StructProperty",0}})
     end
+    self:_signature("/Script/Engine.Actor:GetAllChildActors",{
+        ChildActors={"ArrayProperty",0},bIncludeDescendants={"BoolProperty",16},
+    })
+    self:_signature("/Script/Engine.Actor:GetParentActor",{ReturnValue={"ObjectProperty",0}})
+    self:_signature("/Script/Engine.Actor:GetComponentsByInterface",{
+        Interface={"ClassProperty",0},ReturnValue={"ArrayProperty",8},
+    })
+    self:_signature("/Script/Engine.PrimitiveComponent:GetCollisionResponseToChannel",{
+        Channel={"ByteProperty",0},ReturnValue={"ByteProperty",1},
+    })
     self.simulationObservationQualified=true
 end
 
@@ -578,11 +588,11 @@ function Native:_movement_observation(state,simulation)
     return result
 end
 
-function Native:_simulation_component(component,actor,world)
-    if not self.a.valid(component) then return {available=false} end
+function Native:_simulation_component(component,actor,world,source)
+    if component==nil or not Cadence.valid_checked(component) then return {available=false} end
     if not component:IsA("/Script/Engine.PrimitiveComponent")
-        or not self.a.same(self:_call("simulation-component-owner",component,"GetOwner"),actor)
-        or not self.a.same(self:_call("simulation-component-world",component,"GetWorld"),world) then error(SCOPE,0) end
+        or not Cadence.same_checked(self:_call("simulation-component-owner",component,"GetOwner"),actor)
+        or not Cadence.same_checked(self:_call("simulation-component-world",component,"GetWorld"),world) then error(SCOPE,0) end
     local result={available=true,class=self:_class_name(component),
         overlapEvents=self:_call("simulation-overlap-events",component,"GetGenerateOverlapEvents"),
         collisionEnabled=self:_call("simulation-collision-enabled",component,"GetCollisionEnabled"),
@@ -590,10 +600,77 @@ function Native:_simulation_component(component,actor,world)
     if type(result.overlapEvents)~="boolean" or not util.is_integer(result.collisionEnabled)
         or result.collisionEnabled<0 or result.collisionEnabled>5
         or not util.is_integer(result.objectType) or result.objectType<0 or result.objectType>31 then error(SCOPE,0) end
+    if source then
+        local channel=self:_call("simulation-source-type",source,"GetCollisionObjectType")
+        if not util.is_integer(channel) or channel<0 or channel>31 then error(SCOPE,0) end
+        result.responseToSource=self:_call("simulation-response-to-source",component,"GetCollisionResponseToChannel",channel)
+        result.sourceResponse=self:_call("simulation-source-response",source,"GetCollisionResponseToChannel",result.objectType)
+        for _,key in ipairs({"responseToSource","sourceResponse"}) do
+            if not util.is_integer(result[key]) or result[key]<0 or result[key]>2 then error(SCOPE,0) end
+        end
+        result.pairResponse=math.min(result.responseToSource,result.sourceResponse)
+    end
     return result
 end
 
-function Native:_character_simulation(actor,world)
+function Native:_simulation_body_parts(actor,world)
+    local children={}
+    local children_fn=self.bridge:_static_find("/Script/Engine.Actor:GetAllChildActors")
+    invoke_function(self,"simulation-child-actors",children_fn,actor,children,true)
+    if #children>16 then return nil,"child-actor-limit" end
+    local actors={actor}
+    local function contains(list,value)
+        for _,entry in ipairs(list) do if Cadence.same_checked(entry,value) then return true end end
+        return false
+    end
+    local parent_fn=self.bridge:_static_find("/Script/Engine.Actor:GetParentActor")
+    for _,child in ipairs(children) do
+        if not Cadence.valid_checked(child) or contains(actors,child) then return nil,"invalid-child-actor" end
+        local current,visited,rooted=child,{},false
+        for _=1,16 do
+            if not Cadence.valid_checked(current) or not current:IsA("/Script/Engine.Actor")
+                or not Cadence.same_checked(self:actor_world(current),world) or contains(visited,current) then
+                return nil,"child-actor-scope"
+            end
+            visited[#visited+1]=current
+            local parent=invoke_function(self,"simulation-parent-actor",parent_fn,current)
+            if parent==nil or not Cadence.valid_checked(parent) then return nil,"child-actor-parent" end
+            if Cadence.same_checked(parent,actor) then rooted=true; break end
+            current=parent
+        end
+        if not rooted then return nil,"child-actor-depth" end
+        actors[#actors+1]=child
+    end
+    local interface=self.bridge:_static_find("/Script/Pal.PalBodyPartsInterface")
+    if not Cadence.valid_checked(interface) or interface:IsClass()~=true
+        or interface:GetFullName()~="Class /Script/Pal.PalBodyPartsInterface" then error(SCOPE,0) end
+    local fn=self.bridge:_static_find("/Script/Engine.Actor:GetComponentsByInterface")
+    local parts,seen={},{}
+    for _,owner in ipairs(actors) do
+        local values=invoke_function(self,"simulation-body-parts",fn,owner,interface)
+        if type(values)~="table" then error(SCOPE,0) end
+        if #values>64-#parts then return nil,"body-part-limit" end
+        for _,part in ipairs(values) do
+            if not Cadence.valid_checked(part) or not part:IsA("/Script/Engine.PrimitiveComponent") then
+                return nil,"invalid-body-part"
+            end
+            local family=false
+            for _,shape in ipairs({"Sphere","Capsule","Box"}) do
+                if part:IsA("/Script/Pal.PalBodyParts"..shape.."Component") then family=true; break end
+            end
+            if not family then return nil,"unsupported-body-family" end
+            if not Cadence.same_checked(self:_call("simulation-body-owner",part,"GetOwner"),owner)
+                or not Cadence.same_checked(self:_call("simulation-body-world",part,"GetWorld"),world) then error(SCOPE,0) end
+            if contains(seen,part) then return nil,"duplicate-body-part" end
+            seen[#seen+1]=part
+            parts[#parts+1]={component=part,owner=owner}
+        end
+    end
+    if #parts==0 then return nil,"no-qualified-body-parts" end
+    return parts,nil,#children
+end
+
+function Native:_character_simulation(actor,world,source)
     if not self.simulationObservationQualified or not self.a.valid(actor)
         or not actor:IsA("/Script/Pal.PalCharacter") or not self.a.same(self:actor_world(actor),world) then error(SCOPE,0) end
     local result={available=true,bodyPartsSampled=false,
@@ -607,9 +684,82 @@ function Native:_character_simulation(actor,world)
     end
     if not finite(result.tickInterval) or result.tickInterval<0
         or not util.is_integer(result.importance) or result.importance<0 or result.importance>255 then error(SCOPE,0) end
-    result.root=self:_simulation_component(self.a.unwrap(actor.RootComponent),actor,world)
-    result.mesh=self:_simulation_component(self.a.unwrap(actor.Mesh),actor,world)
+    local root,mesh=self.a.unwrap(actor.RootComponent),self.a.unwrap(actor.Mesh)
+    result.root=self:_simulation_component(root,actor,world,source)
+    result.mesh=self:_simulation_component(mesh,actor,world,source)
+    if source then
+        result.bodyPartsSampled=true
+        local parts,reason,children=self:_simulation_body_parts(actor,world)
+        result.bodyPartsComplete=parts~=nil
+        result.bodyPartsReason,result.childActors=reason,children
+        result.bodyParts={}
+        for _,part in ipairs(parts or {}) do
+            if (root==nil or not Cadence.valid_checked(root) or not Cadence.same_checked(part.component,root))
+                and (mesh==nil or not Cadence.valid_checked(mesh) or not Cadence.same_checked(part.component,mesh)) then
+                result.bodyParts[#result.bodyParts+1]=self:_simulation_component(part.component,part.owner,world,source)
+            end
+        end
+    end
     return result
+end
+
+function Native:_simulation_target(scope,controller)
+    local actions=self:_call("simulation-current-ai",controller,"GetAIActionComponent")
+    if actions==nil or not Cadence.valid_checked(actions) then return nil,"ai-unavailable" end
+    local action=self:_call("simulation-current-action",actions,"GetCurrentAction_BP")
+    if action==nil or not Cadence.valid_checked(action) or not action:IsA(CLASSES.combat) then return nil,"no-combat-target" end
+    local target=self.a.unwrap(action.TargetActor)
+    if target==nil or not Cadence.valid_checked(target) then return nil,"target-unavailable" end
+    local scoped,parameter=self:_character_scope(target,scope)
+    if scoped~=true or self.a.guid(self:_call("simulation-current-target-base",parameter,"GetBaseCampId"))~=scope.baseId then
+        return nil,"target-not-exact-base"
+    end
+    return target
+end
+
+function Native:_simulation_receiver(actor,world,scope)
+    local visited={}
+    local parent_fn=self.bridge:_static_find("/Script/Engine.Actor:GetParentActor")
+    for _=1,16 do
+        if actor==nil or not Cadence.valid_checked(actor) then return nil,"receiver-unavailable" end
+        if not actor:IsA("/Script/Engine.Actor") or not Cadence.same_checked(self:actor_world(actor),world) then
+            return nil,"receiver-world"
+        end
+        for _,previous in ipairs(visited) do
+            if Cadence.same_checked(actor,previous) then return nil,"receiver-cycle" end
+        end
+        visited[#visited+1]=actor
+        if actor:IsA("/Script/Pal.PalCharacter") then
+            local scoped,parameter=self:_character_scope(actor,scope)
+            if scoped~=true or self.a.guid(self:_call("simulation-receiver-base",parameter,"GetBaseCampId"))~=scope.baseId then
+                return nil,"receiver-not-exact-base"
+            end
+            return actor
+        end
+        actor=invoke_function(self,"simulation-receiver-parent",parent_fn,actor)
+    end
+    return nil,"receiver-depth"
+end
+
+function Native:_simulation_weapon(actor,world,shooter)
+    if not self.simulationObservationQualified or not Cadence.valid_checked(actor)
+        or not actor:IsA("/Script/Pal.PalCharacter") or not Cadence.same_checked(self:actor_world(actor),world) then error(SCOPE,0) end
+    if not shooter then
+        local class=self:_class("/Script/Pal.PalShooterComponent")
+        shooter=self:_call("simulation-shooter",actor,"GetComponentByClass",class)
+    end
+    if shooter==nil or not Cadence.valid_checked(shooter) then return nil,"shooter-unavailable" end
+    if not shooter:IsA("/Script/Pal.PalShooterComponent")
+        or not Cadence.same_checked(self:_call("simulation-shooter-owner",shooter,"GetOwner"),actor)
+        or not Cadence.same_checked(self:_call("simulation-shooter-world",shooter,"GetWorld"),world) then error(SCOPE,0) end
+    local held=self:_call("simulation-held-weapon",shooter,"GetHasWeapon")
+    local npc=self.a.unwrap(shooter.NPCWeapon)
+    if held==nil or npc==nil or not Cadence.valid_checked(held) or not Cadence.valid_checked(npc) then
+        return nil,"held-weapon-unavailable"
+    end
+    if not Cadence.same_checked(held,npc) then return nil,"weapon-reference-mismatch" end
+    if not npc:IsA("/Script/Pal.PalWeaponBase") or not Cadence.same_checked(self:actor_world(npc),world) then error(SCOPE,0) end
+    return npc
 end
 
 function Native:_class_name(object)
@@ -662,7 +812,7 @@ function Native:startup_combat_observation(scope, member, movement_only)
         if lease then result.cadence=util.deep_copy(lease.runner.state.cadence) end
         if cadenced then
             result.simulation={actor=self:_character_simulation(state.actor,scope.world),
-                target={available=false,reason="no-scoped-target"},weapon={available=false}}
+                target={available=false,reason="no-scoped-target"},handle={available=false},weapon={available=false}}
         end
         if movement_only or state.phase ~= "alive" then return result end
         local actions = self:_call("startup-current-ai", state.controller, "GetAIActionComponent")
@@ -689,10 +839,7 @@ function Native:startup_combat_observation(scope, member, movement_only)
         result.weaponHandle = self.a.valid(weapon)
         result.weaponReady = ready
         if cadenced and result.weaponHandle and ready then
-            local class=weapon:GetClass()
-            if not self.a.valid(class) then error(SCOPE,0) end
-            result.simulation.weapon={available=true,class=self:_class_name(weapon),
-                exactRifleFamily=class:GetFullName()=="BlueprintGeneratedClass /Game/Pal/Blueprint/Weapon/NPCWeapon/BP_AssaultRifle_NPC.BP_AssaultRifle_NPC_C"}
+            result.simulation.handle={available=true,class=self:_class_name(weapon)}
         end
         if self.a.valid(action) and action:IsA(CLASSES.combat) then
             result.stopTick = action.IsStopTick
@@ -762,6 +909,17 @@ function Native:startup_combat_observation(scope, member, movement_only)
             result.storedShooterMatches = result.storedShooterValid and self.a.same(stored, state.actor)
         end
         if result.shooter then
+            if cadenced then
+                local equipped,reason=self:_simulation_weapon(state.actor,scope.world,shooter)
+                if equipped then
+                    local class=equipped:GetClass()
+                    if not Cadence.valid_checked(class) then error(SCOPE,0) end
+                    result.simulation.weapon={available=true,class=self:_class_name(equipped),
+                        exactRifleFamily=class:GetFullName()=="BlueprintGeneratedClass /Game/Pal/Blueprint/Weapon/NPCWeapon/BP_AssaultRifle_NPC.BP_AssaultRifle_NPC_C"}
+                else
+                    result.simulation.weapon={available=false,reason=reason}
+                end
+            end
             result.equippedWeapon = self.a.valid(self:_call("startup-equipped-weapon",shooter,"GetHasWeapon"))
             result.npcWeapon = self.a.valid(self.a.unwrap(shooter.NPCWeapon))
             if result.weaponReady and result.equippedWeapon and result.npcWeapon then

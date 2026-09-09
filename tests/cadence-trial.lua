@@ -5,7 +5,7 @@ return function(test,equal,truthy)
     local Config=require("ped.config")
     local util=require("ped.util")
     local function fixture(callback)
-        local f={gt=true,interval=10,sets={},events={},reads=0,queued=0,boundaries={},errors={},writes=0,nextAddress=0}
+        local f={gt=true,interval=10,sets={},events={},reads=0,queued=0,boundaries={},errors={},writes=0,nextAddress=0,hooks={}}
         local function object(values)
             values=values or {}
             f.nextAddress=f.nextAddress+1
@@ -109,8 +109,13 @@ return function(test,equal,truthy)
             PAL_EVENT_DIRECTOR_SERVER_BUILD_ID="25080279",PAL_EVENT_DIRECTOR_UE4SS_TAG="2281fa31",PAL_EVENT_DIRECTOR_UE4SS_API_VERSION="3.0.1"}
         os.getenv=function(key) return env[key] end
         _G.RegisterHook=function(path,pre,post)
-            equal(path,Cadence.BARRIER); equal(bridge.registeringHooks,true)
-            f.pre,f.post=pre,post
+            equal(bridge.registeringHooks,true)
+            f.hooks[path]={pre=pre,post=post}
+            if path==Cadence.BARRIER then f.pre,f.post=pre,post
+            else
+                local observer=require("ped.projectile_observer")
+                truthy(path==observer.CREATED or path==observer.HIT)
+            end
             return f.badIDs and 1 or 11,f.badIDs and 1 or 12
         end
         f.native,f.bridge,f.runner,f.actor,f.controller,f.component,f.parameter,f.member=native,bridge,runner,actor,controller,component,parameter,member
@@ -147,6 +152,67 @@ return function(test,equal,truthy)
         local ok,reason=xpcall(function() callback(f,object) end,debug.traceback)
         _G.IsInGameThread,_G.ExecuteInGameThread,os.getenv,_G.RegisterHook=previousGT,previousQueue,previousGetenv,previousRegister
         truthy(ok,reason)
+    end
+
+    local function projectiles(f,object)
+        local Observer=require("ped.projectile_observer")
+        local world=f.lease.world
+        local function class(name,full)
+            return object({GetFName=function() return {ToString=function() return name end} end,
+                GetFullName=function() return full or "Class /Script/Engine."..name end})
+        end
+        local weaponClass=class("BP_AssaultRifle_NPC_C",Observer.RIFLE)
+        local weapon=object({world=world,GetClass=function() return weaponClass end})
+        local bulletClass=class("BP_NormalBullet_NPC_C",Observer.BULLET)
+        local bullet=object({world=world,isDamageable=true,GetClass=function() return bulletClass end,
+            GetOwner=function() return f.bulletOwner or weapon end,
+            GetActorEnableCollision=function() return true end,GetWeaponDamage=function() return 100 end})
+        local target=object({world=world})
+        local function primitive(owner,name,kind)
+            local which=class(name)
+            return object({Mobility=2,IsA=function(_,path) return path=="/Script/Engine.PrimitiveComponent" end,
+                GetClass=function() return which end,GetOwner=function() return owner end,GetWorld=function() return world end,
+                GetGenerateOverlapEvents=function() return true end,GetCollisionEnabled=function() return 3 end,
+                GetCollisionObjectType=function() return kind end,GetCollisionResponseToChannel=function() return 1 end})
+        end
+        local source=primitive(bullet,"SphereComponent",1)
+        local receiver=primitive(target,"PalBodyPartsCapsuleComponent",2)
+        bullet.RootComponent=source
+        bullet.ProjectileMovement=object({UpdatedComponent=source,Velocity={X=12000,Y=0,Z=0},
+            bSimulationEnabled=true,bSweepCollision=true,bUpdateOnlyIfRendered=false,
+            IsA=function(_,path) return path=="/Script/Pal.PalProjectileMovementComponent" end,
+            GetOwner=function() return bullet end,GetWorld=function() return world end,
+            IsActive=function() return true end,IsComponentTickEnabled=function() return true end,
+            GetComponentTickInterval=function() return 0 end})
+        f.native.utility=object({IsApplicableDamage=function(_,causer,other,component)
+            equal(causer,bullet); equal(other,target); equal(component,receiver)
+            return true
+        end})
+        f.native._simulation_weapon=function(_,actor,which)
+            equal(actor,f.actor); equal(which,world)
+            return weapon
+        end
+        f.native._simulation_target=function() return target end
+        f.native._simulation_receiver=function(_,actor)
+            return actor==target and target or nil,"unscoped-receiver"
+        end
+        f.native._character_simulation=function(_,_,which,component)
+            equal(which,world); equal(component,source)
+            f.bodySamples=(f.bodySamples or 0)+1
+            if f.nestedCreation then f:createBulletEvent() end
+            return {available=true,bodyPartsSampled=true,bodyPartsComplete=true,bodyParts={{overlapEvents=false}}}
+        end
+        f.bullet,f.projectileWeapon,f.projectileSource,f.projectileTarget,f.projectileReceiver=bullet,weapon,source,target,receiver
+        local function remote(value) return {get=function() return value end} end
+        function f:createBulletEvent(value,owner)
+            if value==nil then value=bullet elseif value==false then value=nil end
+            return self.hooks[Observer.CREATED].post(remote(owner or weapon),remote(value))
+        end
+        function f:hitBulletEvent(value)
+            return self.hooks[Observer.HIT].pre(remote(value or bullet),remote(source),remote(target),remote(receiver),
+                {get=function() error("unsafe HitResult decode") end})
+        end
+        return Observer
     end
 
     test("cadence contract requires the explicit capture restriction and fixed interval",function()
@@ -539,5 +605,88 @@ return function(test,equal,truthy)
             f:acquire(); f.env.PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN="different-run"
             equal(f.lease:check(),false); equal(#f.sets,1); equal(f.runner.state.cadence.status,"UNRESOLVED")
         end)
+    end)
+
+    test("natural projectile witnesses use creation post and hit pre without retaining native references",function()
+        fixture(function(f,object)
+            f:acquire()
+            local Observer=projectiles(f,object)
+            equal(f.hooks[Observer.CREATED].pre(),nil)
+            equal(f.hooks[Observer.HIT].post(),nil)
+            f:hitBulletEvent()
+            f:createBulletEvent()
+            local evidence=f.runner.state.projectileObservation
+            equal(#evidence.creations,1); equal(#evidence.hits,1)
+            equal(evidence.creations[1].phase,"created-notification-post")
+            equal(evidence.creations[1].projectile.speed,12000)
+            equal(evidence.creations[1].projectile.updateOnlyIfRendered,false)
+            equal(evidence.hits[1].phase,"hit-native-pre")
+            equal(evidence.hits[1].contact,"exact-base-character")
+            equal(evidence.hits[1].applicable,true); equal(evidence.hits[1].receiver.pairResponse,1)
+            equal(evidence.hits[1].independentOfCreationSamples,true)
+            equal(evidence.hits[1].damageSetupFinalized,"unknown")
+            equal(evidence.laterMotionSampled,false); equal(#f.sets,1)
+            local function scalars(value)
+                truthy(type(value)~="function" and type(value)~="userdata")
+                if type(value)=="table" then for _,child in pairs(value) do scalars(child) end end
+            end
+            scalars(evidence)
+        end)
+    end)
+
+    test("projectile observers cap independent samples and reject foreign or reused ownership",function()
+        fixture(function(f,object)
+            f:acquire()
+            local Observer=projectiles(f,object)
+            f:createBulletEvent(nil,object())
+            equal(#f.runner.state.projectileObservation.creations,0)
+            f.bulletOwner=object()
+            f:hitBulletEvent()
+            equal(#f.runner.state.projectileObservation.hits,0)
+            f.bulletOwner=nil
+            for _=1,5 do f:createBulletEvent(); f:hitBulletEvent() end
+            local evidence=f.runner.state.projectileObservation
+            equal(#evidence.creations,3); equal(#evidence.hits,3)
+            truthy(evidence.creationSamplingCapped); truthy(evidence.hitSamplingCapped)
+            local boundaries=#f.boundaries
+            f.hooks[Observer.CREATED].post({}, {})
+            f.hooks[Observer.HIT].pre({}, {}, {}, {}, {})
+            equal(#f.boundaries,boundaries); equal(#f.sets,1)
+        end)
+    end)
+
+    test("projectile creation reservations bound nested observations and preserve invalid results",function()
+        fixture(function(f,object)
+            f:acquire(); projectiles(f,object)
+            f.nestedCreation=true
+            f:createBulletEvent()
+            equal(#f.runner.state.projectileObservation.creations,3)
+            equal(f.native.projectileObserver.creationAttempts,3); equal(#f.sets,1)
+        end)
+        fixture(function(f,object)
+            f:acquire(); projectiles(f,object)
+            f:createBulletEvent(false)
+            local record=f.runner.state.projectileObservation.creations[1]
+            equal(record.bulletAvailable,false); equal(record.projectile,nil)
+            equal(f.bodySamples,nil); equal(f.bridge.native_fault,nil)
+        end)
+    end)
+
+    test("projectile read faults and off-thread callbacks retire the lease without more native work",function()
+        for _,kind in ipairs({"read","thread","journal"}) do
+            fixture(function(f,object)
+                f:acquire(); projectiles(f,object)
+                if kind=="read" then f.bullet.GetOwner=function() error("fixture private projectile error") end end
+                if kind=="thread" then f.gt=false end
+                if kind=="journal" then f.failRecord="startup_projectile_creation" end
+                f:createBulletEvent()
+                equal(f.lease.active,false); equal(f.lease.status,"UNRESOLVED")
+                truthy(f.bridge.native_fault); equal(Cadence.passed(f.runner.state.cadence),false)
+                local boundaries=#f.boundaries
+                f:createBulletEvent(); f:hitBulletEvent()
+                equal(#f.boundaries,boundaries); equal(#f.sets,1)
+                for _,message in ipairs(f.errors) do equal(message:find("fixture private",1,true),nil) end
+            end)
+        end
     end)
 end

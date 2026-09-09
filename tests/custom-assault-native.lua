@@ -1034,6 +1034,8 @@ return function(test, equal, truthy)
     test("character simulation reads actual owned component flags without claiming full body coverage",function()
         fixture(function(engine,member,f,_,actor,scope)
             engine.simulationObservationQualified=true
+            actor.GetAddress=function() return 1 end
+            scope.world.GetAddress=function() return 2 end
             actor.GetActiveActorFlag=function() return false end
             actor.GetActorEnableCollision=function() return true end
             actor.IsActorTickEnabled=function() return false end
@@ -1058,9 +1060,86 @@ return function(test, equal, truthy)
             equal(result.tickEnabled,false); equal(result.importance,8); equal(result.bodyPartsSampled,false)
             equal(result.root.overlapEvents,false); equal(result.root.collisionEnabled,3); equal(result.root.objectType,2)
             equal(result.mesh.overlapEvents,false); equal(result.mesh.collisionEnabled,0)
+            local source=primitive("SphereComponent",3,1)
+            source.GetCollisionResponseToChannel=function(_,channel) equal(channel,2); return 1 end
+            actor.RootComponent.GetCollisionResponseToChannel=function(_,channel) equal(channel,1); return 0 end
+            local pair=engine:_simulation_component(actor.RootComponent,actor,scope.world,source)
+            equal(pair.responseToSource,0); equal(pair.sourceResponse,1); equal(pair.pairResponse,0)
             actor.Mesh.GetOwner=function() return {} end
             equal(pcall(engine._character_simulation,engine,actor,scope.world),false)
             equal(f.spawns,1); equal(f.terminated,nil)
+        end)
+    end)
+
+    test("body-part enumeration follows qualified child actors with fresh bounded arrays",function()
+        fixture(function(engine,member,f,_,actor,scope)
+            actor.GetAddress=function() return 1 end
+            scope.world.GetAddress=function() return 2 end
+            local nextAddress=2
+            local function object(values)
+                values=values or {}
+                nextAddress=nextAddress+1
+                local address=nextAddress
+                values.IsValid=function() return true end
+                values.GetAddress=function() return address end
+                return values
+            end
+            local child=object({IsA=function(_,path) return path=="/Script/Engine.Actor" end})
+            local grandchild=object({IsA=child.IsA})
+            local parents={[child]=actor,[grandchild]=child}
+            local children={child,grandchild}
+            local function part(owner,family)
+                local result=object({owner=owner,
+                    IsA=function(_,path) return path=="/Script/Engine.PrimitiveComponent"
+                        or (not f.badFamily and path=="/Script/Pal.PalBodyParts"..family.."Component") end,
+                    GetOwner=function(self) return self.owner end,GetWorld=function() return scope.world end})
+                return result
+            end
+            local rootPart,childPart,grandPart=part(actor,"Sphere"),part(child,"Capsule"),part(grandchild,"Box")
+            local parts={[actor]={rootPart},[child]={childPart},[grandchild]={grandPart}}
+            local interface=object({IsClass=function() return true end,
+                GetFullName=function() return "Class /Script/Pal.PalBodyPartsInterface" end})
+            local oldFind=engine.bridge._static_find
+            local function callable(callback)
+                return setmetatable(object(),{__call=function(_,...) return callback(...) end})
+            end
+            local oldOutput
+            local childFn=callable(function(receiver,output,descendants)
+                equal(receiver,actor); equal(descendants,true); truthy(output~=oldOutput); equal(#output,0)
+                oldOutput=output
+                for index,value in ipairs(children) do output[index]=value end
+            end)
+            local parentFn=callable(function(receiver) return parents[receiver] end)
+            local partFn=callable(function(receiver,actualInterface)
+                equal(actualInterface,interface)
+                return parts[receiver]
+            end)
+            function engine.bridge:_static_find(path)
+                if path=="/Script/Engine.Actor:GetAllChildActors" then return childFn end
+                if path=="/Script/Engine.Actor:GetParentActor" then return parentFn end
+                if path=="/Script/Engine.Actor:GetComponentsByInterface" then return partFn end
+                if path=="/Script/Pal.PalBodyPartsInterface" then return interface end
+                return oldFind(self,path)
+            end
+            actor.GetAllChildActors=function() error("shadow child helper invoked") end
+            child.GetParentActor=function() error("shadow parent helper invoked") end
+            local result,reason,count=engine:_simulation_body_parts(actor,scope.world)
+            equal(reason,nil); equal(count,2); equal(#result,3)
+            equal(result[2].owner,child); equal(result[3].owner,grandchild)
+            childPart.owner=actor
+            equal(pcall(engine._simulation_body_parts,engine,actor,scope.world),false)
+            childPart.owner=child
+            parents[grandchild]=grandchild
+            result,reason=engine:_simulation_body_parts(actor,scope.world)
+            equal(result,nil); equal(reason,"child-actor-scope")
+            parents[grandchild]=child
+            f.badFamily=true
+            result,reason=engine:_simulation_body_parts(actor,scope.world)
+            equal(result,nil); equal(reason,"unsupported-body-family")
+            f.badFamily=false
+            for index=1,17 do children[index]=child end
+            result,reason=engine:_simulation_body_parts(actor,scope.world)
+            equal(result,nil); equal(reason,"child-actor-limit")
         end)
     end)
 
@@ -1086,6 +1165,35 @@ return function(test, equal, truthy)
             engine.cadenceLease.record=record; engine.cadenceLease.retired=true
             ok,result=engine:startup_combat_observation(scope,member,true)
             truthy(ok,result); equal(result.phase,"cadence-ended"); equal(f.simulationSamples,1)
+        end)
+    end)
+
+    test("simulation weapon identity uses the owned shooter references rather than the AI handle",function()
+        fixture(function(engine,member,f,_,actor,scope)
+            engine.simulationObservationQualified=true
+            actor.GetAddress=function() return 1 end
+            scope.world.GetAddress=function() return 2 end
+            f:weapon(true)
+            local ok,state=engine:inspect(member.handle,member)
+            truthy(ok,state)
+            local proxy=state.controller.WeaponHandle
+            proxy.GetAddress=function() return 3 end
+            local weapon={IsValid=function() return true end,GetAddress=function() return 4 end,
+                IsA=function(_,path) return path=="/Script/Pal.PalWeaponBase" end}
+            local held=weapon
+            local shooter={IsValid=function() return true end,
+                IsA=function(_,path) return path=="/Script/Pal.PalShooterComponent" end,
+                GetOwner=function() return actor end,GetWorld=function() return scope.world end,
+                GetHasWeapon=function() f.heldReads=(f.heldReads or 0)+1; return held end,NPCWeapon=weapon}
+            equal(engine:_simulation_weapon(actor,scope.world,shooter),weapon)
+            truthy(weapon~=proxy)
+            held=proxy
+            local result,reason=engine:_simulation_weapon(actor,scope.world,shooter)
+            equal(result,nil); equal(reason,"weapon-reference-mismatch")
+            local reads=f.heldReads
+            actor.GetAddress=function() error("fixture private identity error") end
+            equal(pcall(engine._simulation_weapon,engine,actor,scope.world,shooter),false)
+            equal(f.heldReads,reads)
         end)
     end)
 

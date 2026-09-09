@@ -1,5 +1,6 @@
 local util = require("ped.util")
 local invoke = require("ped.native_observer").invoke
+local ProjectileObserver = require("ped.projectile_observer")
 
 local Cadence = {}
 Cadence.__index = Cadence
@@ -34,6 +35,11 @@ local function checked_address(object)
     local result=object:GetAddress()
     if not finite(result) or not util.is_integer(result) or result<=0 then error(ERROR,0) end
     return result
+end
+
+Cadence.valid_checked=checked_validity
+function Cadence.same_checked(left,right)
+    return checked_address(left)==checked_address(right)
 end
 
 function Cadence.plan_valid(plan)
@@ -83,6 +89,7 @@ function Cadence.register(bridge,native)
         if not registered then error(ERROR,0) end
     end)
     if not ok then return false,"Cadence capture barrier registration failed" end
+    if not ProjectileObserver.register(bridge,native,Cadence) then return false,"Projectile observer registration failed" end
     bridge.cadenceBarrier={ready=true,native=native,runner=runner,runId=runner.state.runId,artifact=runner.state.artifactSha256}
     return true
 end
@@ -119,7 +126,7 @@ function Cadence.capture_pre(bridge,...)
     local context,_,sphere,target=...
     local identity_ok,matches=bridge:_native_step("cadence-capture-identity",function()
         local actor=target:get()
-        return checked_address(actor)==checked_address(lease.actor)
+        return Cadence.same_checked(actor,lease.actor)
     end)
     if not identity_ok then
         lease:unresolved("capture-identity-unreadable")

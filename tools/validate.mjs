@@ -31,6 +31,7 @@ const required = [
   'Scripts/ped/path.lua',
   'Scripts/ped/placement_search.lua',
   'Scripts/ped/preflight_diagnostic.lua',
+  'Scripts/ped/projectile_observer.lua',
   'Scripts/ped/native_experiments.lua',
   'Scripts/ped/native_layout.lua',
   'Scripts/ped/native_observer.lua',

@@ -58,6 +58,7 @@ const packageFiles = [
   'Scripts/ped/path.lua',
   'Scripts/ped/placement_search.lua',
   'Scripts/ped/preflight_diagnostic.lua',
+  'Scripts/ped/projectile_observer.lua',
   'Scripts/ped/rewards.lua',
   'Scripts/ped/scheduler.lua',
   'Scripts/ped/scoreboard.lua',
