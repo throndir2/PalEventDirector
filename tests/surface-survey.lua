@@ -116,7 +116,10 @@ return function(test,equal,truthy)
             same=function(a,b) return a==b end,unwrap=function(v) return v end,text=function(v) return v end}
         native._signature=function() end
         native._class=function(_,path) equal(path,WATER_CLASS); return object() end
-        native._call=function(_,_,owner,method,...) return owner[method](owner,...) end
+        native._call=function(_,label,owner,method,...)
+            truthy(label:match("^[a-z0-9%-]+$"),"native breadcrumb labels must remain lowercase slugs")
+            return owner[method](owner,...)
+        end
         native.collision_profile=Native.collision_profile
         native.placement_collision_model=Native.placement_collision_model
         native.placement_mesh_policy=Native.placement_mesh_policy

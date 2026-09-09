@@ -176,11 +176,17 @@ function Test.finalize_shape_support_fault(store,evidence)
     local previous=last and last.state
     assert(previous,"No startup support state is available")
     Test.validate_state(previous,previous.runId)
-    assert(previous.runId=="20260909-074037-19fcb48d81ce4063b5c8fe64017c1b9c"
+    local weak_fault=previous.runId=="20260909-074037-19fcb48d81ce4063b5c8fe64017c1b9c"
         and previous.sourceRevision=="10fb2eb52a351eed9b8ec5432d30a47991149e4d"
         and previous.artifactSha256=="6c90bc5493830d7178cdb444426fde15feab416afdd21aba856a3fc538b95c0a"
         and previous.case==Shape.CASE and previous.experiment==Shape.CONTRACT
-        and previous.status=="failed" and previous.stage=="spawn" and previous.code=="unclassified-lua-error"
+        and previous.code=="unclassified-lua-error"
+    local label_fault=previous.runId=="20260909-115941-bf41c96cf6cc43908e718239be625e01"
+        and previous.sourceRevision=="cdcff74ecbda2099520b468ae907fb8291ee4586"
+        and previous.artifactSha256=="5ab7514eb8fabd04ca144d17254fc29742b016b4a2c2b1a40af7219fe97a208b"
+        and previous.case==Shape.ENGAGEMENT_CASE and previous.experiment==Shape.ENGAGEMENT_CONTRACT
+        and previous.code=="breadcrumb-before"
+    assert((weak_fault or label_fault) and previous.status=="failed" and previous.stage=="spawn"
         and previous.spawned==0 and previous.initialized==0 and previous.cleaned==0
         and previous.helpersCreated==1 and previous.helpersCleaned==0 and #previous.members==1
         and not previous.members[1].spawnRequested and previous.mutationStarted and not previous.cleanupComplete,

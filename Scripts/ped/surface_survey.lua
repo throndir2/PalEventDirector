@@ -239,14 +239,14 @@ function Survey:_query(method,label,...)
     local args=table.pack(...)
     args.n=args.n+1
     args[args.n]=output
-    local found=self:_call(label,self.kismet,method,self.world,table.unpack(args,1,args.n))
+    local reason_prefix=label:gsub("(%u)","-%1"):lower()
+    local found=self:_call(reason_prefix,self.kismet,method,self.world,table.unpack(args,1,args.n))
     local elapsed=self.clock()-before
     if type(found)~="boolean" or not finite(elapsed) or elapsed<0 then error(ERROR,0) end
     self.result.queries=self.result.queries+1
     self.result[label.."ClockSeconds"]=elapsed
     local total=count(output,128)
     self.result[label.."Components"]=#output
-    local reason_prefix=label:gsub("(%u)","-%1"):lower()
     if not total then return nil,reason_prefix.."-over-cap" end
     if found~=(total>0) then error(ERROR,0) end
     if elapsed>0.25 then return nil,reason_prefix.."-slow" end

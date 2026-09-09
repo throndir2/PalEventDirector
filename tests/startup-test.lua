@@ -341,6 +341,16 @@ return function(test, equal, truthy)
         equal(pcall(Startup.finalize_shape_support_fault,store,proof),false)
         store.records[1].kind="startup_test_failed"; state.members[1].spawnRequested=true
         equal(pcall(Startup.finalize_shape_support_fault,store,proof),false)
+        state.members[1].spawnRequested=nil
+        state.runId="20260909-115941-bf41c96cf6cc43908e718239be625e01"
+        state.sourceRevision="cdcff74ecbda2099520b468ae907fb8291ee4586"
+        state.artifactSha256="5ab7514eb8fabd04ca144d17254fc29742b016b4a2c2b1a40af7219fe97a208b"
+        state.case,state.experiment,state.code=Shape.ENGAGEMENT_CASE,Shape.ENGAGEMENT_CONTRACT,"breadcrumb-before"
+        proof.runId=state.runId
+        truthy(Startup.finalize_shape_support_fault(store,proof))
+        equal(written.failedArtifactSha256,state.artifactSha256)
+        state.code="unclassified-lua-error"
+        equal(pcall(Startup.finalize_shape_support_fault,store,proof),false)
     end)
 
     test("startup durability failure prevents the corresponding native call", function()
