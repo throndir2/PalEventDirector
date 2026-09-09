@@ -198,6 +198,9 @@ function Shape:_geometry(actor,actual)
             if not out.worldScale or not out.worldLocation or not out.worldRotation then return nil,"component-world-transform",result end
         end
     end
+    if not require("ped.custom_assault_native").mesh_collision_disabled(result.mesh.collision) then
+        return nil,"mesh-collision-policy-unqualified",result
+    end
     result.root.radius,result.root.halfHeight=self:_field(capsule,"CapsuleRadius"),self:_field(capsule,"CapsuleHalfHeight")
     result.root.scaledRadius=self:_call("scaled-radius",capsule,"GetScaledCapsuleRadius")
     result.root.scaledHalfHeight=self:_call("scaled-half-height",capsule,"GetScaledCapsuleHalfHeight")
@@ -238,6 +241,18 @@ local function same_collision(a,b)
         or #a.responses~=32 or #b.responses~=32 then return false end
     for index=1,32 do if a.responses[index]~=b.responses[index] then return false end end
     return true
+end
+
+local function same_physical_policy(expected,actual)
+    return type(actual)=="table" and expected.policy==actual.policy
+        and same_vector(expected.rootCapsule,actual.rootCapsule,0.001,{"radius","halfHeight","centerOffsetZ"})
+        and same_collision(expected.rootCollision,actual.rootCollision)
+        and same_collision(expected.expectedRootCollision,actual.expectedRootCollision)
+        and type(actual.mesh)=="table" and expected.mesh.policy==actual.mesh.policy and expected.mesh.classPath==actual.mesh.classPath
+        and same_collision(expected.mesh.collision,actual.mesh.collision)
+        and same_vector(expected.mesh.relativeLocation,actual.mesh.relativeLocation,0.001)
+        and same_vector(expected.mesh.relativeScale,actual.mesh.relativeScale,0.001)
+        and same_vector(expected.mesh.relativeRotation,actual.mesh.relativeRotation,0.001,{"Pitch","Yaw","Roll"})
 end
 
 function Shape:_candidate(position)
@@ -351,7 +366,13 @@ function Shape:prepare(scope,member)
         return blocked("shape-template-profile-excluded")
     end
     local collision_model,collision_policy=n:placement_collision_model(planned.root.collision)
-    planned.initialization={placementCollisionPolicy=collision_policy,placementRootCollision=collision_model}
+    local mesh_policy=require("ped.custom_assault_native").disabled_mesh_snapshot(planned.mesh)
+    if not mesh_policy then return blocked("shape-template-mesh-policy") end
+    local physical_policy={policy="physical-root-and-water-only-mesh-envelope",
+        rootCapsule={radius=planned.root.scaledRadius,halfHeight=planned.root.scaledHalfHeight,centerOffsetZ=0},
+        rootCollision=planned.root.collision,expectedRootCollision=collision_model,mesh=mesh_policy}
+    planned.initialization={placementCollisionPolicy=collision_policy,placementRootCollision=collision_model,
+        physicalPolicy=physical_policy}
     local unit,zero={X=1,Y=1,Z=1},{X=0,Y=0,Z=0}
     if not same_vector(planned.root.relativeScale,unit,0.001) or not same_vector(planned.mesh.relativeScale,unit,0.001)
         or not same_vector(planned.root.relativeLocation,zero,0.001)
@@ -376,6 +397,8 @@ function Shape:prepare(scope,member)
     end
     if not same_collision(planned.root.collision,survey.sourceCollision)
         or not same_collision(collision_model,survey.effectiveSourceCollision)
+        or not same_physical_policy(physical_policy,result.physicalPolicy)
+        or not same_physical_policy(physical_policy,self.selectedLocalProxy.physicalPolicy)
         or not result.collisionPolicy or result.collisionPolicy.playerPawnChannel~=collision_policy.playerPawnChannel
         or not self.selectedLocalProxy.collisionPolicy
         or self.selectedLocalProxy.collisionPolicy.playerPawnChannel~=collision_policy.playerPawnChannel

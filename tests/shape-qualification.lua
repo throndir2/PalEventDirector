@@ -70,6 +70,8 @@ return function(test,equal,truthy)
             actor.CapsuleComponent,actor.RootComponent=root,root
             actor.Mesh=primitive("/Script/Engine.SkeletalMeshComponent",-33)
             actor.Mesh.AttachParent=root
+            actor.Mesh.collisionEnabled,actor.Mesh.objectType,actor.Mesh.profileName=0,0,"NoCollision"
+            for index=1,32 do actor.Mesh.responses[index]=0 end
             actor.StaticCharacterParameterComponent=component("/Script/Pal.PalStaticCharacterParameterComponent",{
                 MeshCapsuleRadius=30,MeshCapsuleHalfHeight=95,MeshRelativeLocation={X=0,Y=0,Z=-97},
             })
@@ -252,12 +254,24 @@ return function(test,equal,truthy)
                 return {enabled=f.cdo.CapsuleComponent.collisionEnabled,objectType=f.cdo.CapsuleComponent.objectType,
                     profileName=f.cdo.CapsuleComponent.profileName:lower(),responses=util.deep_copy(f.cdo.CapsuleComponent.responses)}
             end
+            local function physical_policy()
+                local root_collision=template_collision()
+                local expected=engine:placement_collision_model(root_collision)
+                local mesh=f.cdo.Mesh
+                local mesh_policy=Native.disabled_mesh_snapshot({collision={enabled=mesh.collisionEnabled,objectType=mesh.objectType,
+                    profileName=mesh.profileName:lower(),responses=util.deep_copy(mesh.responses)},
+                    relativeLocation=mesh.RelativeLocation,relativeScale=mesh.RelativeScale3D,relativeRotation=mesh.RelativeRotation})
+                return {policy="physical-root-and-water-only-mesh-envelope",
+                    rootCapsule={radius=f.cdo.CapsuleComponent.CapsuleRadius,halfHeight=f.cdo.CapsuleComponent.CapsuleHalfHeight,centerOffsetZ=0},
+                    rootCollision=root_collision,expectedRootCollision=expected,mesh=mesh_policy}
+            end
             function probe:local_proxy(point,shape)
                 f.prefilters=f.prefilters+1
                 local result=f.local_proxy_result and f.local_proxy_result(point,shape,f.prefilters)
                     or {complete=true,classification="proxy-clear",spawnQualified=false,templateOnly=true,localOnly=true}
                 local _,policy=engine:placement_collision_model(template_collision())
                 result.collisionPolicy=result.collisionPolicy or policy
+                result.physicalPolicy=result.physicalPolicy or physical_policy()
                 return result
             end
             function probe:run()
@@ -269,6 +283,7 @@ return function(test,equal,truthy)
                 self.effectiveSourceCollision,policy=engine:placement_collision_model(self.sourceCollision)
                 return {complete=true,classification=f.survey_classification or "proxy-clear",
                     spawnQualified=false,templateOnly=true,bodyProxy=util.deep_copy(measured.bodyProxy),collisionPolicy=policy,
+                    physicalPolicy=physical_policy(),
                     columnOceanWitness=true,footAboveWaterCm=967,waterContacts=0,mutualBlockers=0,unqualifiedBodies=0}
             end
             return probe
@@ -551,7 +566,7 @@ return function(test,equal,truthy)
         end)
     end)
 
-    test("body-blocked preferred site yields to a locally clear in-base site before the single full survey",function()
+    test("physically blocked preferred site yields to a locally clear in-base site before the single full survey",function()
         fixture(function(f)
             f.local_proxy_result=function(point,shape,index)
                 equal(point.Z,1000); equal(shape.bodyProxy.radius,30)
@@ -570,6 +585,50 @@ return function(test,equal,truthy)
             equal(f.spawns,0); truthy(f:spawn()); equal(f.spawns,1)
             equal(f.engine:prepare_spawn(f.scope,f.member),false); equal(f.surveys,1)
         end)
+    end)
+
+    test("root and disabled-mesh policy drift before the final survey cannot mint a spawn proof",function()
+        for _,change in ipairs({
+            function(f) f.cdo.CapsuleComponent.responses[18]=0 end,
+            function(f) f.cdo.Mesh.collisionEnabled=1 end,
+            function(f) f.cdo.Mesh.responses[1]=2 end,
+            function(f) f.cdo.Mesh.RelativeRotation.Yaw=90 end,
+        }) do
+            fixture(function(f)
+                f.on_survey=function() change(f) end
+                local result=f:prepare()
+                equal(result.ready,false); equal(result.reason,"shape-template-changed")
+                equal(f.surveys,1); equal(f.spawns,0)
+                equal(f.engine:spawn(f.scope,f.member),false); equal(f.spawns,0)
+            end)
+        end
+        fixture(function(f)
+            f.local_proxy_result=function()
+                return {complete=true,localOnly=true,templateOnly=true,spawnQualified=false,classification="proxy-clear",
+                    physicalPolicy={policy="unmodelled-extra-physical-body"}}
+            end
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.reason,"shape-template-changed"); equal(f.spawns,0)
+        end)
+    end)
+
+    test("initialized mesh collision must remain the matched disabled policy before engagement",function()
+        for _,change in ipairs({
+            function(f) f.actor.Mesh.collisionEnabled=1 end,
+            function(f) f.actor.Mesh.objectType=2 end,
+            function(f) f.actor.Mesh.profileName="Custom" end,
+            function(f) f.actor.Mesh.responses[1]=2 end,
+        }) do
+            fixture(function(f)
+                truthy(f:prepare().ready); truthy(f:spawn()); equal(f:ready().phase,"alive")
+                change(f)
+                local ok,result=f:observe()
+                truthy(ok,result); equal(result.comparison,"UNSUPPORTED")
+                equal(result.reasons[1],"mesh-collision-policy-unqualified")
+                equal(f:arm(),false)
+                equal(f.dispatched,nil); equal(f.walking,nil)
+            end,Shape.ENGAGEMENT_CASE)
+        end
     end)
 
     test("unsupported local proxies exhaust bounded sites without consuming the full survey attempt",function()

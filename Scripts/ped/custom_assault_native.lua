@@ -871,6 +871,60 @@ function Native:collision_profile(component)
     return name:lower()
 end
 
+function Native.mesh_collision_disabled(collision)
+    if not collision or collision.enabled~=0 or collision.objectType~=0 or collision.profileName~="nocollision"
+        or type(collision.responses)~="table" or #collision.responses~=32 then return false end
+    for index=1,32 do if collision.responses[index]~=0 then return false end end
+    return true
+end
+
+function Native.disabled_mesh_snapshot(mesh)
+    local collision=mesh and mesh.collision
+    if not Native.mesh_collision_disabled(collision) then return nil end
+    local location,scale,rotation=mesh.relativeLocation,mesh.relativeScale,mesh.relativeRotation
+    if not location or not scale or not rotation then return nil end
+    for _,axis in ipairs({"X","Y","Z"}) do
+        if not finite(location[axis]) or not finite(scale[axis]) or math.abs(scale[axis]-1)>0.001 then return nil end
+    end
+    if math.abs(location.X)>0.001 or math.abs(location.Y)>0.001 or math.abs(location.Z)>2000
+        or not finite(rotation.Pitch) or not finite(rotation.Yaw) or not finite(rotation.Roll)
+        or math.abs(rotation.Pitch)>0.001 or math.abs(rotation.Roll)>0.001 then return nil end
+    return {policy="owned-main-mesh-no-collision",classPath="/Script/Engine.SkeletalMeshComponent",
+        collision=util.deep_copy(collision),relativeLocation=vector(location),relativeScale=vector(scale),
+        relativeRotation={Pitch=rotation.Pitch,Yaw=rotation.Yaw,Roll=rotation.Roll}}
+end
+
+function Native:placement_mesh_policy(shape)
+    local actor,root=shape.cdo,shape.capsule
+    if not self.a.valid(actor) or not actor:IsA("/Script/Pal.PalCharacter") or not self.a.valid(root)
+        or not root:IsA("/Script/Engine.CapsuleComponent") then return nil,"mesh-policy-scope" end
+    local mesh=self.a.unwrap(actor.Mesh)
+    if not self.a.valid(mesh) or not mesh:IsA("/Script/Engine.SkeletalMeshComponent")
+        or not self.a.same(self:_call("mesh-policy-owner",mesh,"GetOwner"),actor)
+        or not self.a.same(self:_call("mesh-policy-root-owner",root,"GetOwner"),actor)
+        or not self.a.same(self:_call("mesh-policy-root",actor,"K2_GetRootComponent"),root)
+        or not self.a.same(self.a.unwrap(mesh.AttachParent),root) then return nil,"mesh-policy-ownership" end
+    local root_scale,root_location=self.a.unwrap(root.RelativeScale3D),self.a.unwrap(root.RelativeLocation)
+    local root_rotation=self.a.unwrap(root.RelativeRotation)
+    if not root_scale or not root_location or not root_rotation
+        or not finite(root_rotation.Pitch) or not finite(root_rotation.Roll)
+        or math.abs(root_rotation.Pitch)>0.001 or math.abs(root_rotation.Roll)>0.001 then return nil,"root-policy-transform" end
+    for _,axis in ipairs({"X","Y","Z"}) do
+        if not finite(root_scale[axis]) or not finite(root_location[axis])
+            or math.abs(root_scale[axis]-1)>0.001 or math.abs(root_location[axis])>0.001 then return nil,"root-policy-transform" end
+    end
+    local collision={enabled=self:_call("mesh-policy-enabled",mesh,"GetCollisionEnabled"),
+        objectType=self:_call("mesh-policy-type",mesh,"GetCollisionObjectType"),profileName=self:collision_profile(mesh),responses={}}
+    for channel=0,31 do
+        collision.responses[channel+1]=self:_call("mesh-policy-response",mesh,"GetCollisionResponseToChannel",channel)
+    end
+    local policy=Native.disabled_mesh_snapshot({collision=collision,
+        relativeLocation=self.a.unwrap(mesh.RelativeLocation),relativeScale=self.a.unwrap(mesh.RelativeScale3D),
+        relativeRotation=self.a.unwrap(mesh.RelativeRotation)})
+    if not policy then return nil,"mesh-collision-policy-unqualified" end
+    return policy
+end
+
 function Native.player_pawn_collision_model(template,player_pawn)
     if not util.is_integer(player_pawn) or player_pawn<0 or player_pawn>31
         or type(template)~="table" or type(template.responses)~="table" or #template.responses~=32 then error(SCOPE,0) end

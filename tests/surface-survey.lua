@@ -53,7 +53,7 @@ return function(test,equal,truthy)
         f.blockOwner=block_owner
         f.blocker=component(block_owner,"solid",{objectType=0,toSource=2})
         f.column={actors[1].SwimmingVolume,actors[1].HierarchicalInstancedStaticMesh}
-        f.capsule={}
+        f.capsule,f.root={},{}
         local function output_query(queries,filter,ignored,out,values)
             equal(#queries,32); equal(queries[1],0); equal(queries[32],31)
             equal(filter,nil); equal(#ignored,0); equal(#out,0)
@@ -76,7 +76,12 @@ return function(test,equal,truthy)
                 return output_query(queries,filter,ignored,out,f.column)
             end,
             CapsuleOverlapComponents=function(_,actual,pos,radius,half,queries,filter,ignored,out)
-                equal(actual,world); equal(radius,30); equal(half,95)
+                equal(actual,world); equal(radius,30)
+                if half==30 then
+                    equal(pos.Z,f.height or 1000)
+                    return output_query(queries,filter,ignored,out,f.root)
+                end
+                equal(half,95)
                 equal(pos.Z,(f.height or 1000)+62)
                 return output_query(queries,filter,ignored,out,f.capsule)
             end,
@@ -114,6 +119,7 @@ return function(test,equal,truthy)
         native._call=function(_,_,owner,method,...) return owner[method](owner,...) end
         native.collision_profile=Native.collision_profile
         native.placement_collision_model=Native.placement_collision_model
+        native.placement_mesh_policy=Native.placement_mesh_policy
         native.actor_world=function(_,actor)
             if actor.foreign then return object(),object() end
             return world,actor.streamed and object() or persistent
@@ -123,11 +129,25 @@ return function(test,equal,truthy)
             if path=="/Script/Engine.Default__GameplayStatics" then return gameplay end
             return mesh
         end
-        local source=object({GetCollisionEnabled=function() return 3 end,GetCollisionObjectType=function() return 2 end,
+        local cdo=object({IsA=function(_,path) return path=="/Script/Pal.PalCharacter" end})
+        local source=object({IsA=function(_,path) return path=="/Script/Engine.CapsuleComponent" end,
+            GetOwner=function() return cdo end,
+            RelativeScale3D={X=1,Y=1,Z=1},RelativeLocation={X=0,Y=0,Z=0},RelativeRotation={Pitch=0,Yaw=0,Roll=0},
+            GetScaledCapsuleRadius=function() return f.rootRadius or 30 end,
+            GetScaledCapsuleHalfHeight=function() return f.rootHalfHeight or 30 end,
+            GetCollisionEnabled=function() return 3 end,GetCollisionObjectType=function() return 2 end,
             GetCollisionProfileName=function() return "Pawn" end,
             GetCollisionResponseToChannel=function() return f.ignoreSource and 0 or 2 end})
-        native._placement_shape=function() return {capsule=source,bodyProxy={templateOnly=true,
-            radius=30,halfHeight=95,centerOffsetZ=62,lowerFootOffsetZ=-33}} end
+        cdo.K2_GetRootComponent=function() return source end
+        cdo.Mesh=object({IsA=function(_,path) return path=="/Script/Engine.SkeletalMeshComponent" end,
+            GetOwner=function() return cdo end,AttachParent=source,
+            RelativeLocation={X=0,Y=0,Z=-33},RelativeScale3D={X=1,Y=1,Z=1},RelativeRotation={Pitch=0,Yaw=0,Roll=0},
+            GetCollisionEnabled=function() return f.meshEnabled or 0 end,GetCollisionObjectType=function() return f.meshType or 0 end,
+            GetCollisionProfileName=function() return f.meshProfile or "NoCollision" end,
+            GetCollisionResponseToChannel=function() return f.meshResponse or 0 end})
+        f.cdo=cdo
+        native._placement_shape=function() return {cdo=cdo,capsule=source,radius=30,halfHeight=30,bodyProxy={templateOnly=true,
+            radius=30,halfHeight=95,centerOffsetZ=62,lowerFootOffsetZ=-33,meshOffsetZ=-33}} end
         native.startup_floor=function() return {X=100,Y=200,Z=f.height or 1000} end
         f.survey=Survey.new(native,{world=world,positions={{X=100,Y=200,Z=1000}},origin={X=0,Y=0,Z=1000}},
             {clock=function() f.clockValue=f.clockValue+(f.clockStep or 0); return f.clockValue end})
@@ -143,7 +163,7 @@ return function(test,equal,truthy)
         local f=fixture()
         local result=f.survey:run()
         equal(result.complete,true); equal(result.classification,"proxy-clear")
-        equal(result.spawnQualified,false); equal(result.queries,2); equal(result.columnOceanWitness,true)
+        equal(result.spawnQualified,false); equal(result.queries,3); equal(result.columnOceanWitness,true)
         equal(result.footAboveWaterCm,967)
         equal(result.point,nil); equal(result.position,nil); equal(f.survey.point.Z,1000)
         equal(#f.survey.sourceCollision.responses,32)
@@ -155,35 +175,84 @@ return function(test,equal,truthy)
         equal(result.complete,true); equal(result.classification,"proxy-clear")
         equal(result.localOnly,true); equal(result.templateOnly,true); equal(result.spawnQualified,false)
         equal(result.bodyProxy.radius,30); equal(result.bodyProxy.halfHeight,95); equal(result.bodyProxy.centerOffsetZ,62)
-        equal(result.queries,1); equal(f.columnQueries,0); equal(f.inventoryQueries,0)
+        equal(result.queries,2); equal(f.columnQueries,0); equal(f.inventoryQueries,0)
         equal(result.point,nil); equal(result.position,nil)
         equal(pcall(probe.local_proxy,probe,{X=100,Y=200,Z=1000},f.survey.native:_placement_shape()),false)
-        equal(f.queries,1)
+        equal(f.queries,2)
         f=fixture(); f.height=-2000
         equal(f:local_probe().classification,"proxy-clear")
         equal(f.survey:run().classification,"wet")
     end)
 
     test("local and full surveys share two-way blockers and name-free component categories",function()
-        local f=fixture(); f.capsule={f.blocker}
+        local f=fixture(); f.root={f.blocker}
         local local_result=f:local_probe()
         local full=f.survey:run()
         equal(local_result.classification,"blocked"); equal(full.classification,local_result.classification)
-        equal(local_result.mutualBlockers,1); equal(local_result.componentCategories.staticMesh.components,1)
-        equal(local_result.componentCategories.staticMesh.mutualBlockers,1)
+        equal(local_result.mutualBlockers,1); equal(local_result.rootClearance.componentCategories.staticMesh.components,1)
+        equal(local_result.rootClearance.componentCategories.staticMesh.mutualBlockers,1)
         local encoded=require("ped.json").encode(local_result)
         equal(encoded:find("actorName",1,true),nil); equal(encoded:find("worldLocation",1,true),nil)
         for _,response in ipairs({0,1}) do
-            f=fixture(); f.capsule={f.blocker}; f.blocker.toSource=response
+            f=fixture(); f.root={f.blocker}; f.blocker.toSource=response
             equal(f:local_probe().classification,"proxy-clear")
         end
-        f=fixture(); f.capsule={f.blocker}; f.ignoreSource=true
+        f=fixture(); f.root={f.blocker}; f.ignoreSource=true
         equal(f:local_probe().classification,"proxy-clear")
+    end)
+
+    test("disabled mesh body-only solid contact never becomes an invented root blocker",function()
+        local f=fixture(); f.capsule={f.blocker}
+        local result=f:local_probe()
+        equal(result.complete,true); equal(result.classification,"proxy-clear")
+        equal(result.rootCapsuleComponents,0); equal(result.waterProxyComponents,1)
+        equal(result.rootClearance.mutualBlockers,0); equal(result.waterProxy.mutualBlockers,0)
+        equal(result.waterProxy.nonWaterContacts,1); equal(result.waterProxy.componentCategories.staticMesh.nonWaterContacts,1)
+        equal(result.physicalPolicy.rootCapsule.halfHeight,30); equal(result.physicalPolicy.mesh.collision.enabled,0)
+        equal(result.physicalPolicy.mesh.collision.profileName,"nocollision")
+        equal(result.bodyProxy.halfHeight,95); equal(result.bodyProxy.centerOffsetZ,62); equal(result.bodyProxy.lowerFootOffsetZ,-33)
+        equal(result.spawnQualified,false); equal(result.localOnly,true)
+        local full=f.survey:run()
+        equal(full.classification,"proxy-clear"); equal(full.waterProxyComponents,1); equal(full.rootClearance.mutualBlockers,0)
+    end)
+
+    test("root blocking and water contacts in either envelope remain independent vetoes",function()
+        local f=fixture(); f.root={f.blocker}; f.capsule={}
+        local result=f:local_probe()
+        equal(result.classification,"blocked"); equal(result.rootClearance.mutualBlockers,1); equal(result.waterProxy.components,0)
+        for _,query in ipairs({"root","capsule"}) do
+            f=fixture(); f.ignoreSource=true; f[query]={f.column[1]}
+            result=f:local_probe()
+            equal(result.classification,"wet"); equal(result.waterContacts,1)
+            equal(result.rootClearance.waterContacts,query=="root" and 1 or 0)
+            equal(result.waterProxy.waterContacts,query=="capsule" and 1 or 0)
+            equal(result.mutualBlockers,0)
+        end
+    end)
+
+    test("unknown enabled or transformed owned mesh policies cannot authorize root-only clearance",function()
+        for _,change in ipairs({
+            function(f) f.meshEnabled=1 end,
+            function(f) f.meshType=2 end,
+            function(f) f.meshProfile="Custom" end,
+            function(f) f.meshResponse=1 end,
+            function(f) f.cdo.Mesh.RelativeScale3D.Z=2 end,
+            function(f) f.cdo.Mesh.GetOwner=function() return {} end end,
+            function(f) f.cdo.Mesh.IsA=function() return false end end,
+            function(f) f.cdo.Mesh.AttachParent=nil end,
+            function(f) f.rootRadius=31 end,
+        }) do
+            local f=fixture()
+            change(f)
+            local result=f:local_probe()
+            equal(result.complete,false); equal(result.classification,"unsupported")
+            equal(f.queries,0); equal(result.spawnQualified,false)
+        end
     end)
 
     test("local and full proxy models conservatively overlay the resolved PlayerPawn channel without setters",function()
         local f=fixture()
-        f.ignoreSource=true; f.blocker.objectType=16; f.capsule={f.blocker}
+        f.ignoreSource=true; f.blocker.objectType=16; f.root={f.blocker}
         local result,probe=f:local_probe()
         equal(result.classification,"blocked"); equal(result.collisionPolicy.palObjectSelector,2)
         equal(result.collisionPolicy.playerPawnChannel,16); equal(result.collisionPolicy.templateResponse,0)
@@ -192,7 +261,7 @@ return function(test,equal,truthy)
         equal(full.classification,"blocked"); equal(full.collisionPolicy.playerPawnChannel,16)
         equal(f.survey.sourceCollision.responses[17],0); equal(f.survey.effectiveSourceCollision.responses[17],2)
         f=fixture()
-        f.ignoreSource=true; f.playerPawnChannel=18; f.blocker.objectType=16; f.capsule={f.blocker}
+        f.ignoreSource=true; f.playerPawnChannel=18; f.blocker.objectType=16; f.root={f.blocker}
         equal(f:local_probe().classification,"proxy-clear")
         f.blocker.objectType=18
         equal(f:local_probe().classification,"blocked")
@@ -241,8 +310,13 @@ return function(test,equal,truthy)
         local f=fixture()
         for index=1,129 do f.capsule[index]=f.blocker end
         local result=f:local_probe()
-        equal(result.complete,false); equal(result.code,"capsule-over-cap"); equal(result.capsuleComponents,129)
+        equal(result.complete,false); equal(result.code,"water-proxy-over-cap"); equal(result.waterProxyComponents,129)
         equal(result.spawnQualified,false); equal(f.columnQueries,0)
+        f=fixture()
+        for index=1,129 do f.root[index]=f.blocker end
+        result=f:local_probe()
+        equal(result.complete,false); equal(result.code,"root-capsule-over-cap"); equal(result.rootCapsuleComponents,129)
+        equal(result.waterProxyComponents,nil); equal(f.queries,1)
         for _,entry in ipairs({{"radius",0},{"radius",1001},{"halfHeight",2001},{"halfHeight",29},{"centerOffsetZ",1000}}) do
             f=fixture()
             local shape=f.survey.native:_placement_shape()
@@ -280,9 +354,9 @@ return function(test,equal,truthy)
 
     test("surface survey checks both operative responses and never filters away water contact",function()
         local f=fixture()
-        f.capsule={f.blocker}
+        f.root={f.blocker}
         equal(f.survey:run().classification,"blocked")
-        f=fixture(); f.capsule={f.blocker}; f.blocker.toSource=1
+        f=fixture(); f.root={f.blocker}; f.blocker.toSource=1
         equal(f.survey:run().classification,"proxy-clear")
         f=fixture(); f.ignoreSource=true; f.capsule={f.column[2]}
         equal(f.survey:run().classification,"wet")

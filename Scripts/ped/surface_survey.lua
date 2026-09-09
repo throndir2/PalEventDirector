@@ -59,7 +59,10 @@ function Survey:_qualify_local()
             HalfHeight={"FloatProperty",36},ObjectTypes={"ArrayProperty",40},ComponentClassFilter={"ClassProperty",56},
             ActorsToIgnore={"ArrayProperty",64},OutComponents={"ArrayProperty",80},ReturnValue={"BoolProperty",96}}},
         {"/Script/Engine.Actor:GetLevel",{ReturnValue={"ObjectProperty",0}}},
+        {"/Script/Engine.Actor:K2_GetRootComponent",{ReturnValue={"ObjectProperty",0}}},
         {"/Script/Engine.ActorComponent:GetOwner",{ReturnValue={"ObjectProperty",0}}},
+        {"/Script/Engine.CapsuleComponent:GetScaledCapsuleRadius",{ReturnValue={"FloatProperty",0}}},
+        {"/Script/Engine.CapsuleComponent:GetScaledCapsuleHalfHeight",{ReturnValue={"FloatProperty",0}}},
         {"/Script/Pal.PalUtility:GetEngineCollisionChannelByPalTraceType",{type={"EnumProperty",0},ReturnValue={"ByteProperty",1}}},
         {"/Script/Engine.PrimitiveComponent:GetCollisionEnabled",{ReturnValue={"ByteProperty",0}}},
         {"/Script/Engine.PrimitiveComponent:GetCollisionObjectType",{ReturnValue={"ByteProperty",0}}},
@@ -243,9 +246,10 @@ function Survey:_query(method,label,...)
     self.result[label.."ClockSeconds"]=elapsed
     local total=count(output,128)
     self.result[label.."Components"]=#output
-    if not total then return nil,label.."-over-cap" end
+    local reason_prefix=label:gsub("(%u)","-%1"):lower()
+    if not total then return nil,reason_prefix.."-over-cap" end
     if found~=(total>0) then error(ERROR,0) end
-    if elapsed>0.25 then return nil,label.."-slow" end
+    if elapsed>0.25 then return nil,reason_prefix.."-slow" end
     return output
 end
 
@@ -266,29 +270,34 @@ local function component_category(component)
     return "other"
 end
 
-function Survey:_local_proxy(point,shape)
-    local proxy=self:_proxy(shape)
-    if not proxy then return self:_stop("survey-proxy-limit") end
-    self.result.bodyProxy=util.deep_copy(proxy)
-    local source=self:_call("source-enabled",shape.capsule,"GetCollisionEnabled")
-    if source~=1 and source~=3 then return self:_stop("source-response-unqualified") end
-    local source_type=channel(self:_call("source-type",shape.capsule,"GetCollisionObjectType"))
-    self.sourceCollision={enabled=source,objectType=source_type,profileName=self.native:collision_profile(shape.capsule),responses={}}
-    for to=0,31 do self.sourceCollision.responses[to+1]=self:_response(shape.capsule,to) end
-    self.effectiveSourceCollision,self.result.collisionPolicy=self.native:placement_collision_model(self.sourceCollision)
-    local queries,center={},vector(point)
-    for index=0,31 do queries[index+1]=index end
-    center.Z=center.Z+proxy.centerOffsetZ
-    local components,reason=self:_query("CapsuleOverlapComponents","capsule",center,proxy.radius,proxy.halfHeight,queries,nil,{})
-    if not components then return self:_stop(reason) end
+function Survey:_physical_policy(shape)
+    if not shape or not finite(shape.radius) or not finite(shape.halfHeight) or shape.radius<=0
+        or shape.radius>500 or shape.halfHeight<shape.radius or shape.halfHeight>1000 then
+        return nil,"root-capsule-unqualified"
+    end
+    local mesh,reason=self.native:placement_mesh_policy(shape)
+    if not mesh then return nil,reason end
+    local radius=self:_call("root-policy-radius",shape.capsule,"GetScaledCapsuleRadius")
+    local half=self:_call("root-policy-height",shape.capsule,"GetScaledCapsuleHalfHeight")
+    if not finite(radius) or not finite(half) or math.abs(radius-shape.radius)>0.001 or math.abs(half-shape.halfHeight)>0.001 then
+        return nil,"root-capsule-policy-changed"
+    end
+    if not shape.bodyProxy or not finite(shape.bodyProxy.meshOffsetZ)
+        or math.abs(mesh.relativeLocation.Z-shape.bodyProxy.meshOffsetZ)>0.001 then return nil,"mesh-policy-transform" end
+    return {policy="physical-root-and-water-only-mesh-envelope",
+        rootCapsule={radius=shape.radius,halfHeight=shape.halfHeight,centerOffsetZ=0},mesh=mesh}
+end
+
+function Survey:_classify_contacts(components,physical)
     local contacts,blockers,unknown,unsupported=0,0,0,nil
-    self.result.componentCategories={}
+    local result={components=#components,componentCategories={},nonWaterContacts=0}
     for _,wrapped in ipairs(components) do
         local component=self.a.unwrap(wrapped)
         local info,why=self:_component(component)
         local category=component_category(component)
-        local counts=self.result.componentCategories[category] or {components=0,waterContacts=0,mutualBlockers=0,unqualifiedBodies=0}
-        self.result.componentCategories[category]=counts
+        local counts=result.componentCategories[category] or
+            {components=0,waterContacts=0,mutualBlockers=0,unqualifiedBodies=0,nonWaterContacts=0}
+        result.componentCategories[category]=counts
         counts.components=counts.components+1
         local kind=info and self:_water(component,info.owner,true)
         if not info or kind=="unsupported" then
@@ -296,16 +305,55 @@ function Survey:_local_proxy(point,shape)
             unsupported=unsupported or why or "water-representation-unqualified"
         else
             if kind then contacts,counts.waterContacts=contacts+1,counts.waterContacts+1 end
+            if not kind then
+                result.nonWaterContacts=result.nonWaterContacts+1
+                counts.nonWaterContacts=counts.nonWaterContacts+1
+            end
             if category~="shape" and category~="staticMesh" then
                 if not kind then unknown,counts.unqualifiedBodies=unknown+1,counts.unqualifiedBodies+1 end
-            elseif self.effectiveSourceCollision.responses[info.objectType+1]==2 and self:_response(component,source_type)==2 then
+            elseif physical and self.effectiveSourceCollision.responses[info.objectType+1]==2
+                and self:_response(component,self.sourceCollision.objectType)==2 then
                 blockers,counts.mutualBlockers=blockers+1,counts.mutualBlockers+1
             end
         end
     end
-    self.result.waterContacts,self.result.mutualBlockers,self.result.unqualifiedBodies=contacts,blockers,unknown
-    self.result.classification=contacts>0 and "wet" or blockers>0 and "blocked" or unknown>0 and "unsupported" or "proxy-clear"
-    if unsupported then return self:_stop(unsupported) end
+    result.waterContacts,result.mutualBlockers,result.unqualifiedBodies=contacts,blockers,unknown
+    return result,unsupported
+end
+
+function Survey:_local_proxy(point,shape)
+    local proxy=self:_proxy(shape)
+    if not proxy then return self:_stop("survey-proxy-limit") end
+    self.result.bodyProxy=util.deep_copy(proxy)
+    local policy,reason=self:_physical_policy(shape)
+    if not policy then self.result.classification="unsupported"; return self:_stop(reason) end
+    self.result.physicalPolicy=policy
+    local source=self:_call("source-enabled",shape.capsule,"GetCollisionEnabled")
+    if source~=1 and source~=3 then return self:_stop("source-response-unqualified") end
+    local source_type=channel(self:_call("source-type",shape.capsule,"GetCollisionObjectType"))
+    self.sourceCollision={enabled=source,objectType=source_type,profileName=self.native:collision_profile(shape.capsule),responses={}}
+    for to=0,31 do self.sourceCollision.responses[to+1]=self:_response(shape.capsule,to) end
+    self.effectiveSourceCollision,self.result.collisionPolicy=self.native:placement_collision_model(self.sourceCollision)
+    policy.rootCollision=util.deep_copy(self.sourceCollision)
+    policy.expectedRootCollision=util.deep_copy(self.effectiveSourceCollision)
+    local queries,center={},vector(point)
+    for index=0,31 do queries[index+1]=index end
+    local roots
+    roots,reason=self:_query("CapsuleOverlapComponents","rootCapsule",point,shape.radius,shape.halfHeight,queries,nil,{})
+    if not roots then return self:_stop(reason) end
+    local root_reason,proxy_reason
+    self.result.rootClearance,root_reason=self:_classify_contacts(roots,true)
+    center.Z=center.Z+proxy.centerOffsetZ
+    local components
+    components,reason=self:_query("CapsuleOverlapComponents","waterProxy",center,proxy.radius,proxy.halfHeight,queries,nil,{})
+    if not components then return self:_stop(reason) end
+    self.result.waterProxy,proxy_reason=self:_classify_contacts(components,false)
+    self.result.waterContacts=self.result.rootClearance.waterContacts+self.result.waterProxy.waterContacts
+    self.result.mutualBlockers=self.result.rootClearance.mutualBlockers
+    self.result.unqualifiedBodies=self.result.rootClearance.unqualifiedBodies+self.result.waterProxy.unqualifiedBodies
+    self.result.classification=self.result.waterContacts>0 and "wet" or self.result.mutualBlockers>0 and "blocked"
+        or self.result.unqualifiedBodies>0 and "unsupported" or "proxy-clear"
+    if root_reason or proxy_reason then return self:_stop(root_reason or proxy_reason) end
     self.result.complete=true
     self.result.code="local-proxy-observed"
     return self.result
@@ -342,6 +390,8 @@ function Survey:run()
     end
     local proxy=self:_proxy(shape)
     if not proxy then return self:_stop("survey-proxy-limit") end
+    local policy,policy_reason=self:_physical_policy(shape)
+    if not policy then self.result.classification="unsupported"; return self:_stop(policy_reason) end
     local queries={}
     for index=0,31 do queries[index+1]=index end
     local center=vector(point)
