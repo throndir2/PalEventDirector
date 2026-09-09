@@ -2,7 +2,7 @@ return function(test,equal,truthy)
     local Survey=require("ped.surface_survey")
     local WATER_CLASS="/Game/Others/FluidInteractionTool/Blueprints/NotNeeded/BP_SimpleWater.BP_SimpleWater_C"
     local function fixture()
-        local f={queries=0,clockValue=0}
+        local f={queries=0,clockValue=0,columnQueries=0,inventoryQueries=0,outputs={}}
         local function object(values)
             values=values or {}
             values.IsValid=function() return true end
@@ -27,18 +27,18 @@ return function(test,equal,truthy)
             end
             c.IsA=function(_,path)
                 if path=="/Script/Engine.PrimitiveComponent" then return true end
-                if kind=="volume" then return path=="/Script/Engine.BoxComponent" end
+                if kind=="volume" then return path=="/Script/Engine.BoxComponent" or path=="/Script/Engine.ShapeComponent" end
                 if kind=="surface" then
                     return path=="/Script/Engine.StaticMeshComponent" or path=="/Script/Engine.InstancedStaticMeshComponent"
                 end
-                return false
+                return kind=="solid" and path=="/Script/Engine.StaticMeshComponent"
             end
             return c
         end
         local actors={}
         local counts={1,1,4,4,4,4,4,4,1681,356}
         for index=1,10 do
-            local actor=object({IsA=function(_,path) return path==WATER_CLASS end,
+            local actor=object({IsA=function(_,path) return path==WATER_CLASS or path=="/Script/Engine.Actor" end,
                 GetOuter=function() return persistent end,GetWorld=function() return world end,
                 K2_GetActorLocation=function() return {X=0,Y=0,Z=0} end,bWorldOceanPlane=index==1})
             actor.SwimmingVolume=component(actor,"volume",{center={X=0,Y=0,Z=-500},extent={X=10000,Y=10000,Z=500}})
@@ -48,13 +48,17 @@ return function(test,equal,truthy)
             })
             actors[index]=actor
         end
-        local block_owner=object({GetWorld=function() return world end})
+        local block_owner=object({GetWorld=function() return world end,IsA=function(_,path) return path=="/Script/Engine.Actor" end})
+        f.blockOwner=block_owner
         f.blocker=component(block_owner,"solid",{objectType=0,toSource=2})
         f.column={actors[1].SwimmingVolume,actors[1].HierarchicalInstancedStaticMesh}
         f.capsule={}
         local function output_query(queries,filter,ignored,out,values)
             equal(#queries,32); equal(queries[1],0); equal(queries[32],31)
             equal(filter,nil); equal(#ignored,0); equal(#out,0)
+            equal(getmetatable(out),nil)
+            for _,previous in ipairs(f.outputs) do truthy(previous~=out) end
+            f.outputs[#f.outputs+1]=out
             f.queries=f.queries+1
             for index,value in ipairs(values) do out[index]=value end
             return #values>0
@@ -65,6 +69,7 @@ return function(test,equal,truthy)
                 sphere.SphereRadius=20000
             end,
             BoxOverlapComponents=function(_,actual,pos,extent,queries,filter,ignored,out)
+                f.columnQueries=f.columnQueries+1
                 equal(actual,world); equal(pos.Z,0); equal(extent.Z,100010000)
                 truthy(extent.X<=1010 and extent.Y<=1010)
                 return output_query(queries,filter,ignored,out,f.column)
@@ -78,12 +83,13 @@ return function(test,equal,truthy)
         local gameplay=object({
             GetWorldOriginLocation=function() return f.origin or {X=0,Y=0,Z=0} end,
             GetAllActorsOfClass=function(_,actual,_,out)
+                f.inventoryQueries=f.inventoryQueries+1
                 equal(actual,world)
                 for index=1,(f.missingWater and 9 or 10) do out[index]=actors[index] end
                 if f.foreignWater then
                     out[11]=object({IsA=function() return true end,foreign=true})
                 elseif f.streamedWater then
-                    local extra=object({IsA=function(_,path) return path==WATER_CLASS end,streamed=true,
+                    local extra=object({IsA=function(_,path) return path==WATER_CLASS or path=="/Script/Engine.Actor" end,streamed=true,
                         GetWorld=function() error("shadowed world helper was used") end,bWorldOceanPlane=false})
                     extra.SwimmingVolume=component(extra,"volume",{center={X=0,Y=0,Z=-500},extent={X=10000,Y=10000,Z=500}})
                     extra.HierarchicalInstancedStaticMesh=component(extra,"surface",{
@@ -120,6 +126,11 @@ return function(test,equal,truthy)
         native.startup_floor=function() return {X=100,Y=200,Z=f.height or 1000} end
         f.survey=Survey.new(native,{world=world,positions={{X=100,Y=200,Z=1000}},origin={X=0,Y=0,Z=1000}},
             {clock=function() f.clockValue=f.clockValue+(f.clockStep or 0); return f.clockValue end})
+        function f:local_probe(shape)
+            local probe=Survey.new(native,self.survey.scope,{
+                clock=function() self.clockValue=self.clockValue+(self.clockStep or 0); return self.clockValue end})
+            return probe:local_proxy({X=100,Y=200,Z=self.height or 1000},shape or native:_placement_shape()),probe
+        end
         return f
     end
 
@@ -131,6 +142,90 @@ return function(test,equal,truthy)
         equal(result.footAboveWaterCm,967)
         equal(result.point,nil); equal(result.position,nil); equal(f.survey.point.Z,1000)
         equal(#f.survey.sourceCollision.responses,32)
+    end)
+
+    test("local proxy prefilter uses the full offset enclosure without a column or water inventory",function()
+        local f=fixture()
+        local result,probe=f:local_probe()
+        equal(result.complete,true); equal(result.classification,"proxy-clear")
+        equal(result.localOnly,true); equal(result.templateOnly,true); equal(result.spawnQualified,false)
+        equal(result.bodyProxy.radius,30); equal(result.bodyProxy.halfHeight,95); equal(result.bodyProxy.centerOffsetZ,62)
+        equal(result.queries,1); equal(f.columnQueries,0); equal(f.inventoryQueries,0)
+        equal(result.point,nil); equal(result.position,nil)
+        equal(pcall(probe.local_proxy,probe,{X=100,Y=200,Z=1000},f.survey.native:_placement_shape()),false)
+        equal(f.queries,1)
+        f=fixture(); f.height=-2000
+        equal(f:local_probe().classification,"proxy-clear")
+        equal(f.survey:run().classification,"wet")
+    end)
+
+    test("local and full surveys share two-way blockers and name-free component categories",function()
+        local f=fixture(); f.capsule={f.blocker}
+        local local_result=f:local_probe()
+        local full=f.survey:run()
+        equal(local_result.classification,"blocked"); equal(full.classification,local_result.classification)
+        equal(local_result.mutualBlockers,1); equal(local_result.componentCategories.staticMesh.components,1)
+        equal(local_result.componentCategories.staticMesh.mutualBlockers,1)
+        local encoded=require("ped.json").encode(local_result)
+        equal(encoded:find("actorName",1,true),nil); equal(encoded:find("worldLocation",1,true),nil)
+        for _,response in ipairs({0,1}) do
+            f=fixture(); f.capsule={f.blocker}; f.blocker.toSource=response
+            equal(f:local_probe().classification,"proxy-clear")
+        end
+        f=fixture(); f.capsule={f.blocker}; f.ignoreSource=true
+        equal(f:local_probe().classification,"proxy-clear")
+    end)
+
+    test("local proxy vetoes water volumes and surfaces even when root responses ignore them",function()
+        for _,index in ipairs({1,2}) do
+            local f=fixture(); f.ignoreSource=true; f.capsule={f.column[index]}
+            local result=f:local_probe()
+            equal(result.classification,"wet"); equal(result.waterContacts,1); equal(result.mutualBlockers,0)
+            equal(f.columnQueries,0); equal(f.inventoryQueries,0); equal(result.spawnQualified,false)
+        end
+    end)
+
+    test("local proxy refuses unknown bodies and unrecognized water without filtering by root response",function()
+        for _,kind in ipairs({"instanced","skinned","other"}) do
+            local f=fixture(); f.ignoreSource=true
+            f.blocker.IsA=function(_,path)
+                return path=="/Script/Engine.PrimitiveComponent"
+                    or (kind=="instanced" and path=="/Script/Engine.InstancedStaticMeshComponent")
+                    or (kind=="skinned" and path=="/Script/Engine.SkinnedMeshComponent")
+            end
+            f.capsule={f.blocker}
+            local result=f:local_probe()
+            equal(result.classification,"unsupported"); equal(result.unqualifiedBodies,1)
+            equal(result.spawnQualified,false)
+        end
+        local f=fixture(); f.capsule={f.blocker}
+        f.blocker.GetCollisionResponseToChannel=function() return 2 end
+        local result=f:local_probe()
+        equal(result.complete,false); equal(result.code,"water-representation-unqualified")
+        equal(result.classification,"unsupported"); equal(result.unqualifiedBodies,1)
+    end)
+
+    test("local proxy rejects foreign scopes excessive output and invalid capsule sizes",function()
+        for _,kind in ipairs({"foreign-owner","foreign-component","worldless","wrong-owner"}) do
+            local f=fixture(); f.capsule={f.blocker}
+            if kind=="foreign-owner" then f.blockOwner.foreign=true end
+            if kind=="foreign-component" then f.blocker.GetWorld=function() return {} end end
+            if kind=="worldless" then f.survey.native.actor_world=function() return nil end end
+            if kind=="wrong-owner" then f.blockOwner.IsA=function() return false end end
+            equal(pcall(f.local_probe,f),false); equal(f.columnQueries,0)
+        end
+        local f=fixture()
+        for index=1,129 do f.capsule[index]=f.blocker end
+        local result=f:local_probe()
+        equal(result.complete,false); equal(result.code,"capsule-over-cap"); equal(result.capsuleComponents,129)
+        equal(result.spawnQualified,false); equal(f.columnQueries,0)
+        for _,entry in ipairs({{"radius",0},{"radius",1001},{"halfHeight",2001},{"halfHeight",29},{"centerOffsetZ",1000}}) do
+            f=fixture()
+            local shape=f.survey.native:_placement_shape()
+            shape.bodyProxy[entry[1]]=entry[2]
+            result=f:local_probe(shape)
+            equal(result.complete,false); equal(result.code,"survey-proxy-limit"); equal(f.queries,0)
+        end
     end)
 
     test("an exact private survey point cannot drift to another floor or silently use a fallback",function()

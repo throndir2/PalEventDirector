@@ -6,7 +6,7 @@ return function(test,equal,truthy)
     local util=require("ped.util")
     local function fixture(callback)
         local f={now=1000,spawns=0,despawns=0,surveys=0,calls={},signatures={},
-            floorQueries={},navQueries={},supportPoints={},pathPoints={},residencies=0}
+            floorQueries={},navQueries={},supportPoints={},pathPoints={},residencies=0,prefilters=0}
         local next_address=0
         local function object(values)
             next_address=next_address+1
@@ -206,14 +206,23 @@ return function(test,equal,truthy)
         os.getenv=function(name) return f.environment[name] end
         Survey.new=function(actual,actual_scope,options)
             equal(actual,engine); equal(actual_scope,scope)
-            f.surveys=f.surveys+1
-            if f.on_survey then f.on_survey() end
-            local measured=engine:_placement_shape("BOSS_Hunter_Rifle")
-            return {point=util.shallow_copy(options.point),shape=measured,sourceCollision={
-                enabled=f.cdo.CapsuleComponent.collisionEnabled,objectType=f.cdo.CapsuleComponent.objectType,
-                responses=util.deep_copy(f.cdo.CapsuleComponent.responses)},
-                run=function() return {complete=true,classification=f.survey_classification or "proxy-clear",
-                    spawnQualified=false,templateOnly=true,bodyProxy=util.deep_copy(measured.bodyProxy)} end}
+            local probe={point=util.shallow_copy(options.point)}
+            function probe:local_proxy(point,shape)
+                f.prefilters=f.prefilters+1
+                if f.local_proxy_result then return f.local_proxy_result(point,shape,f.prefilters) end
+                return {complete=true,classification="proxy-clear",spawnQualified=false,templateOnly=true,localOnly=true}
+            end
+            function probe:run()
+                f.surveys=f.surveys+1
+                if f.on_survey then f.on_survey() end
+                local measured=engine:_placement_shape("BOSS_Hunter_Rifle")
+                self.shape,self.sourceCollision=measured,{
+                    enabled=f.cdo.CapsuleComponent.collisionEnabled,objectType=f.cdo.CapsuleComponent.objectType,
+                    responses=util.deep_copy(f.cdo.CapsuleComponent.responses)}
+                return {complete=true,classification=f.survey_classification or "proxy-clear",
+                    spawnQualified=false,templateOnly=true,bodyProxy=util.deep_copy(measured.bodyProxy)}
+            end
+            return probe
         end
         function f:prepare()
             local ok,result=engine:prepare_spawn(scope,member)
@@ -463,6 +472,67 @@ return function(test,equal,truthy)
             result=f:prepare()
             equal(result.ready,true); equal(result.attempts,3); equal(overlaps,3); equal(sweeps,1)
             equal(f.surveys,1); equal(f.spawns,0); equal(result.spawnQualified,false)
+        end)
+    end)
+
+    test("body-blocked preferred site yields to a locally clear in-base site before the single full survey",function()
+        fixture(function(f)
+            f.local_proxy_result=function(point,shape,index)
+                equal(point.Z,1000); equal(shape.bodyProxy.radius,30)
+                equal(shape.bodyProxy.halfHeight,95); equal(shape.bodyProxy.centerOffsetZ,62)
+                return {complete=true,localOnly=true,templateOnly=true,spawnQualified=false,
+                    classification=index==1 and "blocked" or "proxy-clear",mutualBlockers=index==1 and 1 or 0,
+                    componentCategories={staticMesh={components=index==1 and 1 or 0,mutualBlockers=index==1 and 1 or 0}}}
+            end
+            f.on_survey=function() equal(f.prefilters,2) end
+            local result=f:prepare()
+            equal(result.ready,true); equal(result.attempts,2); equal(f.prefilters,2); equal(f.surveys,1)
+            equal(result.selection.selectedMode,"in-base"); equal(result.fallbackReason,"shape-local-proxy-blocked")
+            equal(result.selection.rejections[1].localProxy.componentCategories.staticMesh.mutualBlockers,1)
+            equal(result.selection.selectedLocalProxy.classification,"proxy-clear")
+            for _,axis in ipairs({"X","Y","Z"}) do equal(result.position[axis],f.pathPoints[2].point[axis]) end
+            equal(f.spawns,0); truthy(f:spawn()); equal(f.spawns,1)
+            equal(f.engine:prepare_spawn(f.scope,f.member),false); equal(f.surveys,1)
+        end)
+    end)
+
+    test("unsupported local proxies exhaust bounded sites without consuming the full survey attempt",function()
+        fixture(function(f)
+            f.local_proxy_result=function()
+                return {complete=true,localOnly=true,templateOnly=true,spawnQualified=false,
+                    classification="unsupported",unqualifiedBodies=1,componentCategories={other={components=1,unqualifiedBodies=1}}}
+            end
+            local result=f:search_all()
+            equal(result.ready,false); equal(result.reason,"shape-sites-exhausted")
+            equal(result.attempts,17); equal(f.prefilters,17); equal(f.surveys,0); equal(f.spawns,0)
+            equal(f.engine.shapeQualification.attempted,nil)
+            equal(#result.selection.rejections,17)
+            equal(result.selection.rejections[1].localProxy.unqualifiedBodies,1)
+        end)
+    end)
+
+    test("local proxy failures and forged qualification claims never repeat or authorize a spawn",function()
+        for _,kind in ipairs({"native-fault","spawn-claim"}) do
+            fixture(function(f)
+                f.local_proxy_result=function()
+                    if kind=="native-fault" then error("fixture local proxy native fault") end
+                    return {complete=true,localOnly=true,templateOnly=true,spawnQualified=true,classification="proxy-clear"}
+                end
+                equal(f.engine:prepare_spawn(f.scope,f.member),false)
+                equal(f.engine:prepare_spawn(f.scope,f.member),false)
+                equal(f.prefilters,1); equal(f.surveys,0); equal(f.spawns,0)
+            end)
+        end
+    end)
+
+    test("a blocked final full survey is not reopened after local proxy clearance",function()
+        fixture(function(f)
+            f.survey_classification="blocked"
+            local result=f:prepare()
+            equal(result.ready,false); equal(result.reason,"shape-survey-blocked")
+            equal(f.prefilters,1); equal(f.surveys,1); equal(f.engine.shapeQualification.attempted,true)
+            equal(f.engine:prepare_spawn(f.scope,f.member),false)
+            equal(f.prefilters,1); equal(f.surveys,1); equal(f.spawns,0)
         end)
     end)
 

@@ -239,14 +239,28 @@ function Shape:_candidate(position)
     path_scope.leashRadius=math.min(scope.leashRadius,scope.range,9000)-envelope
     local route=n:_placement_path(path_scope,member,point,goal)
     if not route.ready then return {ready=false,reason=route.reason,support=support.support} end
-    return {ready=true,position=vector(point),goal=vector(goal),proxy=util.deep_copy(proxy),
+    if self:_expired() then return rejected("spawn-placement-timeout") end
+    shape,reason=n:_placement_shape(CHARACTER)
+    if not shape or not same_vector(shape.bodyProxy,proxy,0.001,{"radius","halfHeight","centerOffsetZ","lowerFootOffsetZ"}) then
+        return rejected(reason or "shape-template-changed")
+    end
+    local local_probe=Survey.new(n,scope,{point=point})
+    local clearance=local_probe:local_proxy(point,shape)
+    if type(clearance)~="table" or clearance.spawnQualified~=false or clearance.templateOnly~=true
+        or clearance.localOnly~=true or type(clearance.complete)~="boolean" then error(ERROR,0) end
+    if not clearance.complete or clearance.classification~="proxy-clear" then
+        return {ready=false,reason="shape-local-proxy-"..(clearance.complete and clearance.classification or clearance.code or "unavailable"),
+            support=support.support,localProxy=clearance}
+    end
+    return {ready=true,position=vector(point),goal=vector(goal),proxy=util.deep_copy(proxy),localProxy=clearance,
         pathPoints=route.pathPoints,pathLength=route.pathLength,defaultNavDataUsed=route.defaultNavDataUsed}
 end
 
 function Shape:_selection()
     return {candidateLimit=#self.search.candidates,candidatesVisited=self.search.attempts,
         uniqueCandidates=#self.visited.candidates,projectedSites=#self.visited.sites,duplicates=self.duplicates,
-        rejections=util.deep_copy(self.rejections),selectedCandidate=self.selectedCandidate,selectedMode=self.selectedMode}
+        rejections=util.deep_copy(self.rejections),selectedCandidate=self.selectedCandidate,selectedMode=self.selectedMode,
+        selectedLocalProxy=util.deep_copy(self.selectedLocalProxy)}
 end
 
 function Shape:_expired()
@@ -278,7 +292,7 @@ function Shape:prepare(scope,member)
         local result=self:_expired() and {ready=false,reason="spawn-placement-timeout"} or self:_candidate(position)
         if not result.ready then
             self.rejections[#self.rejections+1]={candidate=self.search.attempts,mode=mode,reason=result.reason,
-                support=util.deep_copy(result.support)}
+                support=util.deep_copy(result.support),localProxy=util.deep_copy(result.localProxy)}
         end
         return result
     end,2)
@@ -290,6 +304,7 @@ function Shape:prepare(scope,member)
         return result
     end
     self.selectedCandidate,self.selectedMode=site.attempts,site.mode
+    self.selectedLocalProxy=site.localProxy
     self.attempted=true
     local n,point,goal,proxy=self.native,site.position,site.goal,site.proxy
     local shape,reason=n:_placement_shape(CHARACTER)
