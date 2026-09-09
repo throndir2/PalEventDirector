@@ -867,6 +867,7 @@ function Native.player_pawn_collision_model(template,player_pawn)
         if not util.is_integer(response) or response<0 or response>2 then error(SCOPE,0) end
     end
     local model=util.deep_copy(template)
+    if model.responses[player_pawn+1]~=2 then model.profileName="custom" end
     model.responses[player_pawn+1]=2
     return model
 end

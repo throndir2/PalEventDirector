@@ -64,6 +64,7 @@ return function(test,equal,truthy)
             local root=primitive("/Script/Engine.CapsuleComponent",0)
             root.CapsuleRadius,root.CapsuleHalfHeight=30,30
             root.responses[17]=cdo and 0 or 2
+            if not cdo then root.profileName="Custom" end
             root.GetScaledCapsuleRadius=function(self) return self.CapsuleRadius*self.RelativeScale3D.X end
             root.GetScaledCapsuleHalfHeight=function(self) return self.CapsuleHalfHeight*self.RelativeScale3D.Z end
             actor.CapsuleComponent,actor.RootComponent=root,root
@@ -803,6 +804,9 @@ return function(test,equal,truthy)
                 equal(result.expectedInitialization.nav.height,60); equal(result.expectedInitialization.nav.stepHeight,-1)
                 equal(result.expectedInitialization.rootResponse.templateResponse,0)
                 equal(result.expectedInitialization.rootResponse.expectedResponse,2)
+                equal(result.expectedInitialization.rootResponse.templateProfile,"pawn")
+                equal(result.expectedInitialization.rootResponse.expectedProfile,"custom")
+                equal(result.expectedInitialization.rootResponse.profileBookkeeping,"EXPECTED_PROFILE_CUSTOMIZATION")
                 truthy(math.abs(result.expectedInitialization.slope.expectedFloorZ-0.017452383413910866)<0.0000002)
                 equal(result.actual.water.configuredImmersionTarget,0.6499999761581421)
                 equal(result.actual.water.computedImmersionRate,0); equal(result.actual.water.cachedPlaneAvailable,false)
@@ -821,6 +825,7 @@ return function(test,equal,truthy)
             function(f) f.actor.CapsuleComponent.responses[18]=1 end,
             function(f) f.actor.CapsuleComponent.responses[17]=0 end,
             function(f) f.actor.CapsuleComponent.collisionEnabled=1 end,
+            function(f) f.actor.CapsuleComponent.profileName="Pawn" end,
             function(f) f.actor.CharacterMovement.NavAgentProps.AgentRadius=31 end,
             function(f) f.actor.CharacterMovement.NavAgentProps.AgentHeight=61 end,
             function(f) f.actor.CharacterMovement.NavAgentProps.AgentStepHeight=0 end,
@@ -856,6 +861,7 @@ return function(test,equal,truthy)
                 truthy(ok,result); equal(result.comparison,"UNSUPPORTED")
                 truthy(f.engine:despawn(f.scope,f.member)); equal(f.despawns,1)
             end)
+
         end
         fixture(function(f)
             f.cdo.CharacterMovement.bUpdateNavAgentWithOwnersCollision=false
@@ -864,6 +870,26 @@ return function(test,equal,truthy)
             local ok,result=f:observe()
             truthy(ok,result); equal(result.comparison,"UNSUPPORTED"); equal(result.reasons[1],"custom-nav-agent-policy")
         end)
+    end)
+
+    test("profile customization requires a changed response and never hides an original policy exclusion",function()
+        local responses={}
+        for index=1,32 do responses[index]=2 end
+        local template={enabled=3,objectType=2,profileName="pawn",responses=responses}
+        local model=Native.player_pawn_collision_model(template,16)
+        equal(model.profileName,"pawn")
+        responses[17]=0
+        model=Native.player_pawn_collision_model(template,16)
+        equal(model.profileName,"custom"); equal(model.responses[17],2)
+        equal(template.profileName,"pawn"); equal(template.responses[17],0)
+        for _,profile in ipairs({"Pawn_NoDamageFlyPal","PawnParts_NonBlock"}) do
+            fixture(function(f)
+                f.cdo.CapsuleComponent.profileName=profile
+                local result=f:prepare()
+                equal(result.ready,false); equal(result.reason,"shape-template-profile-excluded")
+                equal(f.spawns,0)
+            end)
+        end
     end)
 
     test("entered water with the unavailable plane sentinel never passes from computed zero",function()

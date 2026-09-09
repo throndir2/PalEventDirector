@@ -337,6 +337,9 @@ function Shape:prepare(scope,member)
     if not shape then return blocked(reason or "shape-template-unavailable") end
     local planned,why=self:_geometry(shape.cdo,false)
     if not planned then return blocked("shape-template-"..why) end
+    if planned.root.collision.profileName=="pawn_nodamageflypal" or planned.root.collision.profileName=="pawnparts_nonblock" then
+        return blocked("shape-template-profile-excluded")
+    end
     local collision_model,collision_policy=n:placement_collision_model(planned.root.collision)
     planned.initialization={placementCollisionPolicy=collision_policy,placementRootCollision=collision_model}
     local unit,zero={X=1,Y=1,Z=1},{X=0,Y=0,Z=0}
@@ -409,7 +412,9 @@ end
 
 function Shape.reconcile(planned,actual)
     local policy=actual.initializationPolicy
-    if not policy or policy.isWildNPC~=true or policy.nativeNPC~=true or policy.rootProfileExcluded~=false then
+    local original_profile=planned.root.collision.profileName
+    if not policy or policy.isWildNPC~=true or policy.nativeNPC~=true or policy.rootProfileExcluded~=false
+        or original_profile=="pawn_nodamageflypal" or original_profile=="pawnparts_nonblock" then
         return "UNSUPPORTED",{"wild-npc-response-policy-unqualified"}
     end
     if planned.nav.updateFromCollision~=true then return "UNSUPPORTED",{"custom-nav-agent-policy"} end
@@ -423,7 +428,9 @@ function Shape.reconcile(planned,actual)
         nav={policy="collision-derived-initialization",templateRadius=planned.nav.radius,templateHeight=planned.nav.height,
             radius=actual.root.scaledRadius,height=2*actual.root.scaledHalfHeight,stepHeight=planned.nav.stepHeight},
         rootResponse={policy="eligible-wild-npc-player-pawn-block",palObjectSelector=2,playerPawnChannel=policy.playerPawnChannel,
-            templateResponse=planned.root.collision.responses[policy.playerPawnChannel+1],expectedResponse=2},
+            templateResponse=planned.root.collision.responses[policy.playerPawnChannel+1],expectedResponse=2,
+            templateProfile=original_profile,expectedProfile=expected_root.profileName,
+            profileBookkeeping=expected_root.profileName~=original_profile and "EXPECTED_PROFILE_CUSTOMIZATION" or "UNCHANGED"},
         slope={policy="active-priority-selected-angle",selectedAngleDegrees=policy.selectedWalkableAngle,
             templateFloorZ=planned.nav.walkableZ,expectedFloorZ=expected_z},
         water={configuredImmersionTarget=planned.water.configuredImmersionTarget,computedWhenNoEnteredFlags=0},
