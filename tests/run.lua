@@ -1167,6 +1167,26 @@ test("journal and atomic snapshot survive reload", function()
     equal(snapshot.values[2], 2)
 end)
 
+test("journal and snapshot authentication preserve foreign Lua number spellings",function()
+    local payload='{"interval":0.10000000149012000,"value":1e2}'
+    local body='{"data":{},"kind":"foreign-runtime","previousChecksum":"00000000","schemaVersion":1,"sequence":1,"state":'..payload..',"timestampUtc":"fixture"}'
+    local checksum=util.hash32("00000000"..body)
+    local journal='{"checksum":"'..checksum..'",'..body:sub(2)..'\n'
+    local snapshot='{"checksum":"'..util.hash32(payload)..'","journalChecksum":"'..checksum..'","journalSequence":1,"payload":'..payload..',"savedAtUtc":"fixture","schemaVersion":1}\n'
+    local files={}
+    local filesystem={ensure_directory=function() return true end,exists=function(n) return files[n]~=nil end,
+        read=function(n) return files[n] end,write=function() error("read-only authentication wrote data") end}
+    local empty=Store.new("foreign",nil,filesystem)
+    files[empty.journal_path],files[empty.snapshot_path]=journal,snapshot
+    local store=Store.new("foreign",nil,filesystem)
+    equal(store.sequence,1)
+    local state,_,reason,recovered=store:load_snapshot()
+    equal(reason,nil); equal(recovered,false); equal(state.value,100)
+    equal(files[empty.journal_path],journal)
+    files[empty.journal_path]=journal:gsub("1e2","100")
+    equal(pcall(Store.new,"foreign",nil,filesystem),false)
+end)
+
 test("uncheckpointed journal tail blocks stale snapshot recovery", function()
     local files = {}
     local filesystem = {

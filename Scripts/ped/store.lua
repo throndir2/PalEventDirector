@@ -52,9 +52,12 @@ function Store:_scan_journal()
                 error("journal is invalid at line " .. line_number)
             end
             local checksum = record.checksum
-            record.checksum = nil
-            local expected = util.hash32(self.chain .. json.encode(record))
-            record.checksum = checksum
+            local encoded_checksum, body = line:match('^{"checksum":"([0-9a-f]+)",(.*)}$')
+            if not encoded_checksum or #encoded_checksum ~= 8 or encoded_checksum ~= checksum then
+                error("journal encoding is invalid at line " .. line_number)
+            end
+            -- Authenticate stored number spellings, not a different Lua runtime's re-encoding.
+            local expected = util.hash32(self.chain .. "{" .. body .. "}")
             if checksum ~= expected then
                 error("journal checksum mismatch at line " .. line_number)
             end
@@ -138,7 +141,8 @@ local function decode_snapshot(filesystem, file_path)
         or not util.is_integer(envelope.journalSequence) or type(envelope.journalChecksum) ~= "string" then
         return nil, "invalid JSON envelope"
     end
-    if envelope.checksum ~= util.hash32(json.encode(envelope.payload)) then
+    local raw_payload = text:match('^{"checksum":"[0-9a-f]+","journalChecksum":"[0-9a-f]+","journalSequence":%d+,"payload":(.*),"savedAtUtc":"[^"]*","schemaVersion":1}%s*$')
+    if envelope.checksum ~= util.hash32(raw_payload or json.encode(envelope.payload)) then
         return nil, "checksum mismatch"
     end
     return envelope

@@ -341,6 +341,37 @@ function Test.finalize_cadence_world(store,evidence)
     return store:save_snapshot(state)
 end
 
+function Test.record_bootstrap_refusal(store,plan,evidence)
+    assert(store.sequence==0 and #store.records==0,"Bootstrap refusal cannot replace an existing run journal")
+    assert(plan.runId=="20260909-234653-cef6b78baa9344cdb483b32b61f0c2ea"
+        and plan.sourceRevision=="46f0472b34d1bc95d24c3db3dd3b5ebf013c0104"
+        and plan.artifactSha256=="48d35f9840c56c67c92363df2e20c5ee02bf5ad73b9c419f375209513c20d213"
+        and plan.previousRunId=="20260909-221539-b5664f1858dd4afcab2f296570f197e1"
+        and plan.schemaVersion==1 and plan.case==Cadence.CASE and plan.baseOrdinal==3
+        and Cadence.plan_valid(plan), "This plan is outside the exact bootstrap-refusal scope")
+    assert(type(evidence)=="table" and evidence.runId==plan.runId and evidence.processExitVerified==true
+        and evidence.oldRootPid==34336 and evidence.oldShippingPid==12384 and evidence.nativeCalls==0
+        and evidence.previousJournalErrorLine==45 and evidence.noRunFiles==true
+        and evidence.planSha256=="767c1e61c211258ba5bb6722194dc3471b6fe5d8f45c8f9f50fe2a66c503d54c"
+        and evidence.evidenceManifestSha256=="b062a239a0303033e1f5f11f320ee3659906e1fa6e0f3143295ddc064ad8d17b"
+        and evidence.logSha256=="e782a96e7e1b2f0df21596b3f206f1904affef008d1dd851c0295a233c9d79e4"
+        and evidence.breadcrumbsSha256=="5192e3d3378d6fc205edb15b510e2c1774d644e7866608deb6f2b4e021c7aad1",
+        "Exact stopped bootstrap-failure evidence is required")
+    local state=util.deep_copy(plan)
+    state.status,state.code,state.stage="failed","bootstrap-journal-authentication","bootstrap"
+    state.mutationStarted,state.cleanupComplete=false,true
+    state.spawned,state.initialized,state.cleaned,state.moved=0,0,0,0
+    state.helpersCreated,state.helpersCleaned=0,0
+    state.members,state.helpers=json.array(),json.array()
+    state.cadence={status="NOT_ACQUIRED",active=false,retired=false,generation=0}
+    state.failedArtifactSha256=plan.artifactSha256
+    state.bootstrapFailure=util.deep_copy(evidence)
+    Test.validate_state(state,plan.runId)
+    local ok,reason=store:append("startup_bootstrap_refused",{reason=state.code,nativeCalls=0},state)
+    if not ok then return false,reason end
+    return store:save_snapshot(state)
+end
+
 function Test.new(options)
     local plan = assert(options.plan)
     assert(plan.schemaVersion == 1 and CASES[plan.case], "Startup test plan is invalid")

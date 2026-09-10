@@ -477,6 +477,37 @@ return function(test, equal, truthy)
         equal(f.spawns, 0)
     end)
 
+    test("bootstrap refusal records only the exact plan with no existing run or native work",function()
+        local plan={schemaVersion=1,runId="20260909-234653-cef6b78baa9344cdb483b32b61f0c2ea",
+            sourceRevision="46f0472b34d1bc95d24c3db3dd3b5ebf013c0104",
+            artifactSha256="48d35f9840c56c67c92363df2e20c5ee02bf5ad73b9c419f375209513c20d213",
+            previousRunId="20260909-221539-b5664f1858dd4afcab2f296570f197e1",
+            case=Cadence.CASE,experiment=Cadence.CONTRACT,capturePolicy=Cadence.CAPTURE_POLICY,cadenceSeconds=0.1,baseOrdinal=3}
+        local proof={runId=plan.runId,processExitVerified=true,oldRootPid=34336,oldShippingPid=12384,nativeCalls=0,
+            previousJournalErrorLine=45,noRunFiles=true,
+            planSha256="767c1e61c211258ba5bb6722194dc3471b6fe5d8f45c8f9f50fe2a66c503d54c",
+            evidenceManifestSha256="b062a239a0303033e1f5f11f320ee3659906e1fa6e0f3143295ddc064ad8d17b",
+            logSha256="e782a96e7e1b2f0df21596b3f206f1904affef008d1dd851c0295a233c9d79e4",
+            breadcrumbsSha256="5192e3d3378d6fc205edb15b510e2c1774d644e7866608deb6f2b4e021c7aad1"}
+        local written
+        local store={sequence=0,records={},append=function(_,kind,_,state)
+            equal(kind,"startup_bootstrap_refused"); written=state; return true
+        end,save_snapshot=function() return true end}
+        store.sequence=1
+        equal(pcall(Startup.record_bootstrap_refusal,store,plan,proof),false); equal(written,nil)
+        store.sequence=0; proof.noRunFiles=false
+        equal(pcall(Startup.record_bootstrap_refusal,store,plan,proof),false); equal(written,nil)
+        proof.noRunFiles=true; proof.nativeCalls=1
+        equal(pcall(Startup.record_bootstrap_refusal,store,plan,proof),false); equal(written,nil)
+        proof.nativeCalls=0
+        truthy(Startup.record_bootstrap_refusal(store,plan,proof))
+        equal(written.status,"failed"); equal(written.code,"bootstrap-journal-authentication")
+        equal(written.mutationStarted,false); equal(written.cleanupComplete,true)
+        equal(written.spawned,0); equal(written.helpersCreated,0)
+        equal(written.cadence.status,"NOT_ACQUIRED"); equal(written.failedArtifactSha256,plan.artifactSha256)
+        truthy(Startup.validate_state(written,plan.runId))
+    end)
+
     test("world finalization preserves unresolved cadence history and can never pass gameplay",function()
         local run="20260909-221539-b5664f1858dd4afcab2f296570f197e1"
         local artifact="d3b4a9b6628189cbfa0545e6ca4ce593fedfa19265e708e645695aa2e79cf274"
