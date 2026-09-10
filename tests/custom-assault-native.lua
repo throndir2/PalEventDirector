@@ -971,6 +971,40 @@ return function(test, equal, truthy)
         end)
     end)
 
+    test("player presence requires a real player identity and initialized pawn in the exact world and base radius",function()
+        fixture(function(engine,_,f,_,_,scope)
+            engine.playerPresenceQualified=true
+            scope.world.GetAddress=function() return 1 end
+            local pawn=f:defender_at(500)
+            local controller={IsValid=function() return true end,
+                IsA=function(_,path) return path=="/Script/Pal.PalPlayerController" end,
+                GetPlayerUId=function() return {A=f.noPlayerId and 0 or 4,B=0,C=0,D=0} end,
+                GetDefaultPlayerCharacter=function() if f.noPawn then return nil end; return pawn end,
+                GetWorld=function() error("shadowed controller world helper used") end}
+            local previous=_G.FindAllOf
+            _G.FindAllOf=function(name) equal(name,"PalPlayerController"); return f.noPlayers and {} or {controller} end
+            local ok,reason=pcall(function()
+                local checked,result=engine:startup_player_presence(scope)
+                truthy(checked,result); equal(result.ready,true); equal(result.matchingPlayers,1)
+                f.noPlayerId=true
+                checked,result=engine:startup_player_presence(scope)
+                truthy(checked,result); equal(result.ready,false)
+                f.noPlayerId=false
+                f.noPawn=true
+                checked,result=engine:startup_player_presence(scope)
+                truthy(checked,result); equal(result.ready,false)
+                f.noPawn=false
+                pawn.K2_GetActorLocation=function() return {X=0,Y=0,Z=2000} end
+                checked,result=engine:startup_player_presence(scope)
+                truthy(checked,result); equal(result.ready,false)
+                f.noPlayers=true
+                checked,result=engine:startup_player_presence(scope)
+                truthy(checked,result); equal(result.matchingPlayers,0)
+            end)
+            _G.FindAllOf=previous
+            truthy(ok,reason)
+        end)
+    end)
     test("movement evidence reads the owned component and preserves signed vertical state", function()
         fixture(function(engine, member, _, _, actor)
             local ok, state = engine:inspect(member.handle, member)

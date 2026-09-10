@@ -43,6 +43,8 @@ function Cadence.same_checked(left,right)
 end
 
 function Cadence.plan_valid(plan)
+    if plan.requirePlayerAtBase~=nil and (plan.requirePlayerAtBase~=true or plan.case~=Cadence.CASE
+        or not util.is_integer(plan.baseOrdinal) or plan.baseOrdinal<1 or plan.baseOrdinal>64) then return false end
     if plan.case==Cadence.CASE then
         return plan.experiment==Cadence.CONTRACT and plan.capturePolicy==Cadence.CAPTURE_POLICY and plan.cadenceSeconds==Cadence.SECONDS
     end
@@ -80,6 +82,7 @@ function Cadence.register(bridge,native)
         native:_signature(SETTER,{TickInterval={"FloatProperty",0}})
         native:_signature(GETTER,{ReturnValue={"FloatProperty",0}})
         native:qualify_simulation_observation()
+        if runner.state.requirePlayerAtBase then native:qualify_player_presence() end
     end)
     if not qualified then return false,"Cadence capture barrier layout is unsupported" end
     local ok=bridge:_native_step("cadence-barrier-register",function()
@@ -157,6 +160,7 @@ function Cadence.new(native,qualification,record)
         actor=record.actor,parameter=record.parameter,handle=record.handle,id=util.deep_copy(record.id),
         memberKey=qualification.member.groupId..":"..qualification.member.index,baseId=qualification.member.baseId,
         baseOrdinal=runner.state.baseOrdinal,
+        requirePlayerAtBase=runner.state.requirePlayerAtBase,
         runId=runner.state.runId,artifact=runner.state.artifactSha256,source=runner.state.sourceRevision,
         generation=1,status="NOT_ACQUIRED",active=false,retired=false},Cadence)
 end
@@ -176,6 +180,7 @@ function Cadence:_context()
         and state.members[1].characterId=="BOSS_Hunter_Rifle" and state.members[1].level==30
         and state.members[1].index==1 and state.members[1].slot==1 and state.members[1].baseId==self.baseId
         and state.baseOrdinal==self.baseOrdinal
+        and state.requirePlayerAtBase==self.requirePlayerAtBase
         and type(state.members[1].groupId)=="string" and state.members[1].groupId..":"..state.members[1].index==self.memberKey
         and self.native.records[self.memberKey]==self.record
 end
@@ -320,6 +325,16 @@ function Cadence:check()
         if not permit or self.runner.state.stage~="engagement" or self.native.bridge.clock()>=permit.expiresAt then
             self:release("cadence-window-ended")
             return false
+        end
+        if self.requirePlayerAtBase then
+            local checked,presence=self.native:startup_player_presence(self.record.scope)
+            if not checked then error(presence,0) end
+            self.runner.state.playerPresence=presence
+            if not presence.ready then
+                self.runner.state.failure="player-left-base"
+                self:release("player-left-base")
+                return false
+            end
         end
         if not checked_validity(self.component) then self:release("cadence-disposed"); return false end
         local owned,reason=self.native:_cadence_owner(self)

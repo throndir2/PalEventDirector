@@ -315,13 +315,20 @@ function Native:qualify_simulation_observation()
     self.simulationObservationQualified=true
 end
 
-function Native:actor_world(actor)
-    if not self.a.valid(actor) then return nil end
+function Native:actor_world(actor,strict)
+    local function valid(object)
+        if object==nil then return false end
+        if strict then return Cadence.valid_checked(object) end
+        return self.a.valid(object)
+    end
+    if not valid(actor) then return nil end
     local fn=self.bridge:_static_find("/Script/Engine.Actor:GetLevel")
-    local level=self.a.unwrap(invoke_function(self,"custom-actor-level",fn,actor))
-    if not self.a.valid(level) or not level:IsA("/Script/Engine.Level") then return nil end
-    local world=self.a.unwrap(level.OwningWorld)
-    if not self.a.valid(world) or not world:IsA("/Script/Engine.World") then return nil,level end
+    local level=invoke_function(self,"custom-actor-level",fn,actor)
+    if not strict then level=self.a.unwrap(level) end
+    if not valid(level) or not level:IsA("/Script/Engine.Level") then return nil end
+    local world=level.OwningWorld
+    if not strict then world=self.a.unwrap(world) end
+    if not valid(world) or not world:IsA("/Script/Engine.World") then return nil,level end
     return world,level
 end
 
@@ -442,6 +449,53 @@ end
 
 function Native:startup_support(scopes)
     return require("ped.startup_support").new(self, scopes)
+end
+
+function Native:qualify_player_presence()
+    self:_signature("/Script/Pal.PalPlayerController:GetPlayerUId",{ReturnValue={"StructProperty",0}})
+    self:_signature("/Script/Pal.PalPlayerController:GetDefaultPlayerCharacter",{ReturnValue={"ObjectProperty",0}})
+    self:_signature("/Script/Pal.PalCharacter:IsInitialized",{ReturnValue={"BoolProperty",0}})
+    self:_signature("/Script/Engine.Actor:K2_GetActorLocation",{ReturnValue={"StructProperty",0}})
+    self.playerPresenceQualified=true
+end
+
+function Native:startup_player_presence(scope)
+    return self.bridge:_native_step("startup-player-presence",function()
+        if not self.playerPresenceQualified or not scope or not Cadence.valid_checked(scope.base)
+            or not Cadence.same_checked(scope.world,self.world) or not finite(scope.range) or scope.range<=0
+            or self.a.guid(guid(self:_call("player-presence-base",scope.base,"GetId"),false))~=scope.baseId then error(SCOPE,0) end
+        local find=rawget(_G,"FindAllOf")
+        if type(find)~="function" then error(SCOPE,0) end
+        local controllers=find("PalPlayerController") or {}
+        if #controllers>self.bridge.config.limits.maxPlayers then error(SCOPE,0) end
+        local result={ready=false,matchingPlayers=0}
+        for _,controller in ipairs(controllers) do
+            if Cadence.valid_checked(controller) and controller:IsA("/Script/Pal.PalPlayerController") then
+                local controller_world=self:actor_world(controller,true)
+                if controller_world and Cadence.same_checked(controller_world,scope.world) then
+                    local uid=guid(self:_call("player-presence-id",controller,"GetPlayerUId"),true)
+                    if not is_zero(uid) then
+                        local pawn=self:_call("player-presence-character",controller,"GetDefaultPlayerCharacter")
+                        if pawn~=nil and Cadence.valid_checked(pawn) and pawn:IsA("/Script/Pal.PalCharacter") then
+                            local pawn_world=self:actor_world(pawn,true)
+                            if pawn_world and Cadence.same_checked(pawn_world,scope.world) then
+                                local initialized=self:_call("player-presence-initialized",pawn,"IsInitialized")
+                                if type(initialized)~="boolean" then error(SCOPE,0) end
+                                if initialized then
+                                    local location=vector(self:_call("player-presence-location",pawn,"K2_GetActorLocation"))
+                                    local distance=math.sqrt(distance_squared(location,scope.origin))
+                                    result.nearestDistanceCm=math.min(result.nearestDistanceCm or distance,distance)
+                                    if distance<=scope.range then result.matchingPlayers=result.matchingPlayers+1 end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+        result.ready=result.matchingPlayers>0
+        return result
+    end)
 end
 
 function Native:startup_catalog_entry(character_id)

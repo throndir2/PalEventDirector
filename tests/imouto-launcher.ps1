@@ -307,16 +307,24 @@ try {
         }
         $qualifiedState.dealtDamageEvents = 1
         Write-StartupTestFixtureOutcome $qualifiedStatePath $qualifiedState
-        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -ValidateOnly | Out-Null
+        try {
+            & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -StartupTestRequirePlayer -ValidateOnly | Out-Null
+            throw 'Player-present launch accepted an unspecified base.'
+        } catch {
+            if ($_.Exception.Message -notmatch 'explicit base index') { throw }
+        }
+        & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -StartupTest CadencedEngagement -StartupTestBaseIndex 3 -StartupTestRequirePlayer -ValidateOnly | Out-Null
         $activeAfterValidate = Get-Content (Join-Path $testRoot 'active.json') -Raw | ConvertFrom-Json
         if ($activeAfterValidate.runId -cne $qualifiedLaunch.StartupTestRunId) { throw 'Cadence validation armed a test.' }
-        $cadenceLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest CadencedEngagement
+        $cadenceLaunch = & $matching.Launcher -ServerRoot $matching.ServerRoot -SyntheticTestFixture -SyntheticChildScript $childScript -StartupTest CadencedEngagement -StartupTestBaseIndex 3 -StartupTestRequirePlayer
         $cadencePlan = Get-Content (Join-Path $cadenceLaunch.StartupTestDirectory 'plan.json') -Raw | ConvertFrom-Json
         if ($cadencePlan.case -cne 'cadenced-engagement' -or $cadencePlan.experiment -cne 'hunter-level30-network-sphere-cadence-v1' -or
-            $cadencePlan.capturePolicy -cne 'stock-networked-spheres-only-v1' -or $cadencePlan.cadenceSeconds -ne 0.1) {
+            $cadencePlan.capturePolicy -cne 'stock-networked-spheres-only-v1' -or $cadencePlan.cadenceSeconds -ne 0.1 -or
+            $cadencePlan.requirePlayerAtBase -ne $true -or $cadencePlan.baseOrdinal -ne 3 -or $cadenceLaunch.StartupTestRequirePlayer -ne $true) {
             throw 'Cadence launch omitted its restricted capture policy or fixed interval.'
         }
         $cadenceState = @{schemaVersion=1;runId=$cadencePlan.runId;case=$cadencePlan.case;experiment=$cadencePlan.experiment;
+            requirePlayerAtBase=$true;baseOrdinal=3;
             capturePolicy=$cadencePlan.capturePolicy;cadenceSeconds=$cadencePlan.cadenceSeconds;status='blocked';mutationStarted=$true;
             cleanupComplete=$true;sourceRevision=$cadencePlan.sourceRevision;artifactSha256=$cadencePlan.artifactSha256;
             spawned=1;initialized=1;cleaned=1;moved=0;helpersCreated=1;helpersCleaned=1;

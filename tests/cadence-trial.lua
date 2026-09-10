@@ -101,7 +101,7 @@ return function(test,equal,truthy)
             truthy(f.twoMatches~=false,"cadence bypassed shape receipts")
             return {phase="alive",actor=actor,controller=controller,parameter=parameter},record
         end
-        local previousGT,previousQueue,previousGetenv,previousRegister=_G.IsInGameThread,_G.ExecuteInGameThread,os.getenv,_G.RegisterHook
+        local previousGT,previousQueue,previousGetenv,previousRegister,previousFind=_G.IsInGameThread,_G.ExecuteInGameThread,os.getenv,_G.RegisterHook,_G.FindAllOf
         _G.IsInGameThread=function() f.events[#f.events+1]="thread"; return f.gt end
         _G.ExecuteInGameThread=function() f.queued=f.queued+1; error("capture restore queued") end
         local env={COMPUTERNAME="IMOUTO",PAL_EVENT_DIRECTOR_STARTUP_TEST_RUN=runner.state.runId,
@@ -151,6 +151,7 @@ return function(test,equal,truthy)
         end
         local ok,reason=xpcall(function() callback(f,object) end,debug.traceback)
         _G.IsInGameThread,_G.ExecuteInGameThread,os.getenv,_G.RegisterHook=previousGT,previousQueue,previousGetenv,previousRegister
+        _G.FindAllOf=previousFind
         truthy(ok,reason)
     end
 
@@ -219,6 +220,10 @@ return function(test,equal,truthy)
         equal(Cadence.plan_valid({case=Cadence.CASE,experiment=Cadence.CONTRACT}),false)
         truthy(Cadence.plan_valid({case=Cadence.CASE,experiment=Cadence.CONTRACT,capturePolicy=Cadence.CAPTURE_POLICY,cadenceSeconds=0.1}))
         equal(Cadence.plan_valid({case="qualified-engagement",capturePolicy=Cadence.CAPTURE_POLICY,cadenceSeconds=0.1}),false)
+        equal(Cadence.plan_valid({case=Cadence.CASE,experiment=Cadence.CONTRACT,capturePolicy=Cadence.CAPTURE_POLICY,
+            cadenceSeconds=0.1,requirePlayerAtBase=true}),false)
+        truthy(Cadence.plan_valid({case=Cadence.CASE,experiment=Cadence.CONTRACT,capturePolicy=Cadence.CAPTURE_POLICY,
+            cadenceSeconds=0.1,requirePlayerAtBase=true,baseOrdinal=3}))
         fixture(function(f)
             equal(Cadence.register(f.bridge,f.native),false)
             equal(Cadence.admission(f.native,f.runner),false); equal(#f.sets,0)
@@ -607,6 +612,62 @@ return function(test,equal,truthy)
         end)
     end)
 
+    test("player-present cadence checks restore on departure without weakening the presence flag",function()
+        fixture(function(f)
+            f.runner.state.requirePlayerAtBase=true
+            f.runner.state.baseOrdinal=3
+            local present=true
+            f.native.startup_player_presence=function() return true,{ready=present,matchingPlayers=present and 1 or 0} end
+            f:acquire(); truthy(f.lease:check())
+            present=false
+            equal(f.lease:check(),false)
+            equal(f.lease.status,"RESTORED"); equal(f.interval,10); equal(f.runner.state.failure,"player-left-base")
+        end)
+        fixture(function(f)
+            f.runner.state.requirePlayerAtBase=true
+            f.runner.state.baseOrdinal=3
+            f:acquire()
+            f.runner.state.requirePlayerAtBase=nil
+            equal(f.lease:check(),false); equal(f.lease.status,"UNRESOLVED")
+        end)
+    end)
+
+    test("unreadable player presence is a native fault, not ordinary departure restoration",function()
+        for _,kind in ipairs({"controller","pawn","invalid"}) do
+            fixture(function(f,object)
+                f.runner.state.requirePlayerAtBase=true
+                f.runner.state.baseOrdinal=3
+                f:acquire()
+                local world=f.lease.world
+                f.native.world=world
+                f.native.a.guid=function() return f.member.baseId end
+                f.lease.record.scope={world=world,baseId=f.member.baseId,range=1000,origin={X=0,Y=0,Z=0},
+                    base=object({GetId=function() return {A=9,B=0,C=0,D=0} end})}
+                local pawn=object({world=world,IsA=function(_,path) return path=="/Script/Pal.PalCharacter" end,
+                    IsInitialized=function() return true end,K2_GetActorLocation=function() return {X=0,Y=0,Z=0} end})
+                local controller=object({world=world,IsA=function(_,path) return path=="/Script/Pal.PalPlayerController" end,
+                    GetPlayerUId=function() return {A=4,B=0,C=0,D=0} end,GetDefaultPlayerCharacter=function() return pawn end})
+                local probes=0
+                if kind=="invalid" then controller.disposed=true
+                else
+                    local target=kind=="controller" and controller or pawn
+                    target.IsValid=function() probes=probes+1; error("fixture private presence error") end
+                end
+                _G.FindAllOf=function(name) equal(name,"PalPlayerController"); return {controller} end
+                equal(f.lease:check(),false)
+                if kind=="invalid" then
+                    equal(f.lease.status,"RESTORED"); equal(f.interval,10); equal(#f.sets,2)
+                    equal(f.bridge.native_fault,nil)
+                else
+                    equal(probes,1); equal(f.lease.status,"UNRESOLVED")
+                    equal(f.interval,Cadence.APPLIED); equal(#f.sets,1); truthy(f.bridge.native_fault)
+                    local boundaries=#f.boundaries
+                    equal(f.lease:release("duplicate"),false)
+                    equal(#f.boundaries,boundaries); equal(probes,1)
+                end
+            end)
+        end
+    end)
     test("natural projectile witnesses use creation post and hit pre without retaining native references",function()
         fixture(function(f,object)
             f:acquire()

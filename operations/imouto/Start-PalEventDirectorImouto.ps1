@@ -14,6 +14,8 @@ param(
     [ValidateRange(0,64)]
     [int]$StartupTestBaseIndex = 0,
 
+    [switch]$StartupTestRequirePlayer,
+
     [Parameter(DontShow)]
     [string]$ServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer',
 
@@ -28,6 +30,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 if ($StartupTestBaseIndex -gt 0 -and $StartupTest -in @('None','ClassCatalog')) {
     throw 'An explicit base index requires a world-based startup scenario.'
+}
+if ($StartupTestRequirePlayer -and ($StartupTest -ne 'CadencedEngagement' -or $StartupTestBaseIndex -lt 1)) {
+    throw 'A player-present control requires CadencedEngagement and an explicit base index.'
 }
 
 $CanonicalServerRoot = 'D:\SteamLibrary\steamapps\common\PalServer'
@@ -214,6 +219,7 @@ $launch = [ordered]@{
     Ue4ssApiVersion = $ExpectedRuntimeApi
     StartupTest = $StartupTest
     StartupTestBaseIndex = $StartupTestBaseIndex
+    StartupTestRequirePlayer = [bool]$StartupTestRequirePlayer
 }
 $testRoot = Join-Path $DataDirectory 'startup-tests'
 $activeTestPath = Join-Path $testRoot 'active.json'
@@ -303,6 +309,15 @@ function Read-StartupTestOutcome {
         }
     }
     if ($state.case -eq 'cadenced-engagement') {
+        if ($null -ne $state.PSObject.Properties['requirePlayerAtBase'] -and
+            ($state.requirePlayerAtBase -ne $true -or $state.baseOrdinal -lt 1 -or $state.baseOrdinal -gt 64)) {
+            throw 'Player-present startup policy is invalid.'
+        }
+        if ($null -ne $state.PSObject.Properties['requirePlayerAtBase'] -and $state.status -eq 'passed' -and
+            ($state.playerPresenceConfirmed -ne $true -or $state.playerPresence.ready -ne $true -or
+                $state.playerPresence.matchingPlayers -lt 1)) {
+            throw 'Player-present control lacks a presence witness.'
+        }
         if ($state.capturePolicy -cne 'stock-networked-spheres-only-v1' -or $state.cadenceSeconds -ne 0.1) {
             throw 'Cadence trial capture policy or interval is invalid.'
         }
@@ -358,7 +373,8 @@ function Read-StartupTestOutcome {
                 ($state.cadence.status -ne 'DISPOSED' -or $state.cadence.disposalVerified -ne $true)))) {
             throw 'Cadence lease was not restored or disposed.'
         }
-    } elseif ($null -ne $state.PSObject.Properties['capturePolicy'] -or $null -ne $state.PSObject.Properties['cadenceSeconds']) {
+    } elseif ($null -ne $state.PSObject.Properties['capturePolicy'] -or $null -ne $state.PSObject.Properties['cadenceSeconds'] -or
+        $null -ne $state.PSObject.Properties['requirePlayerAtBase']) {
         throw 'Cadence policy cannot be attached to another startup case.'
     }
     $finalizedNpcs = 0
@@ -421,6 +437,7 @@ try {
         $plan = [ordered]@{ schemaVersion=1; runId=$testRunId; case=$caseNames[$StartupTest]; sourceRevision=[string]$deployment.sourceRevision;
             artifactSha256=[string]$deployment.artifactSha256 }
         if ($StartupTestBaseIndex -gt 0) { $plan['baseOrdinal'] = $StartupTestBaseIndex }
+        if ($StartupTestRequirePlayer) { $plan['requirePlayerAtBase'] = $true }
         if ($StartupTest -eq 'ShapeQualification') { $plan['experiment'] = 'hunter-level30-one-instance-v1' }
         if ($StartupTest -eq 'QualifiedEngagement') { $plan['experiment'] = 'hunter-level30-qualified-engagement-v1' }
         if ($StartupTest -eq 'CadencedEngagement') {

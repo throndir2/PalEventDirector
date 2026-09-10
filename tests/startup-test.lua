@@ -3,7 +3,7 @@ return function(test, equal, truthy)
     local Shape = require("ped.shape_qualification")
     local Cadence = require("ped.cadence_trial")
     local util = require("ped.util")
-    local function fixture(case)
+    local function fixture(case,require_player)
         local f = { now = 1000, records = {}, spawns = 0, despawns = 0, travels = 0, phases = {}, actors = {} }
         local store = { sequence = 0 }
         function store:append(kind, _, state)
@@ -35,6 +35,10 @@ return function(test, equal, truthy)
             local scopes = {}
             for index = 1, count do scopes[index] = { baseId = "private-base-" .. index, origin = { X=0,Y=0,Z=0 } } end
             return true, { scopes = scopes, availableBases = 10 }
+        end
+        function engine:startup_player_presence()
+            f.presenceChecks=(f.presenceChecks or 0)+1
+            return true,{ready=f.playerReady==true,matchingPlayers=f.playerReady and 1 or 0}
         end
         function engine:prepare_spawn(_, member)
             f.prepares=(f.prepares or 0)+1
@@ -163,6 +167,7 @@ return function(test, equal, truthy)
             experiment=Shape.contract(case),
             capturePolicy=case==Cadence.CASE and Cadence.CAPTURE_POLICY or nil,
             cadenceSeconds=case==Cadence.CASE and Cadence.SECONDS or nil,
+            requirePlayerAtBase=require_player and true or nil,baseOrdinal=require_player and 3 or nil,
             sourceRevision=string.rep("1",40), artifactSha256=string.rep("2",64) }, store=store, engine=engine, clock=function() return f.now end,
             logger={ info=function() end, error=function() end } })
         if case==Cadence.CASE then
@@ -599,6 +604,46 @@ return function(test, equal, truthy)
         f:tick(5)
         equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"cadence-barrier-unavailable")
         equal(f.spawns,0); equal(f.helpers,nil); equal(f.cadenceAcquisitions,nil)
+    end)
+
+    test("player-present control waits without helpers or NPCs and retires when the player leaves",function()
+        local f=fixture(Cadence.CASE,true)
+        f.physical_ready=true
+        f:tick(20)
+        equal(f.runner.state.stage,"player-wait"); equal(f.spawns,0); equal(f.helpers,nil)
+        equal(f.runner.state.mutationStarted,false); equal(f.runner.state.cadence.status,"NOT_ACQUIRED")
+        f.playerReady=true
+        f:tick(25)
+        equal(f.runner.state.playerPresenceConfirmed,true); equal(f.spawns,1)
+        equal(f.runner.state.cadence.status,"ACTIVE")
+        f.playerReady=false
+        f:tick(5)
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"player-left-base")
+        equal(f.runner.state.cadence.status,"RESTORED")
+        equal(f.runner.state.cleaned,1); equal(f.runner.state.helpersCleaned,1)
+    end)
+
+    test("player-present wait expires without creating anything",function()
+        local f=fixture(Cadence.CASE,true)
+        f:tick(2)
+        equal(f.runner.state.stage,"player-wait")
+        f.now=f.runner.state.stageStartedAt+900
+        f:tick()
+        equal(f.runner.state.status,"blocked"); equal(f.runner.state.code,"player-presence-timeout")
+        equal(f.runner.state.cleanupComplete,true); equal(f.spawns,0); equal(f.helpers,nil)
+    end)
+
+    test("player-present PASS requires both confirmed presence and normal outgoing damage evidence",function()
+        local f=fixture(Cadence.CASE,true)
+        f.physical_ready,f.playerReady=true,true
+        f:tick(25)
+        f.legal_target={}
+        f.runner:on_damage(f.actors[1],f.legal_target,1)
+        f:tick(5)
+        equal(f.runner.state.status,"passed")
+        truthy(Startup.validate_state(f.runner.state,"fixture-run"))
+        f.runner.state.playerPresenceConfirmed=nil
+        equal(pcall(Startup.validate_state,f.runner.state,"fixture-run"),false)
     end)
 
     test("cadence case requires fresh shape receipts then a lease and real outgoing damage before PASS",function()

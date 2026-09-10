@@ -49,6 +49,11 @@ function Test.validate_state(state, run_id)
         and type(state.artifactSha256) == "string" and #state.artifactSha256 == 64 and state.artifactSha256:match("^%x+$"),
         "Startup test outcome is invalid")
     assert(Cadence.plan_valid(state),"Cadence capture policy is invalid")
+    if state.requirePlayerAtBase and state.status=="passed" then
+        assert(state.playerPresenceConfirmed==true and type(state.playerPresence)=="table"
+            and state.playerPresence.ready==true and util.is_integer(state.playerPresence.matchingPlayers)
+            and state.playerPresence.matchingPlayers>0, "Player-present control lacks a presence witness")
+    end
     if state.case==Cadence.CASE and state.cleanupComplete then
         assert(Cadence.settled(state.cadence),"Cadence lease cleanup is unresolved")
         if state.status=="passed" then assert(Cadence.passed(state.cadence),"Cadence lease was not restored or disposed") end
@@ -390,6 +395,7 @@ function Test.new(options)
             baseOrdinal=plan.baseOrdinal,
             experiment=plan.experiment, experimentalPremise=Shape.contract(plan.case) and Shape.PREMISE or nil,
             capturePolicy=plan.capturePolicy,cadenceSeconds=plan.cadenceSeconds,
+            requirePlayerAtBase=plan.requirePlayerAtBase,
             cadence=plan.case==Cadence.CASE and {status="NOT_ACQUIRED",active=false,retired=false,generation=0} or nil,
             status = "running", stage = plan.case == "class-catalog" and "class-catalog" or "world",
             startedAt = (options.clock or util.now_seconds)(),
@@ -571,6 +577,14 @@ local function distance2(left, right)
     return (left.X - right.X) ^ 2 + (left.Y - right.Y) ^ 2
 end
 
+function Test:_prepare_support()
+    self.support=self.engine:startup_support(self.scopes)
+    local prepared,available=self.support:prepare()
+    if not prepared then return self:halt(available) end
+    if not available then return self:_finish("blocked","streaming-subsystem-unavailable") end
+    return self:_stage("support-spawn")
+end
+
 function Test:_tick()
     if self.stopped or TERMINAL[self.state.status] then return end
     local now = self.clock()
@@ -583,6 +597,15 @@ function Test:_tick()
         if stage=="engagement" and self.state.cadence.retired then
             self.state.failure=self.state.failure or "cadence-retired"
             return self:_stage("cleanup")
+        end
+        if self.state.requirePlayerAtBase and (stage=="spawn" or stage=="initialize" or stage=="shape-observe" or stage=="engagement") then
+            local checked,presence=self.engine:startup_player_presence(self.scopes[1])
+            if not checked then return self:halt(presence) end
+            self.state.playerPresence=presence
+            if not presence.ready then
+                self.state.failure="player-left-base"
+                return self:_stage("cleanup")
+            end
         end
     end
     if stage == "class-catalog" then
@@ -609,17 +632,29 @@ function Test:_tick()
             if type(self.scopes) ~= "table" or #self.scopes ~= CASES[self.state.case] then
                 return self:_finish("blocked", result.blockedCode or "shape-base-unavailable")
             end
-            self.support = self.engine:startup_support(self.scopes)
-            local prepared, available = self.support:prepare()
-            if not prepared then return self:halt(available) end
-            if not available then return self:_finish("blocked", "streaming-subsystem-unavailable") end
-            return self:_stage("support-spawn")
+            if self.state.requirePlayerAtBase then return self:_stage("player-wait") end
+            return self:_prepare_support()
         end
         self.scopes = result.scopes
         assert(type(self.scopes) == "table" and #self.scopes == CASES[self.state.case], "Startup test returned an invalid base count")
         if self.state.case == "prewarm" then return self:_finish("passed", "physical-ready-without-support") end
         if self.state.case == "surface-survey" then return self:_stage("surface-survey") end
         return self:_plan_members()
+    elseif stage=="player-wait" then
+        local checked,presence=self.engine:startup_player_presence(self.scopes[1])
+        if not checked then return self:halt(presence) end
+        self.state.playerPresence=presence
+        if presence.ready then
+            self.state.playerPresenceConfirmed=true
+            if not self:_save("startup_player_presence_confirmed") then return end
+            return self:_prepare_support()
+        end
+        if now>=self.state.stageStartedAt+900 then return self:_finish("blocked","player-presence-timeout") end
+        if now>=(self.nextPresenceCheckpoint or 0) then
+            self.nextPresenceCheckpoint=now+5
+            return self:_save("startup_waiting_for_player")
+        end
+        return
     elseif stage == "surface-survey" then
         if not self:_save("startup_surface_survey_intent") then return end
         local ok,result=self.engine:startup_surface_survey(self.scopes[1])
@@ -893,7 +928,7 @@ function Test:_tick()
                         if not self:_save(dispatched and "startup_engagement_returned" or "startup_combat_observed") then return end
                     end
                     if result == "unavailable" then
-                        self.state.failure = "engagement-unavailable"
+                        self.state.failure = self.state.failure or "engagement-unavailable"
                         return self:_stage("cleanup")
                     end
                 end
