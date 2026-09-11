@@ -96,6 +96,7 @@ Read these in order:
 13. [Alpha.3 administration and scheduling](docs/13-admin-and-scheduling.md) — all chat/console commands, profiles, schedules, warnings, eligibility, and configuration fields.
 14. [IMOUTO DEV deployment](docs/14-imouto-dev-deployment.md) — local clean builds, stopped-server deployment, dependency pins, rollback, and vanilla-client checks without touching MIKO Production.
 15. [Preflight crash diagnostics](docs/15-preflight-crash-diagnostics.md) — guarded gameplay testing, the isolated diagnostic profile, pinned-source buffer audit, and one-operation procedure.
+16. [Startup qualification matrix](docs/16-startup-qualification-matrix.md) - server-side interest hypotheses, evidence requirements, and efficient human-operator scenarios.
 
 The installed test-profile preparation command enables chat and the event observation/substitution capabilities. Use `!siege status` and an authorized `!siege start native 0` or `!siege start all-bounty 0` directly. Authorization, version, exact online-guild targets, resource bounds and durable recovery still apply. Native raid-policy checks do not gate the custom backend; native profiles retain their documented admin/ordinary-user policies. A native Lua error or failed breadcrumb write stops further native operations until the server is restarted after investigation. The stepped diagnostic remains available for isolated troubleshooting, but is not required for gameplay.
 
