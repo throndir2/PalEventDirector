@@ -2,6 +2,7 @@ return function(test,equal,truthy)
     local Survey=require("ped.surface_survey")
     local Native=require("ped.custom_assault_native")
     local WATER_CLASS="/Game/Others/FluidInteractionTool/Blueprints/NotNeeded/BP_SimpleWater.BP_SimpleWater_C"
+    local SUNREACH_MESH="/Game/Pal/Model/Stage/b07/RiverLake/Mesh/SM_pal_b07_WaterMesh.SM_pal_b07_WaterMesh"
     local function fixture()
         local f={queries=0,clockValue=0,columnQueries=0,inventoryQueries=0,outputs={}}
         local function object(values)
@@ -16,9 +17,16 @@ return function(test,equal,truthy)
             end} end}) end})
         local mesh=object({IsA=function(_,path) return path=="/Script/Engine.StaticMesh" end,
             GetFullName=function() return "StaticMesh /Game/Others/FluidInteractionTool/Meshes/S_WaterMesh.S_WaterMesh" end})
+        local sunreach=object({IsA=mesh.IsA,GetFullName=function() return "StaticMesh "..SUNREACH_MESH end,
+            GetClass=function() return object({GetFullName=function() return "Class /Script/Engine.StaticMesh" end}) end})
+        sunreach.BodySetup=object({CollisionTraceFlag=3,BuildScale3D={X=1,Y=1,Z=1},
+            GetClass=function() return object({GetFullName=function() return "Class /Script/Engine.BodySetup" end}) end,
+            GetOuter=function() return sunreach end,GetFName=function() return {ToString=function() return "BodySetup_0" end} end})
+        f.sunreachMesh=sunreach
         local function component(owner,kind,properties)
             local c=object(properties)
             c.BoundsScale=1
+            c.Mobility=0
             c.GetOwner=function() return owner end
             c.GetWorld=function() return world end
             c.GetCollisionEnabled=function() return 3 end
@@ -32,6 +40,7 @@ return function(test,equal,truthy)
                 if kind=="volume" then return path=="/Script/Engine.BoxComponent" or path=="/Script/Engine.ShapeComponent" end
                 if kind=="surface" then
                     return path=="/Script/Engine.StaticMeshComponent" or path=="/Script/Engine.InstancedStaticMeshComponent"
+                        or path=="/Script/Engine.HierarchicalInstancedStaticMeshComponent"
                 end
                 return kind=="solid" and path=="/Script/Engine.StaticMeshComponent"
             end
@@ -101,9 +110,16 @@ return function(test,equal,truthy)
                         GetWorld=function() error("shadowed world helper was used") end,bWorldOceanPlane=false})
                     extra.SwimmingVolume=component(extra,"volume",{center={X=0,Y=0,Z=-500},extent={X=10000,Y=10000,Z=500}})
                     extra.HierarchicalInstancedStaticMesh=component(extra,"surface",{
-                        StaticMesh=mesh,center={X=0,Y=0,Z=0},extent={X=10000,Y=10000,Z=0},
+                        StaticMesh=f.streamedSunreach and sunreach or mesh,
+                        center={X=0,Y=0,Z=f.streamedTop or 0},extent={X=10000,Y=10000,Z=f.streamedTilt and 2 or 0},
                         GetInstanceCount=function() return 1 end,
                     })
+                    f.extraWater=extra
+                    if f.streamedColumn then
+                        f.column[#f.column+1]=extra.SwimmingVolume
+                        f.column[#f.column+1]=extra.HierarchicalInstancedStaticMesh
+                    end
+                    if f.streamedContact then f.capsule={extra.HierarchicalInstancedStaticMesh} end
                     out[11]=extra
                 end
             end,
@@ -137,6 +153,7 @@ return function(test,equal,truthy)
         native.bridge._static_find=function(_,path)
             if path=="/Script/Engine.Default__KismetSystemLibrary" then return kismet end
             if path=="/Script/Engine.Default__GameplayStatics" then return gameplay end
+            if path==SUNREACH_MESH then return f.sunreachMesh end
             return mesh
         end
         local cdo=object({IsA=function(_,path) return path=="/Script/Pal.PalCharacter" end})
@@ -188,6 +205,55 @@ return function(test,equal,truthy)
         equal(result.footAboveWaterCm,967)
         equal(result.point,nil); equal(result.position,nil); equal(f.survey.point.Z,1000)
         equal(#f.survey.sourceCollision.responses,32)
+    end)
+
+    test("exact Sunreach triangles retain whole-column tops and the local water-contact veto",function()
+        local f=fixture(); f.streamedWater,f.streamedSunreach,f.streamedColumn=true,true,true
+        local result=f.survey:run()
+        equal(result.complete,true); equal(result.classification,"proxy-clear"); equal(result.spawnQualified,false)
+        equal(result.waterMeshActors.stockFlatBox,10); equal(result.waterMeshActors.sunreachFlatTriangles,1)
+        equal(result.columnWaterComponents,4); equal(result.columnOceanWitness,true)
+        f=fixture(); f.streamedWater,f.streamedSunreach,f.streamedColumn=true,true,true
+        f.streamedTop=2000
+        result=f.survey:run()
+        equal(result.complete,true); equal(result.classification,"wet"); truthy(result.footAboveWaterCm<0)
+        f=fixture(); f.streamedWater,f.streamedSunreach,f.streamedContact=true,true,true
+        result=f.survey:run()
+        equal(result.classification,"wet"); equal(result.waterContacts,1); equal(result.spawnQualified,false)
+    end)
+
+    test("Sunreach support rejects a different body source policy or nonflat geometry",function()
+        for _,kind in ipairs({"outer","mode","scale","tilt","persistent"}) do
+            local f=fixture(); f.streamedWater,f.streamedSunreach=true,true
+            local body=f.sunreachMesh.BodySetup
+            if kind=="outer" then body.GetOuter=function() return f.mesh end end
+            if kind=="mode" then body.CollisionTraceFlag=2 end
+            if kind=="scale" then body.BuildScale3D.Z=2 end
+            if kind=="tilt" then f.streamedTilt=true end
+            if kind=="persistent" then f.actors[1].HierarchicalInstancedStaticMesh.StaticMesh=f.sunreachMesh end
+            local result=f.survey:run()
+            equal(result.complete,false); equal(result.spawnQualified,false); equal(f.queries,0)
+            equal(result.code,kind=="tilt" and "water-bounds-unqualified" or "water-shape-scope")
+            if kind=="persistent" then equal(result.waterShapeScope.meshSourceReason,"persistent-water-source-changed") end
+        end
+    end)
+
+    test("Sunreach source replacement and pose changes during a survey never produce complete evidence",function()
+        for _,kind in ipairs({"body","bounds","instances","query"}) do
+            local f=fixture(); f.streamedWater,f.streamedSunreach=true,true
+            local original=f.survey._local_proxy
+            f.survey._local_proxy=function(self,...)
+                local result=original(self,...)
+                if kind=="body" then
+                    f.sunreachMesh.BodySetup=require("ped.util").shallow_copy(f.sunreachMesh.BodySetup)
+                elseif kind=="bounds" then f.extraWater.HierarchicalInstancedStaticMesh.center.Z=100
+                elseif kind=="instances" then f.extraWater.HierarchicalInstancedStaticMesh.GetInstanceCount=function() return 2 end
+                else f.extraWater.HierarchicalInstancedStaticMesh.GetCollisionEnabled=function() return 0 end end
+                return result
+            end
+            local result=f.survey:run()
+            equal(result.complete,false); equal(result.code,"water-body-source-changed"); equal(result.spawnQualified,false)
+        end
     end)
 
     test("local proxy prefilter uses the full offset enclosure without a column or water inventory",function()

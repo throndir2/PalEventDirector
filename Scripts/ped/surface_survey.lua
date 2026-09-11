@@ -7,6 +7,7 @@ local ERROR = "Custom assault scope is invalid"
 local WORLD_PACKAGE = "/Game/Pal/Maps/MainWorld_5/PL_MainWorld5"
 local WATER_CLASS = "/Game/Others/FluidInteractionTool/Blueprints/NotNeeded/BP_SimpleWater.BP_SimpleWater_C"
 local WATER_MESH = "/Game/Others/FluidInteractionTool/Meshes/S_WaterMesh.S_WaterMesh"
+local SUNREACH_WATER_MESH = "/Game/Pal/Model/Stage/b07/RiverLake/Mesh/SM_pal_b07_WaterMesh.SM_pal_b07_WaterMesh"
 local COLUMN_HALF_HEIGHT = 100010000
 
 local function finite(value)
@@ -124,6 +125,60 @@ function Survey:_bounds(component)
     return {center=center,extent=extent,top=center.Z+extent.Z}
 end
 
+function Survey:_water_mesh_source(component,owner)
+    local mesh=self.a.unwrap(component.StaticMesh)
+    if self.a.same(mesh,self.mesh) then return {mesh=mesh,kind="stock-flat-box"} end
+    local sunreach=self.bridge:_static_find(SUNREACH_WATER_MESH)
+    if not self.a.valid(sunreach) or not self.a.same(mesh,sunreach) then return nil,"mesh-not-qualified" end
+    if not owner or not owner:IsA(WATER_CLASS) or not component:IsA("/Script/Engine.HierarchicalInstancedStaticMeshComponent")
+        or component.Mobility~=0 or not self.a.same(self.a.unwrap(owner.HierarchicalInstancedStaticMesh),component) then
+        return nil,"sunreach-component-source"
+    end
+    local class=self:_call("water-mesh-class",mesh,"GetClass")
+    if not self.a.valid(class) or self:_call("water-mesh-class-name",class,"GetFullName")~="Class /Script/Engine.StaticMesh" then
+        return nil,"sunreach-mesh-class"
+    end
+    local body=self.a.unwrap(mesh.BodySetup)
+    if not self.a.valid(body) then return nil,"sunreach-body-unavailable" end
+    local body_class=self:_call("water-body-class",body,"GetClass")
+    if not self.a.valid(body_class) or self:_call("water-body-class-name",body_class,"GetFullName")~="Class /Script/Engine.BodySetup"
+        or not self.a.same(self:_call("water-body-outer",body,"GetOuter"),mesh)
+        or self:_call("water-body-name",body,"GetFName"):ToString()~="BodySetup_0" then
+        return nil,"sunreach-body-identity"
+    end
+    local scale=vector(self.a.unwrap(body.BuildScale3D))
+    if body.CollisionTraceFlag~=3 or scale.X~=1 or scale.Y~=1 or scale.Z~=1 then
+        return nil,"sunreach-body-policy"
+    end
+    return {mesh=mesh,body=body,kind="sunreach-flat-triangles"}
+end
+
+function Survey:_stable_water_sources()
+    for _,entry in ipairs(self.waters) do
+        if entry.source.kind=="sunreach-flat-triangles" then
+            if not self.a.same(self.a.unwrap(entry.actor.SwimmingVolume),entry.volume)
+                or not self.a.same(self.a.unwrap(entry.actor.HierarchicalInstancedStaticMesh),entry.surface) then
+                return false
+            end
+            local source=self:_water_mesh_source(entry.surface,entry.actor)
+            if not source or source.kind~=entry.source.kind or not self.a.same(source.mesh,entry.source.mesh)
+                or not self.a.same(source.body,entry.source.body) then return false end
+            local vi,si=self:_component(entry.volume),self:_component(entry.surface)
+            if not vi or not si or not self.a.same(vi.owner,entry.actor) or not self.a.same(si.owner,entry.actor)
+                or self:_response(entry.surface,self.waterChannel)~=2 then return false end
+            if self:_call("water-stable-instances",entry.surface,"GetInstanceCount")~=entry.instances then return false end
+            for _,pair in ipairs({{entry.volume,entry.volumeBounds},{entry.surface,entry.surfaceBounds}}) do
+                local bounds=self:_bounds(pair[1])
+                if not bounds then return false end
+                for _,key in ipairs({"X","Y","Z"}) do
+                    if bounds.center[key]~=pair[2].center[key] or bounds.extent[key]~=pair[2].extent[key] then return false end
+                end
+            end
+        end
+    end
+    return true
+end
+
 function Survey:_water(component,owner,contact_only)
     for _,entry in ipairs(self.waters) do
         if self.a.same(component,entry.volume) then return "volume",entry end
@@ -136,8 +191,9 @@ function Survey:_water(component,owner,contact_only)
         end
     end
     if self:_response(component,self.waterChannel)~=2 then return nil end
-    if not component:IsA("/Script/Engine.StaticMeshComponent")
-        or not self.a.same(self.a.unwrap(component.StaticMesh),self.mesh) then return "unsupported" end
+    if not component:IsA("/Script/Engine.StaticMeshComponent") or not self:_water_mesh_source(component,owner) then
+        return "unsupported"
+    end
     -- Any identified local water contact is a veto; no water-top/flatness certificate is needed to reject it.
     if contact_only then return "surface" end
     local bounds=self:_bounds(component)
@@ -195,6 +251,7 @@ function Survey:_environment()
     if persistent_count~=10 then return false,"water-cohort-incomplete" end
     self.waterChannel=channel(self:_call("water-channel",self.native.utility,"GetEngineCollisionChannelByPalTraceType",4))
     local oceans,persistent_oceans,instance_counts=0,0,{}
+    local mesh_counts={stockFlatBox=0,sunreachFlatTriangles=0}
     for index=1,total do
         local actor=self.a.unwrap(actors[index])
         if not self.a.valid(actor) or not actor:IsA(WATER_CLASS) then
@@ -211,13 +268,17 @@ function Survey:_environment()
         local actual_mesh=self.a.unwrap(surface.StaticMesh)
         local volume_owner=vi~=nil and self.a.same(vi.owner,actor)
         local surface_owner=si~=nil and self.a.same(si.owner,actor)
-        local mesh_matches=self.a.same(actual_mesh,self.mesh)
+        local source,source_reason=self:_water_mesh_source(surface,actor)
+        if source and source.kind=="sunreach-flat-triangles" and self.a.same(levels[index],persistent) then
+            source,source_reason=nil,"persistent-water-source-changed"
+        end
+        local mesh_matches=source~=nil
         if not vi or not si or not volume_owner or not surface_owner or not mesh_matches then
             local detail={actorOrdinal=index,persistent=self.a.same(levels[index],persistent),
                 volumeQueryQualified=vi~=nil,surfaceQueryQualified=si~=nil,
                 volumeReason=volume_reason,surfaceReason=surface_reason,
                 volumeOwnerMatches=volume_owner,surfaceOwnerMatches=surface_owner,
-                expectedMeshMatches=mesh_matches,actualMeshAvailable=self.a.valid(actual_mesh)}
+                expectedMeshMatches=mesh_matches,meshSourceReason=source_reason,actualMeshAvailable=self.a.valid(actual_mesh)}
             if detail.actualMeshAvailable and actual_mesh:IsA("/Script/Engine.StaticMesh") then
                 local name=self:_call("water-mesh-asset",actual_mesh,"GetFullName")
                 if type(name)~="string" then error(ERROR,0) end
@@ -242,8 +303,12 @@ function Survey:_environment()
             local location=vector(self:_call("ocean-location",actor,"K2_GetActorLocation"))
             if math.abs(location.Z-ocean_z)>1 or math.abs(sb.center.Z-ocean_z)>1 then return false,"ocean-witness-mismatch" end
         end
-        self.waters[#self.waters+1]={actor=actor,volume=volume,surface=surface,ocean=ocean,volumeBounds=vb,surfaceBounds=sb}
+        local mesh_kind=source.kind=="sunreach-flat-triangles" and "sunreachFlatTriangles" or "stockFlatBox"
+        mesh_counts[mesh_kind]=mesh_counts[mesh_kind]+1
+        self.waters[#self.waters+1]={actor=actor,volume=volume,surface=surface,ocean=ocean,
+            volumeBounds=vb,surfaceBounds=sb,source=source,instances=instances}
     end
+    self.result.waterMeshActors=mesh_counts
     if oceans<1 or persistent_oceans~=1 or instance_counts[1]~=2 or instance_counts[4]~=6
         or instance_counts[1681]~=1 or instance_counts[356]~=1 then
         return false,"water-cohort-geometry"
@@ -543,6 +608,10 @@ function Survey:run()
     self.result.footAboveWaterCm=lower_foot-top
     self:_local_proxy(point,shape)
     if not self.result.complete then return self.result end
+    if not self:_stable_water_sources() then
+        self.result.complete=false
+        return self:_stop("water-body-source-changed")
+    end
     if self.result.footAboveWaterCm<=10 then self.result.classification="wet" end
     self.result.code="proxy-survey-observed"
     -- Private, same-call inputs for the one-instance experiment; never serialized as a spawn certificate.
