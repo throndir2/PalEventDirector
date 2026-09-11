@@ -14,7 +14,8 @@ return function(test,equal,truthy)
             GetOuter=function() return object({GetFName=function() return {ToString=function()
                 return "/Game/Pal/Maps/MainWorld_5/PL_MainWorld5"
             end} end}) end})
-        local mesh=object()
+        local mesh=object({IsA=function(_,path) return path=="/Script/Engine.StaticMesh" end,
+            GetFullName=function() return "StaticMesh /Game/Others/FluidInteractionTool/Meshes/S_WaterMesh.S_WaterMesh" end})
         local function component(owner,kind,properties)
             local c=object(properties)
             c.BoundsScale=1
@@ -49,6 +50,7 @@ return function(test,equal,truthy)
             })
             actors[index]=actor
         end
+        f.actors,f.mesh=actors,mesh
         local block_owner=object({GetWorld=function() return world end,IsA=function(_,path) return path=="/Script/Engine.Actor" end})
         f.blockOwner=block_owner
         f.blocker=component(block_owner,"solid",{objectType=0,toSource=2})
@@ -451,6 +453,41 @@ return function(test,equal,truthy)
         equal(result.persistentWaterActors,10); equal(result.otherLevelWaterActors,1)
         equal(result.foreignWorldWaterActors,0); equal(result.worldlessWaterActors,0)
         equal(result.spawnQualified,false)
+    end)
+
+    test("water shape refusal separates query ownership and mesh mismatch without relaxing admission",function()
+        for _,kind in ipairs({"volume-query","surface-query","volume-owner","surface-owner","mesh","private-mesh-name"}) do
+            local f=fixture()
+            local actor=f.actors[2]
+            if kind=="volume-query" then actor.SwimmingVolume.GetCollisionEnabled=function() return 0 end end
+            if kind=="surface-query" then actor.HierarchicalInstancedStaticMesh.GetCollisionEnabled=function() return 0 end end
+            if kind=="volume-owner" then actor.SwimmingVolume.GetOwner=function() return f.actors[1] end end
+            if kind=="surface-owner" then actor.HierarchicalInstancedStaticMesh.GetOwner=function() return f.actors[1] end end
+            if kind=="mesh" or kind=="private-mesh-name" then
+                actor.HierarchicalInstancedStaticMesh.StaticMesh={
+                    IsValid=function() return true end,
+                    IsA=function(_,path) return path=="/Script/Engine.StaticMesh" end,
+                    GetFullName=function()
+                        return kind=="mesh" and "StaticMesh /Game/Water/S_Alternate.S_Alternate"
+                            or "StaticMesh /Temp/PRIVATE_RUNTIME_OBJECT"
+                    end,
+                }
+            end
+            local result=f.survey:run()
+            equal(result.complete,false); equal(result.spawnQualified,false); equal(result.code,"water-shape-scope")
+            equal(result.queries,0)
+            local detail=result.waterShapeScope
+            equal(detail.actorOrdinal,2); equal(detail.persistent,true)
+            equal(detail.volumeQueryQualified,kind~="volume-query")
+            equal(detail.surfaceQueryQualified,kind~="surface-query")
+            equal(detail.volumeOwnerMatches,kind~="volume-query" and kind~="volume-owner")
+            equal(detail.surfaceOwnerMatches,kind~="surface-query" and kind~="surface-owner")
+            equal(detail.expectedMeshMatches,kind~="mesh" and kind~="private-mesh-name")
+            local expected_asset=kind=="mesh" and "/Game/Water/S_Alternate.S_Alternate"
+                or kind~="private-mesh-name" and "/Game/Others/FluidInteractionTool/Meshes/S_WaterMesh.S_WaterMesh" or nil
+            equal(detail.actualMeshAsset,expected_asset)
+            equal(require("ped.json").encode(result):find("PRIVATE_RUNTIME_OBJECT",1,true),nil)
+        end
     end)
 
     test("surface survey checks both operative responses and never filters away water contact",function()

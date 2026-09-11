@@ -206,9 +206,27 @@ function Survey:_environment()
             or not self.a.valid(surface) or not surface:IsA("/Script/Engine.InstancedStaticMeshComponent") then
             return false,"water-shape-unavailable"
         end
-        local vi,si=self:_component(volume),self:_component(surface)
-        if not vi or not si or not self.a.same(vi.owner,actor) or not self.a.same(si.owner,actor)
-            or not self.a.same(self.a.unwrap(surface.StaticMesh),self.mesh) then return false,"water-shape-scope" end
+        local vi,volume_reason=self:_component(volume)
+        local si,surface_reason=self:_component(surface)
+        local actual_mesh=self.a.unwrap(surface.StaticMesh)
+        local volume_owner=vi~=nil and self.a.same(vi.owner,actor)
+        local surface_owner=si~=nil and self.a.same(si.owner,actor)
+        local mesh_matches=self.a.same(actual_mesh,self.mesh)
+        if not vi or not si or not volume_owner or not surface_owner or not mesh_matches then
+            local detail={actorOrdinal=index,persistent=self.a.same(levels[index],persistent),
+                volumeQueryQualified=vi~=nil,surfaceQueryQualified=si~=nil,
+                volumeReason=volume_reason,surfaceReason=surface_reason,
+                volumeOwnerMatches=volume_owner,surfaceOwnerMatches=surface_owner,
+                expectedMeshMatches=mesh_matches,actualMeshAvailable=self.a.valid(actual_mesh)}
+            if detail.actualMeshAvailable and actual_mesh:IsA("/Script/Engine.StaticMesh") then
+                local name=self:_call("water-mesh-asset",actual_mesh,"GetFullName")
+                if type(name)~="string" then error(ERROR,0) end
+                local asset=name:match("^StaticMesh (/Game/[A-Za-z0-9_/%.%-]+)$")
+                if asset and #asset<=240 then detail.actualMeshAsset=asset end
+            end
+            self.result.waterShapeScope=detail
+            return false,"water-shape-scope"
+        end
         local vb,sb=self:_bounds(volume),self:_bounds(surface)
         if not vb or not sb or sb.extent.Z>1 or self:_response(surface,self.waterChannel)~=2 then
             return false,"water-bounds-unqualified"
